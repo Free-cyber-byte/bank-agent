@@ -6,14 +6,14 @@
 
 - Base URL: http://127.0.0.1:8000
 - 认证：演示模式，无登录；用 session_id 区分会话。
-- 错误返回：HTTP 4xx/5xx，body 为 { "error": "CODE", "message": "中文说明", "detail": {...} }
+- 错误返回：HTTP 4xx/5xx，body 为 { "error": { "code": "CODE", "message": "中文说明" } }；code 为机器可读常量（如 BAD_REQUEST / INVALID_OTP / APPROVAL_EXPIRED / DEMO_MODE_DISABLED / NOT_FOUND）。
 - 金额：amount_cents 整数，单位分；展示为 ¥1,234.56。
 - 时间：ISO-8601 带 +08:00 时区，例如 2026-10-26T21:30:00+08:00。
 
 ## 1. 会话
 
 ### POST /api/session
-请求：{ "user_id": "u001" }  // 可省略，默认 u001
+请求体：忽略（服务端固定用默认用户 u001 建会话，见 backend/server.py:133；前端 POST 空 JSON 即可）。
 返回：
     {
       "session_id": "s_xxx",
@@ -30,7 +30,7 @@
 返回当前会话：user / accounts / cards / subscriptions / payees / pending_approval（可能为 null）/ llm_mode / demo_mode
 
 ### POST /api/admin/reset
-重置演示数据库为种子数据（评委一键还原）。返回 { "ok": true }
+重置演示数据库为种子数据（评委一键还原）。返回 { "reset": true, "seed_version": "..." }；DEMO_MODE=0 时返回 403 DEMO_MODE_DISABLED。
 
 ## 2. 对话（核心）
 
@@ -58,7 +58,7 @@ stream=true：Content-Type: text/event-stream，事件按序：
     data: {"name":"transfer","confidence":0.96,"source":"rule","slots":{"amount_cents":800,"payee_name":"妈妈"}}
 
     event: plan
-    data: {"steps":[{"step_id":"s1","title":"校验收款人","tool":"get_payees","risk":"low"},{"step_id":"s2","title":"转账 ¥8.00 给妈妈","tool":"create_transfer","risk":"medium"}],"edges":[{"from":"s1","to":"s2"}]}
+    data: {"steps":[{"step_id":"s1","title":"校验收款人","tool":"get_payees","risk":"low"},{"step_id":"s2","title":"向「妈妈」转账 ¥800.00","tool":"create_transfer","risk":"medium"}],"edges":[{"from":"s1","to":"s2"}]}
 
     event: tool_start
     data: {"step_id":"s1","tool":"get_payees","args_preview":"收款人：妈妈"}
@@ -67,7 +67,7 @@ stream=true：Content-Type: text/event-stream，事件按序：
     data: {"step_id":"s1","tool":"get_payees","ok":true,"latency_ms":3,"result":{"payee_id":"p_002","name":"妈妈","is_new":false}}
 
     event: approval_required
-    data: {"approval_id":"ap_xxx","risk_level":"medium","challenge":{"type":"confirm"},"title":"向「妈妈」转账 ¥8.00","amount_cents":800,"currency":"CNY","counterparty":"妈妈（招商银行 **** 6621）","reasons":["金额在单笔 1000 元以内","收款人是常用联系人"],"preview":"执行后工资卡余额将从 ¥12,860.50 变为 ¥12,852.50","expires_at":"2026-10-26T21:41:00+08:00","nonce":"n_xxx"}
+    data: {"approval_id":"ap_xxx","risk_level":"medium","challenge":{"type":"confirm"},"title":"向「妈妈」转账 ¥800.00","amount_cents":80000,"currency":"CNY","counterparty":"妈妈（招商银行 **** 6621）","reasons":["金额在单笔 1000 元以内","收款人是常用联系人"],"preview":"执行后工资卡余额将从 ¥12,860.50 变为 ¥12,852.50","expires_at":"2026-10-26T21:41:00+08:00","nonce":"n_xxx"}
 
     event: message
     data: {"delta":"正在为你准备……"}   // 可多次，前端拼接
@@ -83,28 +83,28 @@ stream=true：Content-Type: text/event-stream，事件按序：
 ### POST /api/approval
 请求：{ "session_id":"s_xxx", "approval_id":"ap_xxx", "decision":"approve"|"reject", "code":"246810" }
 - challenge.type = "confirm"：code 可省略。
-- challenge.type = "totp"：必须传 6 位动态码，错误返回 400 {"error":"INVALID_OTP"}。
-- 审批过期（默认 5 分钟）返回 410 {"error":"APPROVAL_EXPIRED"}。
+- challenge.type = "totp"：必须传 6 位动态码，错误返回 400 {"error":{"code":"INVALID_OTP","message":"..."}}。
+- 审批过期（默认 300 秒）返回 410 {"error":{"code":"APPROVAL_EXPIRED","message":"..."}}。
 返回结构与 /api/chat stream=false 相同，status 为 ok / blocked。
 
 ### POST /api/undo
 请求：{ "session_id":"s_xxx", "action_id":"tx_xxx" }   // action_id 见 execute 结果
 说明：仅对「转账 / 理财申购」在 60 秒内有效，生成冲正流水并写入审计。
-返回：{ "undone": true, "action_id": "tx_xxx", "audit_seq": 21, "message": "已撤销，资金已回到工资卡" }
+返回：{ "undone": true, "status": "ok", "action_id": "tx_xxx", "message": "已撤销，资金已回到工资卡", "reply": 同上, "audit": [最近 10 条审计], "events": [...] }。action_id 取执行结果中的 transfers/orders action_id（前端也从 executed[].result.action_id 兜底识别）。
 
 ## 3. 查询
 
 - GET /api/accounts?session_id=... → { "accounts": [...] }
-- GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "valid": true, "checked": 21 }
+- GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "chain": { "valid": true, "checked": 21, "broken_at": null, "reason": null } }
   entry 字段：seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash, hash
 - GET /api/events?session_id=...&after=0 → { "events": [ { "seq": 1, "type": "message", "payload": {...} } ] }  // 会话回放
-- GET /api/health → { "status":"ok", "version":"1.0.0", "llm_mode":"rule", "db":"ok" }
-- GET /api/tasks → { "tasks": [ { "id":"t01", "title":"查账单", "category":"bills", "prompt":"帮我看看这个月花了多少钱" } ] }  // 前端口快捷按钮
-- GET /api/demo/totp?session_id=... → { "code":"246810", "expires_in":18 }  // 仅 DEMO_MODE 开启时可用
+- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"1.0.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"..." }
+- GET /api/tasks → { "tasks": [ { "id":"t01", "title":"查账单", "category":"bills", "user_input":"帮我看看这个月花了多少钱", "expect": {...} } ] }  // 前端快捷按钮；user_input 即 turns[0]
+- GET /api/demo/totp?user_id=u001 → { "user_id":"u001", "code":"246810", "seconds_left":18 }  // 仅 DEMO_MODE 开启时可用，否则 403 DEMO_MODE_DISABLED
 
 ## 4. 审计哈希链
 
-- 每条审计行 hash = sha256(prev_hash + canonical_json({seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id}))，prev_hash 为上一行 hash，首行 prev_hash 为 64 个 0。
+- 每条审计行：payload = {seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash}；hash = sha256(canonical_json(payload))。canonical_json 指键排序 + 紧凑分隔符 + 不转义非 ASCII（audit.canonical）。prev_hash 是 payload 的一个普通字段，取上一行 hash，首行为 64 个 0；args_hash / result_hash 分别是对参数与结果做同样 canonical 序列化后的 sha256。
 - GET /api/audit 会现场重算并返回 valid。
 - scripts/verify_audit.py 可离线验链并检测篡改（返回退出码 0/1）。
 
