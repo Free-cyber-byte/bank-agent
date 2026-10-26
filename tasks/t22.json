@@ -1,0 +1,21 @@
+{
+  "id": "t22",
+  "title": "订阅月支出统计",
+  "category": "subscription",
+  "user_id": "u001",
+  "turns": [
+    "我每月订阅一共花多少钱"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "subscription_query",
+    "plan_tools": [
+      "list_subscriptions"
+    ],
+    "reply_contains": [
+      "¥"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "汇总月费与年费"
+}

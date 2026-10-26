@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#0B1220" />
+  <title>ZeroStep 零步银行 · AI 管家</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div class="stage">
+    <div class="stage__glow stage__glow--gold" aria-hidden="true"></div>
+    <div class="stage__glow stage__glow--cyan" aria-hidden="true"></div>
+    <div class="stage__watermark" aria-hidden="true">ZeroStep · FinTechathon 2026 · 模拟演示环境</div>
+
+    <div class="device" id="device">
+      <header class="statusbar">
+        <span class="statusbar__time" id="statusTime">21:50</span>
+        <span class="statusbar__icons" aria-hidden="true">
+          <svg class="si" viewBox="0 0 18 12" width="18" height="12" focusable="false">
+            <rect x="0" y="8" width="3" height="4" rx="1" fill="currentColor" />
+            <rect x="5" y="5.5" width="3" height="6.5" rx="1" fill="currentColor" />
+            <rect x="10" y="3" width="3" height="9" rx="1" fill="currentColor" />
+            <rect x="15" y="0" width="3" height="12" rx="1" fill="currentColor" opacity="0.45" />
+          </svg>
+          <svg class="si" viewBox="0 0 16 12" width="16" height="12" focusable="false">
+            <path d="M1 4.2C3 2.4 5.4 1.5 8 1.5s5 .9 7 2.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            <path d="M3.4 7C4.7 5.9 6.3 5.3 8 5.3s3.3.6 4.6 1.7" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            <circle cx="8" cy="10" r="1.3" fill="currentColor" />
+          </svg>
+          <svg class="si" viewBox="0 0 26 12" width="26" height="12" focusable="false">
+            <rect x="0.5" y="0.5" width="21" height="11" rx="3" fill="none" stroke="currentColor" stroke-opacity="0.5" />
+            <rect x="2.5" y="2.5" width="14" height="7" rx="1.6" fill="currentColor" />
+            <path d="M23.5 4.2v3.6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" opacity="0.5" />
+          </svg>
+        </span>
+      </header>
+
+      <header class="appbar">
+        <div class="appbar__row">
+          <div class="brand">
+            <span class="brand__mark" aria-hidden="true">
+              <svg viewBox="0 0 32 32" width="30" height="30" focusable="false">
+                <circle cx="16" cy="16" r="14.5" fill="none" stroke="currentColor" stroke-opacity="0.35" />
+                <ellipse cx="16" cy="16" rx="5.6" ry="7.8" fill="none" stroke="currentColor" stroke-width="2" />
+                <path d="M10.6 16h10.8" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+              </svg>
+            </span>
+            <span class="brand__text">
+              <span class="brand__name">ZeroStep 零步银行</span>
+              <span class="brand__sub">AI 管家 · 模拟环境</span>
+            </span>
+          </div>
+          <div class="appbar__tools">
+            <button class="iconbtn" id="btnAudit" type="button" aria-label="打开审计哈希链" title="审计哈希链">
+              <svg viewBox="0 0 20 20" width="18" height="18" focusable="false">
+                <path d="M10 2.2l6 2.5v5c0 3.9-2.5 6.6-6 7.9-3.5-1.3-6-4-6-7.9v-5l6-2.5Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+                <path d="M7.3 9.8l1.9 1.9 3.5-3.7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </button>
+            <button class="iconbtn" id="btnMore" type="button" aria-label="更多菜单" title="更多">
+              <svg viewBox="0 0 20 20" width="18" height="18" focusable="false">
+                <circle cx="4" cy="10" r="1.6" fill="currentColor" />
+                <circle cx="10" cy="10" r="1.6" fill="currentColor" />
+                <circle cx="16" cy="10" r="1.6" fill="currentColor" />
+              </svg>
+            </button>
+          </div>
+        </div>
+        <div class="appbar__row appbar__row--meta">
+          <div class="userchip">
+            <span class="userchip__avatar" id="userAvatar">张</span>
+            <span class="userchip__name" id="userName">张伟</span>
+            <span class="userchip__tag" id="riskTag">稳健型</span>
+          </div>
+          <button class="badge badge--mode" id="modeBadge" type="button" title="当前推理模式">规则模式</button>
+        </div>
+      </header>
+
+      <main class="chat" id="chat" aria-live="polite" aria-label="对话记录">
+        <section class="welcome" id="welcome">
+          <div class="welcome__hi">
+            <span class="welcome__pulse" aria-hidden="true"></span>
+            <span>你好，<strong id="welcomeName">张伟</strong></span>
+          </div>
+          <p class="welcome__lead">我是你的 ZeroStep AI 管家。说一句话，我来规划并执行；每一步决策与工具调用都会写进审计哈希链。</p>
+          <div class="welcome__assets" id="welcomeAssets">
+            <span class="welcome__assets-empty">正在加载账户…</span>
+          </div>
+          <ul class="welcome__legend">
+            <li><i class="riskdot riskdot--low" aria-hidden="true"></i><span><b>绿</b> 查询类自动执行</span></li>
+            <li><i class="riskdot riskdot--medium" aria-hidden="true"></i><span><b>黄</b> 小额操作需确认</span></li>
+            <li><i class="riskdot riskdot--high" aria-hidden="true"></i><span><b>红</b> 大额/敏感需动态码</span></li>
+          </ul>
+        </section>
+      </main>
+
+      <div class="chips" id="chips" aria-label="快捷场景" hidden></div>
+
+      <div class="errorbar" id="errorBar" role="alert" hidden>
+        <span class="errorbar__text" id="errorText">网络异常</span>
+        <button class="errorbar__btn" id="errorRetry" type="button">重试</button>
+        <button class="errorbar__close" id="errorClose" type="button" aria-label="关闭提示">×</button>
+      </div>
+
+      <button class="pending-pill" id="pendingPill" type="button" hidden>
+        <span class="pending-pill__dot" aria-hidden="true"></span>
+        <span class="pending-pill__text">待授权操作</span>
+        <span class="pending-pill__time" id="pendingPillTime">04:59</span>
+      </button>
+
+      <footer class="composer">
+        <div class="composer__box">
+          <textarea class="composer__input" id="input" rows="1" maxlength="500" placeholder="说一句话，例如：给妈妈转 8 元" aria-label="输入你的需求"></textarea>
+          <button class="micbtn" id="btnMic" type="button" aria-label="语音输入" title="语音输入">
+            <svg viewBox="0 0 20 20" width="18" height="18" focusable="false">
+              <rect x="7.4" y="2.2" width="5.2" height="9.2" rx="2.6" fill="none" stroke="currentColor" stroke-width="1.6" />
+              <path d="M4.8 9.4a5.2 5.2 0 0 0 10.4 0M10 14.8v2.6M7.4 17.4h5.2" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+            </svg>
+          </button>
+          <button class="sendbtn" id="btnSend" type="button" aria-label="发送">
+            <svg viewBox="0 0 20 20" width="18" height="18" focusable="false">
+              <path d="M2.8 10 17 4.4 12.8 10 17 15.6 2.8 10Z" fill="currentColor" />
+            </svg>
+          </button>
+        </div>
+        <p class="composer__hint">所有资金类操作均需分级授权 · 全流程写入哈希链审计 · 演示数据</p>
+      </footer>
+
+      <div class="sheet" id="approvalSheet" role="dialog" aria-modal="true" aria-labelledby="apTitle" hidden>
+        <div class="sheet__backdrop" data-close="approval"></div>
+        <div class="sheet__panel approval" id="approvalPanel">
+          <div class="sheet__grab" aria-hidden="true"></div>
+          <div class="approval__head">
+            <span class="riskbadge riskbadge--medium" id="apRisk">中风险 · 需确认</span>
+            <span class="approval__countdown" id="apCountdown">05:00</span>
+          </div>
+          <h2 class="approval__title" id="apTitle">操作授权</h2>
+          <div class="approval__amount" id="apAmount">¥0.00</div>
+          <div class="approval__meta" id="apMeta"></div>
+          <div class="approval__section">
+            <h3 class="approval__h3">风险说明</h3>
+            <ul class="reasons" id="apReasons"></ul>
+          </div>
+          <div class="approval__section">
+            <h3 class="approval__h3">执行预览</h3>
+            <p class="approval__preview" id="apPreview"></p>
+          </div>
+          <div class="approval__otp" id="apOtp" hidden>
+            <h3 class="approval__h3">动态验证码<span class="muted">（6 位，演示环境）</span></h3>
+            <div class="otp" id="otpCells">
+              <input class="otp__cell" id="otp0" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1" aria-label="验证码第 1 位" />
+              <input class="otp__cell" id="otp1" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 2 位" />
+              <input class="otp__cell" id="otp2" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 3 位" />
+              <input class="otp__cell" id="otp3" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 4 位" />
+              <input class="otp__cell" id="otp4" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 5 位" />
+              <input class="otp__cell" id="otp5" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 6 位" />
+            </div>
+            <div class="keypad" id="otpKeypad">
+              <button class="keypad__key" type="button" data-key="1">1</button>
+              <button class="keypad__key" type="button" data-key="2">2</button>
+              <button class="keypad__key" type="button" data-key="3">3</button>
+              <button class="keypad__key" type="button" data-key="4">4</button>
+              <button class="keypad__key" type="button" data-key="5">5</button>
+              <button class="keypad__key" type="button" data-key="6">6</button>
+              <button class="keypad__key" type="button" data-key="7">7</button>
+              <button class="keypad__key" type="button" data-key="8">8</button>
+              <button class="keypad__key" type="button" data-key="9">9</button>
+              <button class="keypad__key keypad__key--ghost" type="button" data-key="clear">清空</button>
+              <button class="keypad__key" type="button" data-key="0">0</button>
+              <button class="keypad__key keypad__key--ghost" type="button" data-key="del" aria-label="删除一位">⌫</button>
+            </div>
+            <button class="linkbtn" id="btnDemoTotp" type="button">获取演示验证码</button>
+            <p class="field-error" id="apError" hidden></p>
+          </div>
+          <div class="approval__actions">
+            <button class="btn btn--ghost" id="btnReject" type="button">拒绝</button>
+            <button class="btn btn--primary" id="btnApprove" type="button">确认执行</button>
+          </div>
+          <p class="approval__foot">审批绑定单次 nonce 且限时有效，过期或重复提交均无效；执行后 60 秒内可撤销。</p>
+        </div>
+      </div>
+
+      <div class="sheet" id="auditSheet" role="dialog" aria-modal="true" aria-labelledby="auditTitle" hidden>
+        <div class="sheet__backdrop" data-close="audit"></div>
+        <div class="sheet__panel drawer">
+          <div class="sheet__grab" aria-hidden="true"></div>
+          <div class="drawer__head">
+            <h2 class="drawer__title" id="auditTitle">审计哈希链</h2>
+            <button class="linkbtn" id="btnAuditClose" type="button">关闭</button>
+          </div>
+          <div class="audit__summary">
+            <span class="chainbadge" id="auditValid">链校验：—</span>
+            <span class="muted" id="auditMeta">共 0 条</span>
+            <button class="linkbtn audit__refresh" id="btnAuditRefresh" type="button">刷新</button>
+          </div>
+          <ul class="auditlist" id="auditList"></ul>
+          <p class="audit__foot muted">hash = sha256(prev_hash + canonical_json(条目))，实时重算并校验；点击条目可展开完整哈希。</p>
+        </div>
+      </div>
+
+      <div class="menu" id="moreMenu" hidden>
+        <button class="menu__item" type="button" data-action="reset">重置演示数据</button>
+        <button class="menu__item" type="button" data-action="health">查看 API 健康</button>
+        <button class="menu__item" type="button" data-action="about">关于 ZeroStep</button>
+      </div>
+
+      <div class="modal" id="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle" hidden>
+        <div class="modal__backdrop" data-close="modal"></div>
+        <div class="modal__card">
+          <h2 class="modal__title" id="modalTitle"></h2>
+          <div class="modal__body" id="modalBody"></div>
+          <div class="modal__actions" id="modalActions"></div>
+        </div>
+      </div>
+
+      <div class="toasts" id="toasts" aria-live="polite"></div>
+    </div>
+  </div>
+  <noscript><p class="noscript">该演示需要启用 JavaScript。</p></noscript>
+  <script src="app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "id": "t05",
+  "title": "查询工资卡余额",
+  "category": "bills",
+  "user_id": "u001",
+  "turns": [
+    "我工资卡还有多少钱"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "query_balance",
+    "plan_tools": [
+      "get_accounts"
+    ],
+    "reply_contains": [
+      "工资卡"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "只读余额查询，不动资金"
+}

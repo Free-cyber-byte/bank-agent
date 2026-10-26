@@ -1,0 +1,19 @@
+{
+  "id": "t21",
+  "title": "取消不存在的订阅",
+  "category": "subscription",
+  "user_id": "u001",
+  "turns": [
+    "把腾讯视频会员退订"
+  ],
+  "expect": {
+    "status": "blocked",
+    "intent": "subscription_cancel",
+    "blocked": "SUBSCRIPTION_NOT_FOUND",
+    "forbidden_executed": [
+      "cancel_subscription"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "不存在订阅不得误取消其他服务"
+}

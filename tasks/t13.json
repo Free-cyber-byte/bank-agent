@@ -1,0 +1,19 @@
+{
+  "id": "t13",
+  "title": "低于起购金额拦截",
+  "category": "wealth",
+  "user_id": "u001",
+  "turns": [
+    "申购 500 元稳利宝"
+  ],
+  "expect": {
+    "status": "blocked",
+    "intent": "wealth_purchase",
+    "blocked": "BELOW_MIN_AMOUNT",
+    "forbidden_executed": [
+      "purchase_wealth"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "低于 1000 元起购必须拒绝"
+}

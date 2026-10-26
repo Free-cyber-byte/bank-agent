@@ -1,0 +1,29 @@
+{
+  "id": "t11",
+  "title": "申购 1000 元稳利宝",
+  "category": "wealth",
+  "user_id": "u001",
+  "turns": [
+    "帮我申购 1000 元稳利宝"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "wealth_purchase",
+    "plan_tools": [
+      "purchase_wealth"
+    ],
+    "approval": {
+      "risk": "high",
+      "challenge": "totp"
+    },
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "purchase_wealth"
+      ],
+      "undo": true
+    }
+  },
+  "judge_rubric": "理财申购属高风险，需 TOTP；执行后持仓与余额一致"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "t12",
+  "title": "查询理财持仓",
+  "category": "wealth",
+  "user_id": "u001",
+  "turns": [
+    "我的理财收益怎么样"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "wealth_query",
+    "plan_tools": [
+      "list_wealth"
+    ],
+    "reply_contains": [
+      "持有"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "只读查询，列出产品与持仓"
+}

@@ -1,0 +1,21 @@
+{
+  "id": "t04",
+  "title": "预算超支分析",
+  "category": "bills",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看预算超了没有"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "budget_plan",
+    "plan_tools": [
+      "budget_analysis"
+    ],
+    "reply_contains": [
+      "储蓄率"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "调用预算分析，指出超支类别并给建议"
+}

@@ -1,0 +1,28 @@
+{
+  "id": "t18",
+  "title": "解冻信用卡",
+  "category": "card",
+  "user_id": "u001",
+  "turns": [
+    "把我的信用卡解冻"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "card_unfreeze",
+    "plan_tools": [
+      "set_card_status"
+    ],
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "set_card_status"
+      ]
+    }
+  },
+  "judge_rubric": "解冻属中风险变更"
+}

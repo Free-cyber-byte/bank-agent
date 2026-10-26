@@ -1,0 +1,21 @@
+{
+  "id": "t02",
+  "title": "查询餐饮分类支出",
+  "category": "bills",
+  "user_id": "u001",
+  "turns": [
+    "这个月餐饮花了多少"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "query_bills",
+    "plan_tools": [
+      "get_bill_summary"
+    ],
+    "reply_contains": [
+      "餐饮"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "能按分类过滤并给出餐饮金额"
+}

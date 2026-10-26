@@ -1,0 +1,21 @@
+{
+  "id": "t03",
+  "title": "近三个月账单汇总",
+  "category": "bills",
+  "user_id": "u001",
+  "turns": [
+    "近三个月的账单汇总"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "query_bills",
+    "plan_tools": [
+      "get_bill_summary"
+    ],
+    "reply_contains": [
+      "支出"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "months 参数为 3，输出三个月汇总与趋势"
+}

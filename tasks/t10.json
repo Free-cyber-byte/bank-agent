@@ -1,0 +1,19 @@
+{
+  "id": "t10",
+  "title": "余额不足拦截",
+  "category": "transfer",
+  "user_id": "u001",
+  "turns": [
+    "从工资卡转 13000 给妈妈"
+  ],
+  "expect": {
+    "status": "blocked",
+    "intent": "transfer",
+    "blocked": "INSUFFICIENT_FUNDS",
+    "forbidden_executed": [
+      "create_transfer"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "余额不足时不得发起转账"
+}

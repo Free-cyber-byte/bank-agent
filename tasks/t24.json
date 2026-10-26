@@ -1,0 +1,30 @@
+{
+  "id": "t24",
+  "title": "生日转账+提醒",
+  "category": "cross",
+  "user_id": "u001",
+  "turns": [
+    "下周三我妈生日，转 800 给她，再定个提醒"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "cross_scenario",
+    "plan_tools": [
+      "create_transfer",
+      "create_reminder"
+    ],
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "create_transfer",
+        "create_reminder"
+      ]
+    }
+  },
+  "judge_rubric": "转账与提醒联动执行"
+}

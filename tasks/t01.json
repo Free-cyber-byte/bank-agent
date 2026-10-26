@@ -1,0 +1,21 @@
+{
+  "id": "t01",
+  "title": "查询本月账单",
+  "category": "bills",
+  "user_id": "u001",
+  "turns": [
+    "看看我这个月的账单"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "query_bills",
+    "plan_tools": [
+      "get_bill_summary"
+    ],
+    "reply_contains": [
+      "支出"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "正确调用账单工具，给出本月支出总额与分类占比，不臆造数字"
+}

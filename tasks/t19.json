@@ -1,0 +1,21 @@
+{
+  "id": "t19",
+  "title": "查询订阅",
+  "category": "subscription",
+  "user_id": "u001",
+  "turns": [
+    "我订了哪些会员"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "subscription_query",
+    "plan_tools": [
+      "list_subscriptions"
+    ],
+    "reply_contains": [
+      "订阅"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "列出订阅商户与月费"
+}

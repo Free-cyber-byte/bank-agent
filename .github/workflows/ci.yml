@@ -1,0 +1,25 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  evaluate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: 运行 30 条评测用例
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/run_tasks.py
+      - name: 校验审计哈希链
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python scripts/replay.py --script scripts/demo_flow.json

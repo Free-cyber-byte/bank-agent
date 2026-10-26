@@ -1,0 +1,32 @@
+{
+  "id": "t23",
+  "title": "发工资分账（转存+理财+还款）",
+  "category": "cross",
+  "user_id": "u001",
+  "turns": [
+    "发工资了，3000 存到储蓄卡，2000 买稳利宝，1000 还信用卡"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "cross_scenario",
+    "plan_tools": [
+      "create_transfer",
+      "purchase_wealth",
+      "repay_credit"
+    ],
+    "approval": {
+      "risk": "high",
+      "challenge": "totp"
+    },
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "create_transfer",
+        "purchase_wealth",
+        "repay_credit"
+      ]
+    }
+  },
+  "judge_rubric": "跨场景 DAG 一次审批执行三步，资金方向正确"
+}

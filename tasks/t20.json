@@ -1,0 +1,29 @@
+{
+  "id": "t20",
+  "title": "取消爱奇艺会员",
+  "category": "subscription",
+  "user_id": "u001",
+  "turns": [
+    "取消爱奇艺会员"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "subscription_cancel",
+    "plan_tools": [
+      "cancel_subscription"
+    ],
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "reply_contains": [],
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "cancel_subscription"
+      ]
+    }
+  },
+  "judge_rubric": "订阅取消需确认并给出省下金额"
+}

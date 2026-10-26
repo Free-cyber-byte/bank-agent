@@ -1,0 +1,21 @@
+{
+  "id": "t15",
+  "title": "查询银行卡列表",
+  "category": "card",
+  "user_id": "u001",
+  "turns": [
+    "我有哪些银行卡"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "card_query",
+    "plan_tools": [
+      "list_cards"
+    ],
+    "reply_contains": [
+      "卡"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "列出卡片与状态"
+}

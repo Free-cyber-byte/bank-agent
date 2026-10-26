@@ -1,0 +1,28 @@
+# 运行时数据（演示数据库自动生成）
+backend/data/*.db
+backend/data/*.db-wal
+backend/data/*.db-shm
+backend/data/replay.db*
+
+# 评测临时目录
+.eval_tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# 编辑器与系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 日志与临时文件
+*.log
+*.tmp
+
+# 提交材料（不随源码仓库发布）
+提交材料/模板原件/

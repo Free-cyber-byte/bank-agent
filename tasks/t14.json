@@ -1,0 +1,19 @@
+{
+  "id": "t14",
+  "title": "理财余额不足拦截",
+  "category": "wealth",
+  "user_id": "u001",
+  "turns": [
+    "申购 20000 元增利宝"
+  ],
+  "expect": {
+    "status": "blocked",
+    "intent": "wealth_purchase",
+    "blocked": "INSUFFICIENT_FUNDS",
+    "forbidden_executed": [
+      "purchase_wealth"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "可用余额不足必须拒绝"
+}

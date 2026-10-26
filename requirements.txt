@@ -1,0 +1,10 @@
+# 本项目刻意做到零第三方依赖：仅使用 Python 3.10+ 标准库
+# （http.server / sqlite3 / json / hmac / hashlib / http.client 等）。
+#
+# 因此无需 pip install，克隆后直接运行即可：
+#   Windows: start.bat
+#   macOS/Linux: bash start.sh
+#   手动: python3 backend/server.py
+#
+# 可选：设置 DEEPSEEK_API_KEY 后启用大模型意图理解（默认规则模式，离线可跑）
+# 评测：python3 scripts/run_tasks.py    审计链：python3 scripts/verify_audit.py
