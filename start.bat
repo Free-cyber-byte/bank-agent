@@ -1,7 +1,9 @@
 @echo off
+chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 set PYTHONIOENCODING=utf-8
+set PYTHONUTF8=1
 if not defined PORT set PORT=8000
 if not defined DEMO_MODE set DEMO_MODE=1
 
@@ -10,6 +12,7 @@ echo   ZeroStep 零步银行 - 本地演示
 echo   打开浏览器访问 http://127.0.0.1:%PORT%/
 echo   按 Ctrl+C 停止服务
 echo ============================================
+echo.
 
 where python >nul 2>nul
 if %errorlevel%==0 (

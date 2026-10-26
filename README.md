@@ -45,7 +45,11 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 
     git clone https://github.com/Free-cyber-byte/bank-agent.git
     cd bank-agent
-    python backend/server.py          # Windows PowerShell 若中文乱码，先执行 $env:PYTHONIOENCODING = "utf-8"
+    python backend/server.py
+
+    # Windows 用户也可以直接双击 start.bat：它已内置 chcp 65001 + PYTHONUTF8=1，
+    # 中文不会乱码，并自动打开浏览器；默认端口 8000，可用 set PORT=8010 覆盖。
+    # 若在旧版 PowerShell 里手动起服务看到乱码，先执行 $env:PYTHONUTF8 = "1"。
 
 服务默认监听 127.0.0.1:8000，浏览器打开 http://127.0.0.1:8000 即可对话。首次启动会自动建库并写入确定性种子数据（3 个用户、6 个月流水、5 个收款人、4 支理财、5 个订阅）。
 
