@@ -32,6 +32,8 @@
 ### POST /api/admin/reset
 重置演示数据库为种子数据（评委一键还原）。返回 { "reset": true, "seed_version": "..." }；DEMO_MODE=0 时返回 403 DEMO_MODE_DISABLED。
 
+实现方式：在服务进程的同一 SQLite 连接上按表 DELETE 全部业务表后重新灌种子（不删除 bank.db 文件），因此可以反复点击「重置演示」，也不会在 Windows 上因文件被占用而失败（早期实现用 os.unlink 会抛 WinError 32）。
+
 ## 2. 对话（核心）
 
 ### POST /api/chat

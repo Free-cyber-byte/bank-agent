@@ -136,9 +136,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/admin/reset":
                 if not config.DEMO_MODE:
                     return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启")
-                CONN.close()
-                db.reset_demo()
-                CONN = db.connect()
+                # 同一连接内做表级重置，避免 Windows 下删除被占用的 bank.db 抛 WinError 32
+                db.reset_demo(CONN)
                 return self._send(200, {"reset": True, "seed_version": config.SEED_VERSION})
             if path == "/api/chat":
                 body = self._body()

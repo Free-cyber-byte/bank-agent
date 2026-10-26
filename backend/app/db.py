@@ -113,16 +113,34 @@ def seed_if_needed(conn: sqlite3.Connection) -> bool:
     return True
 
 
-def reset_demo() -> None:
-    p = Path(config.DB_PATH)
-    for suffix in ("", "-wal", "-shm"):
-        f = Path(str(p) + suffix)
-        if f.exists():
-            f.unlink()
-    conn = connect()
-    init_schema(conn)
+# 重置时要清空的表（先子表后主表，与外键顺序无关：PRAGMA foreign_keys=OFF 期间执行）
+RESET_TABLES = [
+    "audit", "events", "checkpoints", "sessions", "approvals", "transfers", "reminders",
+    "subscriptions", "cards", "payees", "wealth_holdings", "wealth_products",
+    "budgets", "transactions", "accounts", "users", "meta",
+]
+
+
+def reset_demo(conn: sqlite3.Connection = None) -> None:
+    """清空所有业务表并重新灌入种子数据。
+
+    注意：这里刻意不删除数据库文件。SQLite 在 WAL 模式下会保持 -wal/-shm 句柄，
+    Windows 上删除正在使用的 bank.db 会抛 WinError 32；改成表级 DELETE 后
+    既能在同一进程内安全重置，也允许演示时反复点击「重置演示」。
+    """
+    own = conn is None
+    if own:
+        conn = connect()
+        init_schema(conn)
+    conn.execute("PRAGMA foreign_keys=OFF")
+    for table in RESET_TABLES:
+        conn.execute("DELETE FROM " + table)
+    conn.execute("DELETE FROM sqlite_sequence WHERE name='audit'")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
     seed(conn)
-    conn.close()
+    if own:
+        conn.close()
 
 
 def _txn(conn, txn_id, account_id, user_id, ts, direction, amount_cents, category, counterparty, memo, balance_after, source="seed"):
