@@ -16,13 +16,13 @@ echo.
 
 where python >nul 2>nul
 if %errorlevel%==0 (
-    start "" http://127.0.0.1:%PORT%/
+    start "" /b cmd /c "timeout /t 2 >nul & start "" http://127.0.0.1:%PORT%/"
     python backend\server.py
     goto :eof
 )
 where py >nul 2>nul
 if %errorlevel%==0 (
-    start "" http://127.0.0.1:%PORT%/
+    start "" /b cmd /c "timeout /t 2 >nul & start "" http://127.0.0.1:%PORT%/"
     py -3 backend\server.py
     goto :eof
 )
