@@ -92,11 +92,16 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     python scripts/verify_audit.py                       # 校验审计哈希链
     python scripts/verify_audit.py --db backend/data/bank.db --limit 200 --json
 
+    python scripts/smoke18.py                           # 18 轮端到端演示流 + 审计链自证
+    python scripts/smoke18.py --json scripts/smoke18_result.json
+
 实测结果（本机 Python 3.14.6，2026-10-26）：
 
     结果：30/30 通过，0 失败
 
 执行器会为每条任务创建独立临时数据库（.eval_tmp/任务id/bank.db），重建种子数据后运行，互不污染；需要审批的用例会自动用当前 TOTP 走完 approve 流程，因此测的是完整链路而不是桩函数。断言字段与新增用例方法见 docs/evaluation.md。
+
+另有一条端到端演示流用于现场复现：scripts/smoke18.py 在临时库上顺序跑 17 轮真实对话（账单、流水、余额、四类转账、理财、订阅、卡片、分账、跨场景、四类攻击）再撤销最后一笔，结束后校验审计链。实测输出：18 轮 0.41 秒、审计链 valid=True 共 56 条、事件 111 条、业务表 17 张，完整结果见 scripts/smoke18_result.json。
 
 ---
 
@@ -147,7 +152,9 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     │   ├── verify_audit.py        离线校验审计链
     │   ├── replay.py              命令行演示
     │   ├── demo_flow.json         6 轮演示脚本
-    │   └── smoke_http.py          HTTP 冒烟测试
+    │   ├── smoke_http.py          HTTP 冒烟测试（13 个接口 + SSE 全链路）
+    │   ├── smoke18.py             18 轮端到端演示流 + 审计链自证
+    │   └── smoke18_result.json    上述运行器的完整实测输出（供复核）
     ├── docs/
     │   ├── api.md                 v1 HTTP 接口契约
     │   ├── architecture.md        架构与流水线详解

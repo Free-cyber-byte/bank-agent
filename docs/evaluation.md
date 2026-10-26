@@ -189,6 +189,8 @@ CI（.github/workflows/ci.yml）在 Python 3.10 与 3.12 两个版本上执行�
 
 前者保证 30 条断言全过，后者保证 CLI 演示链路可跑通。
 
+端到端演示流另有 scripts/smoke18.py（不受 CI 调用，供本地或评委复跑）：它在一个临时库上依次执行 17 轮真实对话与第 18 轮撤销，逐轮打印意图、状态、审批挑战类型与执行结果，最后汇总审计链校验、事件与业务表数量；带 --json 时把完整结构写入指定文件。本机实测（Python 3.14.6，2026-10-26）：18 轮 / 0.41 秒 / 审计链 valid=True、checked=56 / 本会话审计 56 条 / 事件 111 条 / 业务表 17 张，事件类型为 approval_required=7、intent=17、message=17、plan=17、session=17、tool_end=21、tool_start=14、undo_done=1；完整输出已随仓库提交在 scripts/smoke18_result.json。
+
 ---
 
 ## 7. 如何新增任务
