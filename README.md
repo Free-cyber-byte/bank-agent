@@ -19,6 +19,24 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 
 ---
 
+## 界面一览
+
+四态截图（1600×1000，原生 JS，零依赖，无渐变/无外链资源）：
+
+![业务台空态](docs/screenshots/01-desk.png)
+*业务台：余额 hero + 资产构成微条 + 2 列快捷任务，中央三张示例指令*
+
+![查询对话](docs/screenshots/02-query.png)
+*一轮对话：意图 chip → 编号执行计划 → 工具 KPI 卡 → 结论卡，右栏竖向执行轨迹*
+
+![审批回单](docs/screenshots/03-approval.png)
+*审批回单：44px 金额 + 四行发丝表格 + 来源与理由 + 执行后预览 + 单次 nonce 声明*
+
+![审计抽屉](docs/screenshots/04-audit.png)
+*审计抽屉：SHA-256 哈希链逐条可校验，可导出 audit.log*
+
+---
+
 ## 架构一览
 
     浏览器（frontend/ 原生 JS 单页应用）
