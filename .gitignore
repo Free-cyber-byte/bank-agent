@@ -1,3 +1,6 @@
+# 本地密钥（只存在本机，绝不提交）
+.env
+
 # 运行时数据（演示数据库自动生成）
 backend/data/*.db
 backend/data/*.db-wal

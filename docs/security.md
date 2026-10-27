@@ -162,7 +162,7 @@ LLM 模式（backend/app/llm.py）接入了真实模型，但设计上把它当�
 
 Key 与日志：
 
-- API Key 只从环境变量 DEEPSEEK_API_KEY 读取（config.py），不写入仓库、数据库、事件或审计。
+- API Key 只从环境变量 DEEPSEEK_API_KEY 读取，支持写在仓库根目录的 .env（config.py 的 _load_dotenv 只补空缺、不覆盖已有环境变量），.env 已被 .gitignore 排除，不写入仓库、数据库、事件或审计。
 - llm.py 不打印 Key；HTTP 错误信息只截取响应体前 160 字存入 last_error，不含请求头。
 - GET /api/llm/status 只返回脱敏后的 key_masked（长度大于 10 时保留前 6 位与后 4 位，否则保留前 2 位）。
 

@@ -9,6 +9,32 @@ DB_PATH = DATA_DIR / "bank.db"
 FRONTEND_DIR = ROOT_DIR / "frontend"
 TASKS_DIR = ROOT_DIR / "tasks"
 
+
+def _load_dotenv(path):
+    """读取项目根目录的 .env（每行 KEY=VALUE，# 开头为注释）。
+
+    只做最小实现：不覆盖已存在的环境变量，支持 UTF-8 BOM 与简单引号。
+    找不到文件或读失败时静默跳过，保证零依赖、零配置也能跑。
+    """
+    if not path.is_file():
+        return
+    try:
+        raw_lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except OSError:
+        return
+    for raw in raw_lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+
+
+_load_dotenv(ROOT_DIR / ".env")
+
 APP_NAME = "ZeroStep 零步银行"
 VERSION = "1.0.0"
 

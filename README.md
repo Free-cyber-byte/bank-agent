@@ -56,7 +56,19 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 
 服务默认监听 127.0.0.1:8000，浏览器打开 http://127.0.0.1:8000 即可对话。首次启动会自动建库并写入确定性种子数据（3 个用户、6 个月流水、5 个收款人、4 支理财、5 个订阅）。
 
-不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，30 条评测全部通过。想体验模型解析，启动前设置 DEEPSEEK_API_KEY 即可，界面顶栏可在「规则 / 自动 / DeepSeek」之间切换。
+不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，30 条评测全部通过。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / DeepSeek」之间切换。
+
+配置模型（二选一，环境变量优先于 .env）：
+
+    # 方式一：.env 文件（推荐，一次配置长期有效）
+    copy .env.example .env        # Windows；Linux/macOS 用 cp
+    # 用记事本打开 .env，把 DEEPSEEK_API_KEY= 后面填上你的 Key
+
+    # 方式二：临时环境变量（只对当前窗口有效）
+    $env:DEEPSEEK_API_KEY = "sk-..."   # PowerShell
+    set DEEPSEEK_API_KEY=sk-...        # cmd
+
+Key 只在本机读取，不写入仓库、数据库、事件或审计日志；接口与页面只显示掩码后的后四位。没有 .env 文件时程序静默跳过，行为与未配置完全一致。
 
 常用环境变量：
 
@@ -65,7 +77,7 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 | PORT | 8000 | HTTP 端口 |
 | HOST | 127.0.0.1 | 监听地址 |
 | DEMO_MODE | 1（开启） | 设为 0 关闭 /api/demo/totp 等演示接口 |
-| DEEPSEEK_API_KEY | 空 | 可选。设置后启用 LLM 解析（默认 auto 模式下生效）；不设置时自动使用规则解析，功能与评测结果不受影响 |
+| DEEPSEEK_API_KEY | 空 | 可选。设置后启用 LLM 解析（默认 auto 模式下生效）；不设置时自动使用规则解析，功能与评测结果不受影响。可写在 .env 中 |
 | DEEPSEEK_BASE_URL | https://api.deepseek.com | 可选。OpenAI 兼容接口地址，接入其他兼容服务时只需改这一项 |
 | DEEPSEEK_MODEL | deepseek-flash | 可选。模型名，需与接口支持的型号一致 |
 | DEEPSEEK_TIMEOUT | 12 | 可选。单次模型调用超时秒数，超时自动回退规则解析 |
@@ -223,6 +235,7 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     │   ├── security.md            安全设计与攻击测试（含模型不可信组件）
     │   ├── design-system.md       界面设计规范（去 AI 味、视觉令牌、审批卡）
     │   └── evaluation.md          评测任务、断言与双模式对比
+    ├── .env.example               本地配置模板（复制为 .env 后填 Key，.env 不进仓库）
     └── .github/workflows/ci.yml   CI：3.10/3.12 跑评测与演示
 
 ---
