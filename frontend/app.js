@@ -18,7 +18,7 @@
   var MODE_META = {
     rule: { label: "规则", long: "规则模式" },
     auto: { label: "自动", long: "自动模式" },
-    llm: { label: "DeepSeek", long: "DeepSeek 模式" }
+    llm: { label: "模型", long: "模型模式" }
   };
 
   var CATEGORY_LABEL = {
@@ -33,7 +33,7 @@
     security: "安全"
   };
 
-  var RISK_CLASS = { low: "low", medium: "medium", high: "high" };
+  var RISK_CLASS = { low: "low", medium: "medium", high: "high", blocked: "high" };
 
   var EVENT_LABEL = {
     session: "会话建立",
@@ -102,6 +102,8 @@
     lastUserText: "",
     lastIntentSource: "rule",
     traceRows: {},
+    traceStatus: null,
+    traceLabel: "",
     approvalOpenedAt: 0,
     busy: false,
     lastAction: null,
@@ -129,6 +131,14 @@
       .replace(/>/g, "&gt;")
       .replace(/"/g, "&quot;")
       .replace(/'/g, "&#39;");
+  }
+
+  /* 轻量 markdown：先整体转义，再渲染 粗体 与行内代码，确保不注入未转义字符串 */
+  function fmtRich(value) {
+    var text = esc(value);
+    text = text.replace(/`([^`\n]+)`/g, '<code class="rich-code">$1</code>');
+    text = text.replace(/\*\*([^*\n]+)\*\*/g, '<strong class="rich-strong">$1</strong>');
+    return text;
   }
 
   function pad2(n) {
@@ -177,6 +187,23 @@
     err.status = status || 0;
     err.code = code || "ERROR";
     return err;
+  }
+
+  /* 后端错误体为 {error:{code,message}}（也兼容扁平 {error,message}） */
+  function parseApiError(data, status) {
+    var fallback = { code: "HTTP_" + status, message: "请求失败（HTTP " + status + "）" };
+    if (!data) return fallback;
+    var raw = data.error;
+    if (raw && typeof raw === "object") {
+      return {
+        code: raw.code || raw.error || fallback.code,
+        message: raw.message || raw.detail || fallback.message
+      };
+    }
+    if (typeof raw === "string") {
+      return { code: raw, message: data.message || data.detail || fallback.message };
+    }
+    return { code: data.code || fallback.code, message: data.message || data.detail || fallback.message };
   }
 
   function riskCls(level) {
@@ -281,7 +308,7 @@
    * ============================================================ */
   function cacheDom() {
     var ids = [
-      "device", "statusTime", "chat", "welcome", "welcomeName", "welcomeAssets", "acctTotal", "chips",
+      "device", "statusTime", "chat", "welcome", "welcomeName", "welcomeAssets", "acctTotal", "acctDelta", "acctMix", "chips",
       "errorBar", "errorText", "errorRetry", "errorClose",
       "input", "btnMic", "btnSend", "btnAudit", "btnMore",
       "userName", "riskTag", "modeBadge", "modeSeg", "modeRule", "modeAuto", "modeLlm",
@@ -318,9 +345,8 @@
         try { data = JSON.parse(text); } catch (parseErr) { data = null; }
       }
       if (!res.ok) {
-        var code = (data && data.error) || ("HTTP_" + res.status);
-        var msg = (data && data.message) || ("请求失败（HTTP " + res.status + "）");
-        throw makeError(res.status, code, msg);
+        var info = parseApiError(data, res.status);
+        throw makeError(res.status, info.code, info.message);
       }
       if (!data) throw makeError(res.status, "BAD_JSON", "服务器返回了无法解析的数据");
       return data;
@@ -342,9 +368,8 @@
         try { errText = await res.text(); } catch (e) { errText = ""; }
         var errData = null;
         if (errText) { try { errData = JSON.parse(errText); } catch (e2) { errData = null; } }
-        var code = (errData && errData.error) || ("HTTP_" + res.status);
-        var msg = (errData && errData.message) || ("请求失败（HTTP " + res.status + "）");
-        throw makeError(res.status, code, msg);
+        var info = parseApiError(errData, res.status);
+        throw makeError(res.status, info.code, info.message);
       }
       var ctype = String(res.headers.get("content-type") || "").toLowerCase();
       if (ctype.indexOf("text/event-stream") === -1) {
@@ -654,21 +679,89 @@
     if (empty && empty.parentNode) empty.parentNode.removeChild(empty);
   }
 
+  /* 右栏轨迹头部的统计：步骤数 / 进行中 / 已完成 / 失败 */
+  function traceStats() {
+    var rows = state.traceRows || {};
+    var ids = Object.keys(rows);
+    var stats = { total: 0, ok: 0, fail: 0, run: 0 };
+    ids.forEach(function (id) {
+      var row = rows[id];
+      if (!row) return;
+      stats.total++;
+      var st = row.getAttribute("data-state") || "run";
+      if (st === "ok") stats.ok++;
+      else if (st === "fail") stats.fail++;
+      else stats.run++;
+    });
+    return stats;
+  }
+
+  function paintTraceMeta(status) {
+    if (!dom.traceMeta) return;
+    var stats = traceStats();
+    var final = (status === undefined || status === null) ? state.traceStatus : status;
+    var text;
+    var mod = "";
+    if (!stats.total) {
+      if (final === "blocked") {
+        text = "已拦截 · 未执行任何工具调用";
+        mod = " trace__meta--blocked";
+      } else if (state.traceLabel) {
+        text = "已收到指令 · 等待执行";
+        mod = " trace__meta--wait";
+      } else {
+        text = "还没有执行记录 · 发送指令后逐步显示";
+      }
+    } else if (final === "blocked") {
+      text = stats.total + " 步 · 已拦截";
+      mod = " trace__meta--blocked";
+    } else if (stats.run > 0) {
+      text = "进行中 · " + (stats.ok + stats.fail) + "/" + stats.total;
+      mod = " trace__meta--run";
+    } else if (stats.fail > 0) {
+      text = stats.total + " 步 · 失败 " + stats.fail;
+      mod = " trace__meta--blocked";
+    } else if (final === "awaiting_approval") {
+      text = stats.total + " 步 · 等待确认";
+      mod = " trace__meta--wait";
+    } else {
+      text = stats.total + " 步 · 已完成";
+      mod = " trace__meta--ok";
+    }
+    dom.traceMeta.textContent = text;
+    dom.traceMeta.className = "trace__meta" + mod;
+  }
+
+  /* 与 index.html #chatEmpty 保持同一结构：清空对话后重建业务台 */
+  var EMPTY_DESK_HTML = [
+    '<div class="desk">',
+    '<p class="desk__kicker">业务台</p>',
+    '<h1 class="desk__title">今天要办什么？</h1>',
+    '<p class="desk__lead">一句话说清业务与金额。ZeroStep 会拆出执行步骤、标注风险等级，再由确定性工具逐步执行。</p>',
+    '<p class="desk__hint">在下方输入框直接描述，或选择一项示例</p>',
+    '<div class="desk__examples">',
+    '<button class="desk__card" type="button" data-text="查一下这个月支出最多的三类">',
+    '<span class="desk__card-cat">账单</span><span class="desk__card-title">查本月支出前三类</span><span class="desk__card-sub">汇总账单 · 自动执行</span></button>',
+    '<button class="desk__card" type="button" data-text="给妈妈转 8 元">',
+    '<span class="desk__card-cat">转账</span><span class="desk__card-title">给妈妈转 8 元</span><span class="desk__card-sub">小额转账 · 需你确认</span></button>',
+    '<button class="desk__card" type="button" data-text="帮我看看有没有正在自动续费的订阅">',
+    '<span class="desk__card-cat">订阅</span><span class="desk__card-title">查自动续费订阅</span><span class="desk__card-sub">订阅列表 · 自动执行</span></button>',
+    '</div>',
+    '<div class="desk__caps">',
+    '<div class="cap"><span class="cap__n">01</span><span class="cap__body"><b>听懂</b><span>规则或模型抽取意图与槽位，原句可复核</span></span></div>',
+    '<div class="cap"><span class="cap__n">02</span><span class="cap__body"><b>分级授权</b><span>绿色自动 · 黄色确认 · 红色动态码</span></span></div>',
+    '<div class="cap"><span class="cap__n">03</span><span class="cap__body"><b>可审计</b><span>每一步写入哈希链，可导出 JSONL</span></span></div>',
+    '</div>',
+    '</div>'
+  ].join("");
+
   function showEmptyState() {
     if (!dom.chat || dom.chat.querySelector(".msg")) return;
     removeEmptyState();
     var el = document.createElement("div");
     el.className = "empty";
     el.id = "chatEmpty";
-    el.innerHTML =
-      '<p class="empty__title">账户工作台</p>' +
-      '<p class="empty__lead">用一句话描述要办理的业务，例如：</p>' +
-      '<ul class="empty__list">' +
-      '<li>查一下这个月支出最多的三类</li>' +
-      '<li>给妈妈转 8 元</li>' +
-      '<li>帮我看看有没有正在自动续费的订阅</li>' +
-      '</ul>' +
-      '<p class="empty__note">查询类自动执行；资金类操作需你确认，大额与敏感操作需动态验证码。</p>';
+    el.innerHTML = EMPTY_DESK_HTML;
     dom.chat.insertBefore(el, dom.chat.firstChild);
   }
 
@@ -691,25 +784,65 @@
     accounts: function (accounts) {
       if (!dom.welcomeAssets) return;
       var list = Array.isArray(accounts) ? accounts : [];
+      var typeName = { checking: "活期", savings: "储蓄", wealth: "理财", credit: "信用卡" };
       if (!list.length) {
-        dom.welcomeAssets.innerHTML = '<span class="acct__empty">暂未获取到账户信息</span>';
+        dom.welcomeAssets.innerHTML = '<p class="acct__empty">暂未获取到账户信息</p>';
         if (dom.acctTotal) dom.acctTotal.textContent = "¥--";
+        if (dom.acctDelta) dom.acctDelta.textContent = "账户数据加载中";
+        if (dom.acctMix) dom.acctMix.innerHTML = "";
         return;
       }
-      var typeName = { checking: "活期", savings: "储蓄", wealth: "理财", credit: "信用卡" };
+      var groups = { deposit: 0, wealth: 0, credit: 0 };
       var total = 0;
-      var html = list.map(function (acc) {
-        var type = typeName[acc.type] || "账户";
-        var mask = acc.number_masked || acc.account_id || "";
-        total += Number(acc.balance_cents) || 0;
-        return '<div class="acct-row">' +
+      var rows = list.map(function (acc, index) {
+        var kind = String(acc.kind || acc.type || "");
+        var type = typeName[kind] || "账户";
+        var mask = acc.number_masked || acc.account_id || "——";
+        var cents = Number(acc.balance_cents) || 0;
+        total += cents;
+        if (kind === "credit") groups.credit += Math.abs(cents);
+        else if (kind === "wealth") groups.wealth += Math.abs(cents);
+        else groups.deposit += Math.abs(cents);
+        return '<div class="acct-row" data-type="' + esc(kind) + '">' +
+          '<span class="acct-row__idx">' + pad2(index + 1) + '</span>' +
+          '<span class="acct-row__main">' +
           '<span class="acct-row__type">' + esc(type) + '</span>' +
           '<span class="acct-row__mask">' + esc(mask) + '</span>' +
-          '<span class="acct-row__bal">' + esc(fmtMoney(acc.balance_cents)) + '</span>' +
+          '</span>' +
+          '<span class="acct-row__bal' + (cents < 0 ? " acct-row__bal--neg" : "") + '">' +
+          esc(fmtMoney(cents)) + '</span>' +
           '</div>';
       }).join("");
-      dom.welcomeAssets.innerHTML = html;
+      dom.welcomeAssets.innerHTML = rows;
       if (dom.acctTotal) dom.acctTotal.textContent = fmtMoney(total);
+
+      if (dom.acctDelta) {
+        dom.acctDelta.textContent = list.length + " 个账户 · " +
+          (groups.credit > 0 ? ("信用卡待还 " + fmtMoney(groups.credit)) : "无信用卡欠款");
+      }
+
+      if (dom.acctMix) {
+        var sum = groups.deposit + groups.wealth + groups.credit;
+        if (sum <= 0) {
+          dom.acctMix.innerHTML = "";
+        } else {
+          var pct = function (v) { return (Math.round((v / sum) * 1000) / 10).toFixed(1) + "%"; };
+          var seg = function (cls, v) {
+            return v > 0
+              ? '<span class="mix__seg mix__seg--' + cls + '" style="width:' + pct(v) + '"></span>'
+              : "";
+          };
+          dom.acctMix.innerHTML =
+            '<div class="mix__bar" role="img" aria-label="资产构成">' +
+            seg("deposit", groups.deposit) + seg("wealth", groups.wealth) + seg("credit", groups.credit) +
+            '</div>' +
+            '<ul class="mix__legend">' +
+            '<li class="mix__item"><i class="mix__dot mix__dot--deposit"></i><span>存款</span><b>' + esc(fmtMoney(groups.deposit)) + '</b></li>' +
+            '<li class="mix__item"><i class="mix__dot mix__dot--wealth"></i><span>理财</span><b>' + esc(fmtMoney(groups.wealth)) + '</b></li>' +
+            '<li class="mix__item"><i class="mix__dot mix__dot--credit"></i><span>信用卡</span><b>' + esc(fmtMoney(groups.credit)) + '</b></li>' +
+            '</ul>';
+        }
+      }
     },
 
     chips: function (tasks) {
@@ -725,7 +858,7 @@
         var btn = document.createElement("button");
         btn.type = "button";
         btn.className = "task" + (task.__fallback ? " task--ghost" : "");
-        btn.title = task.prompt || task.title || "";
+        btn.title = task.prompt || task.user_input || task.title || "";
         var title = document.createElement("span");
         title.className = "task__title";
         title.textContent = task.title || task.prompt || "示例业务";
@@ -735,7 +868,7 @@
         btn.appendChild(title);
         btn.appendChild(cat);
         btn.addEventListener("click", function () {
-          var text = task.prompt || task.title || "";
+          var text = task.prompt || task.user_input || task.title || "";
           if (text) sendText(text);
         });
         dom.chips.appendChild(btn);
@@ -745,6 +878,7 @@
 
     userMessage: function (text) {
       removeEmptyState();
+      state.lastUserText = String(text || "");
       var article = document.createElement("article");
       article.className = "msg msg--user";
       var body = document.createElement("div");
@@ -823,17 +957,21 @@
       }
       var box = ensureSection(turn, "intentEl", "intent");
       var slots = data.slots && typeof data.slots === "object" ? data.slots : {};
-      var slotText = Object.keys(slots).map(function (key) {
+      var slotHtml = Object.keys(slots).map(function (key) {
         var value = slots[key];
         var shown = (key === "amount_cents" && typeof value === "number") ? fmtMoney(value) : formatSlotValue(value);
-        return key + " " + shown;
-      }).join(" · ");
-      var confText = (typeof data.confidence === "number") ? (" · " + Math.round(data.confidence * 100) + "%") : "";
+        return '<span class="slot"><i class="slot__k">' + esc(key) + '</i>' +
+          '<b class="slot__v">' + esc(shown) + '</b></span>';
+      }).join("");
+      var conf = (typeof data.confidence === "number") ? (Math.round(data.confidence * 100) + "%") : "—";
+      var src = data.source || state.lastIntentSource || "rule";
       box.innerHTML =
         '<span class="intent__label">意图</span>' +
         '<span class="intent__name">' + esc(data.name || "unknown") + '</span>' +
-        '<span class="intent__meta">' + esc(sourceLabel(data.source)) + confText + '</span>' +
-        (slotText ? '<span class="intent__slots">' + esc(slotText) + '</span>' : "");
+        '<span class="intent__chip">置信 ' + esc(conf) + '</span>' +
+        '<span class="intent__chip intent__chip--src intent__chip--' + sourceTagClass(src) + '">' +
+        esc(sourceTagText(src)) + '</span>' +
+        (slotHtml ? '<span class="intent__slots">' + slotHtml + '</span>' : "");
       render.sourceTag(turn);
       ui.scrollChat(false);
     },
@@ -852,7 +990,9 @@
       if (!steps.length) return;
       var edges = (data && Array.isArray(data.edges)) ? data.edges : [];
       var el = ensureSection(turn, "planEl", "plan");
-      var html = '<div class="plan__head">执行计划 · ' + steps.length + ' 步</div><ol class="plan__steps">';
+      var html = '<div class="plan__head"><span class="plan__head-title">执行计划</span>' +
+        '<span class="plan__count">' + steps.length + ' 步</span></div>' +
+        '<ol class="plan__steps">';
       steps.forEach(function (step, index) {
         var stepId = step.step_id || ("s" + index);
         var title = step.title || toolLabel(step.tool) || ("步骤 " + (index + 1));
@@ -860,11 +1000,15 @@
         var risk = riskCls(step.risk);
         var deps = edges.filter(function (edge) { return edge && edge.to === stepId && edge.from; })
           .map(function (edge) { return edge.from; });
-        html += '<li class="plan__step">' +
-          '<i class="plan__dot plan__dot--' + risk + '" aria-label="' + esc(riskMeta(step.risk).label) + '"></i>' +
+        html += '<li class="plan__step plan__step--' + risk + '">' +
+          '<span class="plan__num">' + pad2(index + 1) + '</span>' +
+          '<span class="plan__body">' +
           '<span class="plan__title">' + esc(title) + '</span>' +
-          '<span class="plan__tool">' + esc(step.tool || "step") +
-          (deps.length ? ' · 依赖 ' + esc(deps.join(", ")) : "") + '</span></li>';
+          '<span class="plan__meta">' +
+          '<i class="plan__dot plan__dot--' + risk + '" aria-label="' + esc(riskMeta(step.risk).label) + '"></i>' +
+          '<code class="plan__tool">' + esc(step.tool || "step") + '</code>' +
+          (deps.length ? '<span class="plan__dep">依赖 ' + esc(deps.join(", ")) + '</span>' : '') +
+          '</span></span></li>';
       });
       html += "</ol>";
       el.innerHTML = html;
@@ -881,11 +1025,13 @@
       var row = document.createElement("details");
       row.className = "tool tool--risk-" + riskCls(risk);
       row.setAttribute("data-step", stepId);
+      row.setAttribute("data-state", "run");
       row.innerHTML =
         '<summary class="tool__sum">' +
         '<i class="tool__dot" aria-hidden="true"></i>' +
         '<span class="tool__title">' + esc(title) + '</span>' +
-        '<span class="tool__status">执行中</span>' +
+        '<span class="tool__right"><code class="tool__code">' + esc(info.tool || "tool") + '</code>' +
+        '<span class="tool__status">执行中</span></span>' +
         '</summary>' +
         '<div class="tool__body">' +
         '<div class="tool__line"><span class="tool__k">工具</span><code class="tool__v">' + esc(info.tool || "tool") + '</code></div>' +
@@ -911,10 +1057,11 @@
       var status = row.querySelector(".tool__status");
       var resultLine = row.querySelector(".tool__line--result");
       var resultVal = resultLine ? resultLine.querySelector(".tool__v") : null;
+      row.setAttribute("data-state", ok ? "ok" : "fail");
       row.classList.toggle("tool--fail", !ok);
       row.classList.toggle("tool--ok", ok);
       if (icon) icon.className = "tool__dot " + (ok ? "tool__dot--ok" : "tool__dot--fail");
-      if (status) status.textContent = ok ? ("已完成" + (latencyText ? " " + latencyText : "")) : "失败";
+      if (status) status.textContent = ok ? ("已完成" + (latencyText ? " · " + latencyText : "")) : "失败";
       if (resultLine && resultVal) {
         resultVal.textContent = summarizeResult(info.result) || (ok ? "执行成功" : "执行失败");
         resultLine.hidden = false;
@@ -943,10 +1090,16 @@
 
     traceReset: function (label) {
       state.traceRows = {};
+      state.traceStatus = null;
+      state.traceLabel = label || "";
       if (dom.traceList) dom.traceList.innerHTML = "";
-      if (dom.traceMeta) {
-        dom.traceMeta.textContent = label ? ("当前指令：" + truncate(label, 26)) : "尚未开始";
-        dom.traceMeta.className = "trace__meta";
+      paintTraceMeta();
+      if (dom.tracePanel) {
+        dom.tracePanel.classList.remove("is-collapsed");
+        if (dom.btnTraceToggle) {
+          dom.btnTraceToggle.textContent = "收起";
+          dom.btnTraceToggle.setAttribute("aria-expanded", "true");
+        }
       }
     },
 
@@ -955,12 +1108,16 @@
       var row = document.createElement("li");
       row.className = "tr";
       row.setAttribute("data-step", stepId);
+      row.setAttribute("data-state", "run");
+      row.setAttribute("data-risk", riskCls(risk));
       row.innerHTML = '<i class="tr__dot tr__dot--run" aria-hidden="true"></i>' +
         '<span class="tr__main"><span class="tr__title">' + esc(title) + '</span>' +
-        '<span class="tr__tool">' + esc(tool || "") + '</span></span>' +
-        '<span class="tr__status">进行中</span>';
+        '<code class="tr__tool">' + esc(tool || "") + '</code></span>' +
+        '<span class="tr__right"><span class="tr__time"></span>' +
+        '<span class="tr__status">进行中</span></span>';
       dom.traceList.appendChild(row);
       state.traceRows[stepId] = row;
+      paintTraceMeta();
     },
 
     traceStepEnd: function (stepId, ok, latencyMs, summary) {
@@ -968,19 +1125,21 @@
       if (!row) return;
       var dot = row.querySelector(".tr__dot");
       var status = row.querySelector(".tr__status");
+      var time = row.querySelector(".tr__time");
       var label = (typeof latencyMs === "number" && latencyMs >= 0)
         ? (latencyMs >= 1000 ? (latencyMs / 1000).toFixed(1) + "s" : latencyMs + "ms")
         : "";
+      row.setAttribute("data-state", ok ? "ok" : "fail");
       if (dot) dot.className = "tr__dot " + (ok ? "tr__dot--ok" : "tr__dot--fail");
-      if (status) status.textContent = ok ? ("已完成" + (label ? " " + label : "")) : "失败";
+      if (time) time.textContent = label;
+      if (status) status.textContent = ok ? "已完成" : "失败";
       if (summary) row.title = summary;
+      paintTraceMeta();
     },
 
     traceDone: function (status) {
-      if (!dom.traceMeta) return;
-      var text = { ok: "已完成", blocked: "已拦截，未执行资金操作", awaiting_approval: "等待你确认", error: "执行未完成" }[status] || "已结束";
-      dom.traceMeta.className = "trace__meta trace__meta--" + (status === "blocked" ? "blocked" : (status === "ok" ? "ok" : "wait"));
-      if (state.lastUserText) dom.traceMeta.textContent = truncate(state.lastUserText, 22) + " · " + text;
+      state.traceStatus = status || null;
+      paintTraceMeta(status);
     },
 
     note: function (turn, text) {
@@ -999,10 +1158,10 @@
       var hash = String(info.hash || "");
       row.innerHTML =
         '<span class="auditchip__seq">#' + esc(info.seq === undefined ? "—" : info.seq) + '</span>' +
-        '<i class="auditchip__risk riskdot--' + esc(riskCls(info.risk_level)) + '" aria-hidden="true"></i>' +
-        '<span>' + esc(eventLabel(info.event_type)) + (info.tool ? " · " + esc(info.tool) : "") + '</span>' +
-        '<span class="muted" style="margin-left:auto;font-family:var(--mono);font-size:8.5px">' +
-        esc(hash.slice(0, 8)) + '</span>';
+        '<i class="auditchip__risk riskdot riskdot--' + esc(riskCls(info.risk_level)) + '" aria-hidden="true"></i>' +
+        '<span class="auditchip__label">' + esc(eventLabel(info.event_type)) +
+        (info.tool ? ' · <code class="auditchip__tool">' + esc(info.tool) + '</code>' : "") + '</span>' +
+        '<span class="auditchip__hash">' + esc(hash.slice(0, 8)) + '</span>';
       box.appendChild(row);
       ui.scrollChat(false);
     },
@@ -1127,17 +1286,23 @@
     return el;
   }
 
-  /* 打字机：队列按帧追加，避免长文本卡顿 */
+  /* 打字机：按帧推进缓冲区，每帧统一走 fmtRich 渲染，保证粗体即时生效 */
   function createTyper(el) {
+    var buffer = "";
     var queue = "";
     var running = false;
     var done = false;
 
+    function paint() {
+      el.innerHTML = fmtRich(buffer);
+    }
+
     function flushRest() {
       if (queue) {
-        el.appendChild(document.createTextNode(queue));
+        buffer += queue;
         queue = "";
       }
+      paint();
       el.classList.remove("is-typing");
       done = true;
     }
@@ -1150,8 +1315,9 @@
         return;
       }
       var size = queue.length > 900 ? 24 : (queue.length > 300 ? 10 : 4);
-      el.appendChild(document.createTextNode(queue.slice(0, size)));
+      buffer += queue.slice(0, size);
       queue = queue.slice(size);
+      paint();
       ui.scrollChat(false);
       setTimeout(pump, 14);
     }
@@ -1789,7 +1955,7 @@
    * 审计抽屉
    * ============================================================ */
   function hashline(label, value) {
-    return '<div class="hashline"><b>' + esc(label) + '</b>' + esc(value || "—") + '</div>';
+    return '<div class="hashline"><b>' + esc(label) + '</b><span>' + esc(value || "—") + '</span></div>';
   }
 
   function openAudit() {
@@ -1807,7 +1973,7 @@
       dom.auditValid.className = "chainbadge";
       dom.auditValid.textContent = "链校验：计算中…";
     }
-    dom.auditList.innerHTML = '<li class="muted" style="padding:12px;font-size:10.5px">正在读取并实时校验哈希链…</li>';
+    dom.auditList.innerHTML = '<li class="audit-empty">正在读取并实时校验哈希链…</li>';
     api.getAudit().then(function (data) {
       renderAudit(data || {});
     }).catch(function (err) {
@@ -1815,9 +1981,41 @@
         dom.auditValid.className = "chainbadge chainbadge--invalid";
         dom.auditValid.textContent = "链校验：读取失败";
       }
-      dom.auditList.innerHTML = '<li class="muted" style="padding:12px;font-size:10.5px">加载审计失败：' +
+      dom.auditList.innerHTML = '<li class="audit-empty">加载审计失败：' +
         esc(err.message) + '</li>';
     });
+  }
+
+  /* 复制到剪贴板：优先 Clipboard API，降级 textarea + execCommand，均在失败时给提示 */
+  function copyText(text) {
+    var payload = String(text || "");
+    if (!payload) return;
+    function ok() {
+      ui.toast({ text: "已复制完整哈希", sub: payload.slice(0, 28) + (payload.length > 28 ? "…" : ""), kind: "success", duration: 2400 });
+    }
+    function fallback() {
+      try {
+        var area = document.createElement("textarea");
+        area.value = payload;
+        area.setAttribute("readonly", "readonly");
+        area.style.position = "fixed";
+        area.style.left = "-9999px";
+        area.style.opacity = "0";
+        document.body.appendChild(area);
+        area.select();
+        var done = document.execCommand && document.execCommand("copy");
+        document.body.removeChild(area);
+        if (done) ok();
+        else ui.toast({ text: "复制失败，请手动选择哈希", kind: "error", duration: 3000 });
+      } catch (e) {
+        ui.toast({ text: "复制失败，请手动选择哈希", kind: "error", duration: 3000 });
+      }
+    }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(payload).then(ok).catch(fallback);
+    } else {
+      fallback();
+    }
   }
 
   function renderAudit(data) {
@@ -1840,10 +2038,10 @@
         (valid ? "" : (" · 校验异常" + (chain.broken_at ? "（断裂于 #" + chain.broken_at + "）" : "")));
     }
     if (!entries.length) {
-      dom.auditList.innerHTML = '<li class="muted" style="padding:12px;font-size:10.5px">暂无审计记录</li>';
+      dom.auditList.innerHTML = '<li class="audit-empty">暂无审计记录</li>';
       return;
     }
-    var rows = entries.slice().reverse().map(function (entry, index) {
+    var rows = entries.slice().reverse().map(function (entry) {
       var risk = riskCls(entry.risk_level);
       var hash = String(entry.hash || "");
       var detail = [
@@ -1859,15 +2057,18 @@
         hashline("hash", entry.hash)
       ].join("");
       return '<li class="auditrow" data-seq="' + esc(entry.seq) + '">' +
+        '<div class="auditrow__row">' +
         '<button class="auditrow__btn" type="button" aria-expanded="false" aria-label="展开审计条目 ' + esc(entry.seq) + '">' +
         '<span class="auditrow__seq">#' + esc(entry.seq) + '</span>' +
         '<span class="auditrow__main">' +
         '<span class="auditrow__type"><i class="riskdot riskdot--' + risk + '"></i>' +
         esc(eventLabel(entry.event_type)) + '</span>' +
-        (entry.tool ? '<span class="auditrow__tool">' + esc(entry.tool) + '</span>' : "") +
+        (entry.tool ? '<code class="auditrow__tool">' + esc(entry.tool) + '</code>' : "") +
         '</span>' +
-        '<span class="auditrow__right"><span class="auditrow__hash">' + esc(hash.slice(0, 8)) + '</span></span>' +
+        '<span class="auditrow__hash">' + esc(hash.slice(0, 8)) + '</span>' +
         '</button>' +
+        '<button class="auditrow__copy" type="button" data-hash="' + esc(hash) + '" aria-label="复制完整哈希">复制</button>' +
+        '</div>' +
         '<div class="auditrow__detail" hidden>' + detail + '</div>' +
         '</li>';
     });
@@ -1913,9 +2114,22 @@
    * ============================================================ */
   var MODE_TITLES = {
     rule: "规则：意图识别、槽位抽取与风险分级全部由确定性规则完成，可离线复现",
-    auto: "自动：优先用 DeepSeek 理解，模型不可用时回退规则并标注",
-    llm: "DeepSeek：模型只负责理解与生成，执行与风控仍由确定性工具完成"
+    auto: "自动：优先用模型理解意图，模型不可用时回退规则并标注来源",
+    llm: "模型：由大模型理解意图与槽位，执行与风控仍由确定性代码完成"
   };
+
+  /* 面向用户的模式说明：模型名称随服务商动态生成，不写死某一家 */
+  function modeTitle(key) {
+    var st = state.llmStatus || {};
+    if (key === "llm") {
+      var target = st.provider ? (st.provider + (st.model ? " · " + st.model : "")) : "大模型";
+      return "模型：由大模型理解意图与槽位（当前 " + target + "），执行与风控仍由确定性代码完成";
+    }
+    if (key === "auto") {
+      return MODE_TITLES.auto + (st.enabled === false ? "（当前未配置 API Key）" : "");
+    }
+    return MODE_TITLES.rule;
+  }
 
   function normalizeMode(mode) {
     var key = String(mode || "rule").toLowerCase();
@@ -1948,14 +2162,19 @@
       var active = mode === key;
       el.classList.toggle("is-active", active);
       el.setAttribute("aria-pressed", active ? "true" : "false");
-      var unavailable = key !== "rule" && !enabled;
+      var unavailable = key === "llm" && !enabled;
       el.disabled = unavailable;
-      el.title = unavailable ? "未配置 DEEPSEEK_API_KEY" : MODE_TITLES[key];
+      if (unavailable) el.title = "未配置 API Key（DEEPSEEK_API_KEY）";
+      else el.title = modeTitle(key);
     });
 
     if (dom.modeBadge) {
-      dom.modeBadge.textContent = "实际：" + modeLabel(effective);
-      dom.modeBadge.className = "effective" + (effective === "rule" ? "" : " effective--llm");
+      var badgeText = "实际：" + modeLabel(effective);
+      var badgeTextEl = dom.modeBadge.querySelector(".effective__text");
+      if (badgeTextEl) badgeTextEl.textContent = badgeText;
+      else dom.modeBadge.textContent = badgeText;
+      dom.modeBadge.className = "effective" + (effective === "rule" ? "" : " effective--llm") +
+        (enabled ? "" : " effective--off");
       var bits = [];
       if (st.provider) bits.push(st.provider + (st.model ? " · " + st.model : ""));
       if (st.key_masked) bits.push(st.key_masked);
@@ -2000,7 +2219,7 @@
     }).catch(function (err) {
       ui.toast({
         text: "切换失败：" + err.message,
-        sub: err.code === "LLM_NOT_CONFIGURED" ? "未配置 DEEPSEEK_API_KEY" : "",
+        sub: err.code === "LLM_NOT_CONFIGURED" ? "未配置 API Key（环境变量 DEEPSEEK_API_KEY）" : "",
         kind: "error",
         duration: 4600
       });
@@ -2132,6 +2351,9 @@
   function loadTasks() {
     api.getTasks().then(function (data) {
       var tasks = (data && Array.isArray(data.tasks)) ? data.tasks : [];
+      tasks.forEach(function (task) {
+        if (task && !task.prompt && task.user_input) task.prompt = task.user_input;
+      });
       state.tasks = tasks.length ? tasks : DEFAULT_TASKS.map(function (task) {
         var copy = {};
         Object.keys(task).forEach(function (key) { copy[key] = task[key]; });
@@ -2332,6 +2554,16 @@
       });
     }
 
+    /* 业务台示例卡：点击即发送（事件委托，空态重建后仍生效） */
+    if (dom.chat) {
+      dom.chat.addEventListener("click", function (event) {
+        var card = event.target && event.target.closest ? event.target.closest(".desk__card") : null;
+        if (!card) return;
+        var text = card.getAttribute("data-text") || "";
+        if (text) sendText(text);
+      });
+    }
+
     if (dom.errorRetry) {
       dom.errorRetry.addEventListener("click", function () {
         var retry = state.errorRetry;
@@ -2370,7 +2602,14 @@
 
     if (dom.auditList) {
       dom.auditList.addEventListener("click", function (event) {
-        var btn = event.target && event.target.closest ? event.target.closest(".auditrow__btn") : null;
+        var target = event.target;
+        if (!target || !target.closest) return;
+        var copyBtn = target.closest(".auditrow__copy");
+        if (copyBtn) {
+          copyText(copyBtn.getAttribute("data-hash") || "");
+          return;
+        }
+        var btn = target.closest(".auditrow__btn");
         if (!btn) return;
         var row = btn.closest(".auditrow");
         var detail = row ? row.querySelector(".auditrow__detail") : null;
@@ -2378,6 +2617,7 @@
         var opening = detail.hidden;
         detail.hidden = !opening;
         btn.setAttribute("aria-expanded", opening ? "true" : "false");
+        row.classList.toggle("is-open", opening);
       });
     }
 

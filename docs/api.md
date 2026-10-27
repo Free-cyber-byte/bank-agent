@@ -23,7 +23,7 @@
       "subscriptions": [ ... ],
       "payees": [ ... ],
       "llm_mode": "rule",
-      "llm_status": { "mode": "auto", "effective": "rule", "enabled": false, "provider": "deepseek", "model": "deepseek-flash", "base_host": "api.deepseek.com", "key_masked": "", "last_error": null },
+      "llm_status": { "mode": "auto", "effective": "rule", "enabled": false, "provider": "DeepSeek", "model": "deepseek-flash", "base_host": "api.deepseek.com", "key_masked": "", "last_error": null },
       "demo_mode": true
     }
 
@@ -144,14 +144,14 @@ approval 对象（非流式响应的 approval 与 SSE 的 approval_required 为�
       "mode": "auto",
       "effective": "llm",
       "enabled": true,
-      "provider": "deepseek",
+      "provider": "DeepSeek",
       "model": "deepseek-flash",
       "base_host": "api.deepseek.com",
       "key_masked": "sk-1234...abcd",
       "last_error": null
     }
 
-字段说明：mode 是用户选择的模式；effective 是实际生效模式（未配置 Key 或 LLM 被禁用时恒为 rule）；enabled 表示是否配置了可用 Key；last_error 是最近一次模型调用失败的摘要（成功后清空），内容不含请求头与 Key；key_masked 在长度不超过 10 时形如前 2 位加三个星号，否则保留前 6 位与后 4 位。
+字段说明：provider 是按模型名与接口域名推断出的厂商展示名（默认配置为 DeepSeek；换成其他 OpenAI 兼容服务后随之变化，未知时回退为接口域名）；mode 是用户选择的模式；effective 是实际生效模式（未配置 Key 或 LLM 被禁用时恒为 rule）；enabled 表示是否配置了可用 Key；last_error 是最近一次模型调用失败的摘要（成功后清空），内容不含请求头与 Key；key_masked 在长度不超过 10 时形如前 2 位加三个星号，否则保留前 6 位与后 4 位。
 
 ### POST /api/llm/mode
 
@@ -163,7 +163,7 @@ approval 对象（非流式响应的 approval 与 SSE 的 approval_required 为�
       "mode": "llm",
       "effective": "llm",
       "enabled": true,
-      "provider": "deepseek",
+      "provider": "DeepSeek",
       "model": "deepseek-flash",
       "base_host": "api.deepseek.com",
       "key_masked": "sk-1234...abcd",

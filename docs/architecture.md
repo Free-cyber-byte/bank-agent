@@ -40,7 +40,7 @@
     攻击检测 nlu.detect_attack（代码规则，最先执行，模型不参与）
        │  命中 → 直接 blocked，不建计划、不调工具
        ▼
-    解析 llm.parse（rule：nlu.parse ／ llm：DeepSeek ／ auto：自动选）
+    解析 llm.parse（rule：nlu.parse ／ llm：大模型（默认 DeepSeek）／ auto：自动选）
        │  输出 意图 + 槽位 + source(rule|llm|fallback) + latency_ms
        ▼
     计划 build_plan（意图 → 步骤 + 边；缺参数/对象不存在在这里拒绝）
@@ -79,7 +79,7 @@ run_turn 先组装上下文文档 ctx_doc：payees、products、subscriptions、
 | 模式 | 生效条件 | 实际解析 |
 | --- | --- | --- |
 | rule | 未配置 DEEPSEEK_API_KEY，或 mode=rule，或 ZEROSTEP_DISABLE_LLM=1 | nlu.parse（纯规则/正则） |
-| llm | 已配置 Key 且 mode=llm 或 mode=auto | 代码规则守卫 → DeepSeek 模型 → _normalize 严格校验 |
+| llm | 已配置 Key 且 mode=llm 或 mode=auto | 代码规则守卫 → 大模型（默认 DeepSeek，可换任意 OpenAI 兼容服务）→ _normalize 严格校验 |
 | auto（默认） | 启动默认值 | 有 Key 走模型，无 Key 等价于 rule |
 
 模式可在运行时通过 POST /api/llm/mode 切换（只影响当前进程，重启回到 auto），前端顶栏有对应分段控件。

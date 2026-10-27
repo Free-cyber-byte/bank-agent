@@ -94,8 +94,35 @@ cross_scenario 一句话里有多件要办的事（如发工资后分账、生�
 6. 只输出 JSON，不要输出 Markdown、解释或代码块。"""
 
 
+_PROVIDER_HINTS = (
+    ("deepseek", "DeepSeek"),
+    ("dashscope", "通义千问"),
+    ("aliyun", "通义千问"),
+    ("qwen", "通义千问"),
+    ("moonshot", "Kimi"),
+    ("kimi", "Kimi"),
+    ("bigmodel", "智谱"),
+    ("zhipu", "智谱"),
+    ("glm", "智谱"),
+    ("openai", "OpenAI"),
+    ("siliconflow", "SiliconFlow"),
+    ("volces", "火山方舟"),
+    ("ark", "火山方舟"),
+)
+
+
 def provider_name() -> str:
-    return "deepseek"
+    """按模型名与接口域名推断厂商展示名；未知时回退为接口域名。
+
+    默认配置（deepseek-flash + api.deepseek.com）返回 "DeepSeek"；
+    换成任意 OpenAI 兼容服务后，界面会显示对应厂商或域名，而不是写死 DeepSeek。
+    """
+    model = (config.LLM_MODEL or "").strip().lower()
+    host = (base_host() or "").strip().lower()
+    for hint, label in _PROVIDER_HINTS:
+        if hint in model or hint in host:
+            return label
+    return host or "自定义模型"
 
 
 def base_host() -> str:

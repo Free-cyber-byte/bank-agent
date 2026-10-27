@@ -14,8 +14,8 @@
       <div class="brand">
         <span class="brand__mark" aria-hidden="true">
           <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
-            <circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.6" />
-            <ellipse cx="12" cy="12" rx="3.6" ry="5.2" fill="none" stroke="currentColor" stroke-width="1.6" />
+            <circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.5" />
+            <ellipse cx="12" cy="12" rx="3.6" ry="5.2" fill="none" stroke="currentColor" stroke-width="1.5" />
           </svg>
         </span>
         <span class="brand__name">ZeroStep</span>
@@ -33,9 +33,12 @@
         <div class="seg" id="modeSeg" role="group" aria-label="推理模式">
           <button class="seg__btn is-active" id="modeRule" type="button" data-mode="rule" aria-pressed="true">规则</button>
           <button class="seg__btn" id="modeAuto" type="button" data-mode="auto" aria-pressed="false">自动</button>
-          <button class="seg__btn" id="modeLlm" type="button" data-mode="llm" aria-pressed="false">DeepSeek</button>
+          <button class="seg__btn" id="modeLlm" type="button" data-mode="llm" aria-pressed="false">模型</button>
         </div>
-        <span class="effective" id="modeBadge" title="实际生效的推理模式">实际：规则</span>
+        <span class="effective" id="modeBadge" title="实际生效的推理模式">
+          <i class="effective__dot" aria-hidden="true"></i>
+          <span class="effective__text">实际：规则</span>
+        </span>
         <button class="tb-btn" id="btnAudit" type="button" title="审计哈希链">审计</button>
         <button class="tb-btn" id="btnMore" type="button" aria-haspopup="true" aria-expanded="false">更多</button>
         <span class="topbar__clock" id="statusTime">--:--</span>
@@ -49,22 +52,27 @@
             <h2 class="acct__title">账户总览</h2>
             <span class="acct__hi">你好，<b id="welcomeName">张伟</b></span>
           </div>
-          <div class="acct__total">
-            <span class="acct__total-label">人民币可用余额</span>
-            <div class="acct__total-num" id="acctTotal">¥--</div>
+          <div class="acct__hero">
+            <span class="acct__hero-label">人民币可用余额</span>
+            <div class="acct__hero-num" id="acctTotal">¥--</div>
+            <p class="acct__hero-note" id="acctDelta">正在读取账户…</p>
           </div>
+          <div class="acct__mix" id="acctMix" aria-label="资产构成"></div>
           <div class="acct__list" id="welcomeAssets">
             <span class="acct__empty">正在读取账户…</span>
           </div>
           <ul class="legend" aria-label="风险分级图例">
-            <li><i class="legend__dot legend__dot--green" aria-hidden="true"></i><span>绿 · 查询类自动执行</span></li>
-            <li><i class="legend__dot legend__dot--amber" aria-hidden="true"></i><span>黄 · 小额操作需确认</span></li>
-            <li><i class="legend__dot legend__dot--red" aria-hidden="true"></i><span>红 · 大额与敏感操作需动态码</span></li>
+            <li><i class="legend__dot legend__dot--green" aria-hidden="true"></i><span>绿 · 自动执行</span></li>
+            <li><i class="legend__dot legend__dot--amber" aria-hidden="true"></i><span>黄 · 需确认</span></li>
+            <li><i class="legend__dot legend__dot--red" aria-hidden="true"></i><span>红 · 动态码</span></li>
           </ul>
         </section>
 
         <section class="rail__block">
-          <h2 class="rail__title">快捷任务</h2>
+          <div class="rail__block-head">
+            <h2 class="rail__title">快捷任务</h2>
+            <span class="rail__hint">点击直接发送</span>
+          </div>
           <div class="tasks" id="chips" aria-label="快捷任务" hidden></div>
         </section>
 
@@ -74,14 +82,43 @@
       <main class="stream">
         <div class="chat" id="chat" aria-live="polite" aria-label="业务办理流水">
           <div class="empty" id="chatEmpty">
-            <p class="empty__title">账户工作台</p>
-            <p class="empty__lead">用一句话描述要办理的业务，例如：</p>
-            <ul class="empty__list">
-              <li>查一下这个月支出最多的三类</li>
-              <li>给妈妈转 8 元</li>
-              <li>帮我看看有没有正在自动续费的订阅</li>
-            </ul>
-            <p class="empty__note">查询类自动执行；资金类操作需你确认，大额与敏感操作需动态验证码。</p>
+            <div class="desk">
+              <p class="desk__kicker">业务台</p>
+              <h1 class="desk__title">今天要办什么？</h1>
+              <p class="desk__lead">一句话说清业务与金额。ZeroStep 会拆出执行步骤、标注风险等级，再由确定性工具逐步执行。</p>
+              <p class="desk__hint">在下方输入框直接描述，或选择一项示例</p>
+              <div class="desk__examples">
+                <button class="desk__card" type="button" data-text="查一下这个月支出最多的三类">
+                  <span class="desk__card-cat">账单</span>
+                  <span class="desk__card-title">查本月支出前三类</span>
+                  <span class="desk__card-sub">汇总账单 · 自动执行</span>
+                </button>
+                <button class="desk__card" type="button" data-text="给妈妈转 8 元">
+                  <span class="desk__card-cat">转账</span>
+                  <span class="desk__card-title">给妈妈转 8 元</span>
+                  <span class="desk__card-sub">小额转账 · 需你确认</span>
+                </button>
+                <button class="desk__card" type="button" data-text="帮我看看有没有正在自动续费的订阅">
+                  <span class="desk__card-cat">订阅</span>
+                  <span class="desk__card-title">查自动续费订阅</span>
+                  <span class="desk__card-sub">订阅列表 · 自动执行</span>
+                </button>
+              </div>
+              <div class="desk__caps">
+                <div class="cap">
+                  <span class="cap__n">01</span>
+                  <span class="cap__body"><b>听懂</b><span>规则或模型抽取意图与槽位，原句可复核</span></span>
+                </div>
+                <div class="cap">
+                  <span class="cap__n">02</span>
+                  <span class="cap__body"><b>分级授权</b><span>绿色自动 · 黄色确认 · 红色动态码</span></span>
+                </div>
+                <div class="cap">
+                  <span class="cap__n">03</span>
+                  <span class="cap__body"><b>可审计</b><span>每一步写入哈希链，可导出 JSONL</span></span>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -111,7 +148,7 @@
           <h2 class="trace__title">本次执行轨迹</h2>
           <button class="trace__toggle" id="btnTraceToggle" type="button" aria-expanded="true">收起</button>
         </div>
-        <p class="trace__meta" id="traceMeta">尚未开始</p>
+        <p class="trace__meta" id="traceMeta">还没有执行记录 · 发送指令后逐步显示</p>
         <ol class="trace__list" id="traceList"></ol>
         <p class="trace__foot">工具调用由确定性代码执行，结果写入审计链。</p>
       </aside>
