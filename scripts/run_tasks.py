@@ -103,6 +103,7 @@ def run_one(task, verbose=False):
             return False, failures, info
 
         info["intent"] = (first.get("intent") or {}).get("name")
+        info["intent_source"] = (first.get("intent") or {}).get("source")
         info["status"] = first.get("status")
         info["plan_tools"] = plan_tools(first)
         info["blocked"] = blocked_code(first)

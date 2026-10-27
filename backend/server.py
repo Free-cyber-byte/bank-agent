@@ -20,7 +20,7 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from app import audit, config, db, engine, mock_core, totp  # noqa: E402
+from app import audit, config, db, engine, llm, mock_core, totp  # noqa: E402
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
@@ -81,7 +81,7 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/health":
                 return self._send(200, {"status": "ok", "app": config.APP_NAME, "version": config.VERSION,
-                                        "llm_mode": "deepseek" if config.LLM_ENABLED else "rule",
+                                        "llm_mode": llm.effective(),
                                         "demo_mode": config.DEMO_MODE, "seed_version": config.SEED_VERSION})
             if path.startswith("/api/session/"):
                 sid = path.rsplit("/", 1)[-1]
@@ -108,6 +108,8 @@ class Handler(BaseHTTPRequestHandler):
                 rows = CONN.execute("SELECT seq, type, payload_json, ts FROM events WHERE session_id=? AND seq>? ORDER BY seq", (sid, after)).fetchall()
                 events = [{"seq": r["seq"], "type": r["type"], "payload": json.loads(r["payload_json"]), "ts": r["ts"]} for r in rows]
                 return self._send(200, {"events": events})
+            if path == "/api/llm/status":
+                return self._send(200, llm.status())
             if path == "/api/tasks":
                 return self._send(200, {"tasks": _list_tasks()})
             if path == "/api/demo/totp":
@@ -154,6 +156,13 @@ class Handler(BaseHTTPRequestHandler):
                 result = engine.resume(CONN, body.get("session_id") or "", body.get("approval_id") or "",
                                        body.get("decision") or "", body.get("code") or "")
                 return self._send(200, _public(result))
+            if path == "/api/llm/mode":
+                body = self._body()
+                if not llm.set_mode(body.get("mode") or ""):
+                    return self._error(400, "BAD_MODE", "mode 只能是 rule / llm / auto")
+                status = llm.status()
+                status["switched"] = True
+                return self._send(200, status)
             if path == "/api/undo":
                 body = self._body()
                 result = engine.undo_action(CONN, body.get("session_id") or "", body.get("action_id") or "")
@@ -256,7 +265,7 @@ def main() -> None:
     host = os.environ.get("HOST", "127.0.0.1")
     httpd = Server((host, port), Handler)
     print("ZeroStep 已在 http://%s:%d 启动（LLM 模式：%s，演示模式：%s）" %
-          (host, port, "deepseek" if config.LLM_ENABLED else "rule", "开" if config.DEMO_MODE else "关"))
+          (host, port, llm.effective(), "开" if config.DEMO_MODE else "关"))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

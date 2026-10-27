@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import approvals, audit, config, db, mock_core, nlu, policy, totp
+from . import approvals, audit, config, db, llm, mock_core, nlu, policy, totp
 from .mock_core import DomainError, yuan
 
 
@@ -54,7 +54,8 @@ def session_snapshot(conn, session_id: str) -> Dict[str, Any]:
         "subscriptions": mock_core.list_subscriptions(conn, sess["user_id"])["subscriptions"],
         "payees": mock_core.list_payees(conn, sess["user_id"]),
         "pending_approval": serialize_approval(pending) if pending else None,
-        "llm_mode": "deepseek" if config.LLM_ENABLED else "rule",
+        "llm_mode": llm.effective(),
+        "llm_status": llm.status(),
         "demo_mode": config.DEMO_MODE,
     }
 
@@ -81,6 +82,16 @@ class Emitter:
             self.sink(event_type, payload)
 
 
+def mask_account(no: Any) -> str:
+    """账户/卡号脱敏：仅保留前 4 位与后 4 位，中间固定掩码。"""
+    digits = str(no or "").strip()
+    if not digits:
+        return ""
+    if len(digits) <= 8:
+        return digits[:2] + " **** " + digits[-2:]
+    return digits[:4] + " **** " + digits[-4:]
+
+
 def serialize_approval(ap: Dict[str, Any], preview: str = "", title: str = "") -> Dict[str, Any]:
     params = ap.get("params") or {}
     return {
@@ -88,6 +99,10 @@ def serialize_approval(ap: Dict[str, Any], preview: str = "", title: str = "") -
         "title": title or params.get("title", ""), "amount_cents": params.get("amount_cents", 0),
         "currency": "CNY", "counterparty": params.get("counterparty", ""), "reasons": ap.get("reasons", []),
         "preview": preview or params.get("preview", ""), "expires_at": ap["expires_at"], "nonce": ap["nonce"],
+        "counterparty_account_masked": params.get("counterparty_account_masked", ""),
+        "payer_account_masked": params.get("payer_account_masked", ""),
+        "source": params.get("source", "rule"), "source_detail": params.get("source_detail", ""),
+        "conflicts": params.get("conflicts", []),
     }
 
 
@@ -181,7 +196,28 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
             "internal": False,
         }))
     elif name == "cross_scenario":
-        parsed = nlu.parse_cross(text, {"payees": mock_core.list_payees(conn, user_id)})
+        rule_parsed = nlu.parse_cross(text, {"payees": mock_core.list_payees(conn, user_id)})
+        model_allocs = []
+        for a in slots.get("allocations") or []:
+            kind = a.get("kind")
+            if kind not in ("transfer", "savings", "wealth", "credit"):
+                continue
+            if int(a.get("amount_cents") or 0) <= 0:
+                continue
+            if kind == "transfer" and not str(a.get("payee_name") or "").strip():
+                continue
+            model_allocs.append(a)
+        parsed = {"allocations": model_allocs, "reminder": bool(slots.get("reminder"))}
+        if not parsed["allocations"]:
+            parsed = rule_parsed
+        else:
+            # 模型漏项时用规则引擎补齐同类子任务，保证组合任务不漏执行
+            have = {a.get("kind") for a in parsed["allocations"]}
+            for a in rule_parsed.get("allocations") or []:
+                if a.get("kind") not in have:
+                    parsed["allocations"].append(a)
+                    have.add(a.get("kind"))
+            parsed["reminder"] = bool(parsed["reminder"] or rule_parsed.get("reminder"))
         allocs = parsed.get("allocations") or []
         idx = 0
         for a in allocs:
@@ -508,6 +544,47 @@ def _approval_preview(conn, user_id: str, steps: List[Dict[str, Any]]) -> Tuple[
     return preview, amount, counterparty
 
 
+def _approval_party_account(conn, steps: List[Dict[str, Any]]) -> str:
+    for s in steps:
+        if s["tool"] == "create_transfer":
+            return mask_account(s["args"].get("payee_account") or "")
+        if s["tool"] == "purchase_wealth":
+            return "理财账户"
+        if s["tool"] == "set_card_status":
+            row = conn.execute("SELECT number_masked FROM cards WHERE card_id=?", (s["args"].get("card_id"),)).fetchone()
+            if row:
+                return row["number_masked"]
+        if s["tool"] == "apply_virtual_card":
+            return "虚拟卡（待生成）"
+    return ""
+
+
+def _approval_payer_account(conn, steps: List[Dict[str, Any]]) -> str:
+    for s in steps:
+        acc_id = s["args"].get("from_account_id")
+        if acc_id:
+            row = conn.execute("SELECT number_masked FROM accounts WHERE account_id=?", (acc_id,)).fetchone()
+            if row:
+                return row["number_masked"]
+        hint = s["args"].get("from_kind")
+        if hint:
+            row = conn.execute("SELECT number_masked FROM accounts WHERE kind=? ORDER BY account_id LIMIT 1", (hint,)).fetchone()
+            if row:
+                return row["number_masked"]
+    return ""
+
+
+def _approval_conflicts(intent: Dict[str, Any]) -> List[str]:
+    """模型抽取与用户原话不一致时，把差异摆到审批卡上，让人而不是模型做最终判断。"""
+    slots = intent.get("slots") or {}
+    out: List[str] = []
+    if slots.get("amount_adjusted"):
+        out.append("模型给出的金额在原文中找不到出处，已改用原文金额")
+    if slots.get("amount_clamped"):
+        out.append("金额超过单笔安全上限，已按上限截断并转人工")
+    return out
+
+
 def _blocked_reply(blocked: Dict[str, str]) -> str:
     code = blocked.get("code", "")
     mapping = {
@@ -556,7 +633,9 @@ def _finalize(conn, ctx: Dict[str, Any], exec_result: Dict[str, Any], emit: Emit
         audit.append(conn, "injection_ignored", session_id=ctx["session_id"], tool="security_guard",
                      args={"hits": ctx["untrusted"]}, result={"status": "ignored"}, risk_level="high", approval_id=ctx.get("approval_id", ""))
     emit.emit("message", {"delta": reply})
-    audit.append(conn, "response", session_id=ctx["session_id"], tool="respond", args={"intent": ctx["intent"]["name"]}, result={"status": status}, risk_level="low", approval_id=ctx.get("approval_id", ""))
+    audit.append(conn, "response", session_id=ctx["session_id"], tool="respond",
+                 args={"intent": ctx["intent"]["name"], "source": ctx["intent"].get("source", "rule")},
+                 result={"status": status}, risk_level="low", approval_id=ctx.get("approval_id", ""))
     out = {"session_id": ctx["session_id"], "thread_id": ctx["thread_id"], "status": status, "reply": reply,
            "blocked": failed,
            "intent": ctx["intent"], "plan": {"steps": [{"step_id": s["step_id"], "title": s["title"], "tool": s["tool"], "risk": s.get("risk", "low")} for s in ctx["steps"]], "edges": ctx.get("edges", [])},
@@ -573,8 +652,9 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
     ctx_doc = {"payees": mock_core.list_payees(conn, user_id), "products": mock_core.list_wealth(conn, user_id)["products"],
                "subscriptions": mock_core.list_subscriptions(conn, user_id)["subscriptions"], "cards": mock_core.list_cards(conn, user_id),
                "accounts": mock_core.list_accounts(conn, user_id), "risk_level": "稳健型"}
-    intent = nlu.parse(text, ctx_doc)
-    emit.emit("intent", {"name": intent["name"], "confidence": intent["confidence"], "source": intent["source"], "slots": intent["slots"]})
+    intent = llm.parse(text, ctx_doc)
+    emit.emit("intent", {"name": intent["name"], "confidence": intent["confidence"], "source": intent["source"], "slots": intent["slots"],
+                         "model": intent.get("model", ""), "latency_ms": intent.get("latency_ms"), "reason": intent.get("reason", "")})
 
     if intent["name"] == "attack":
         at = intent.get("attack_type") or "prompt_injection"
@@ -633,7 +713,11 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
     if evaluation["requires_approval"]:
         preview, amount, counterparty = _approval_preview(conn, user_id, steps)
         title = evaluation.get("summary") or (steps[0]["title"] if steps else "待确认操作")
-        params = {"title": title, "amount_cents": amount, "counterparty": counterparty, "preview": preview, "steps": steps}
+        params = {"title": title, "amount_cents": amount, "counterparty": counterparty, "preview": preview, "steps": steps,
+                  "source": intent.get("source", "rule"), "source_detail": intent.get("reason", ""),
+                  "conflicts": _approval_conflicts(intent),
+                  "counterparty_account_masked": _approval_party_account(conn, steps),
+                  "payer_account_masked": _approval_payer_account(conn, steps)}
         ap = approvals.create(conn, session_id, sess["thread_id"], intent["name"], params, evaluation["risk_level"], evaluation["reasons"], evaluation["challenge"])
         ctx["approval_id"] = ap["approval_id"]
         ctx["status"] = "awaiting_approval"
