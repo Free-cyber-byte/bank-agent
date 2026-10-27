@@ -10,11 +10,12 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 
 ## 核心亮点
 
-1. **零依赖、单命令启动**：后端只用 http.server + sqlite3 + 标准库实现 HTTP/SSE 服务，无需 pip install、无需 Node 构建；Python 3.10+ 下执行 python backend/server.py 即可打开完整界面。
+1. **零依赖、单命令启动**：后端只用 http.server + sqlite3 + 标准库实现 HTTP/SSE 服务，无需 pip install、无需 Node 构建；Python 3.10+ 下执行 python backend/server.py 即可打开完整界面，不配置任何 API Key 也能跑完全部功能。
 2. **确定性安全内核**：自然语言只被解析成「意图 + 槽位」，真正的资金变动由 policy 三级闸门与 mock_core 工具执行；模型无法绕过策略门直接改账，越权与注入在进入计划前就被拦截。
-3. **可中断、可恢复**：超过 1000 元或新收款人等高风险动作会挂起为审批态，靠 checkpoint 与 thread_id 持久化上下文，审批 TTL 300 秒；前端关掉再回来仍能继续同一个线程。
-4. **可审计、可复盘**：每一次意图、策略决策、工具调用、审批、撤销都写入 events 与 audit 表，审计用 canonical JSON + SHA-256 + prev_hash 组成哈希链，scripts/verify_audit.py 可离线验证链是否被篡改；转账支持 60 秒内撤销，并在写后回读余额做二次校验。
-5. **可评测、可扩展**：tasks/ 下 30 条任务覆盖 7 个类别（账单、转账、理财、卡片、订阅、跨场景、安全攻击），scripts/run_tasks.py 一条命令跑完全部断言，实测 30/30 通过，并带 --filter、--category、JSON 报告等选项，新增用例只需加一个 JSON 文件。
+3. **大模型接入（三模式）**：解析层真实接入 DeepSeek deepseek-flash，支持 rule / llm / auto 三种模式，默认 auto——无 Key 自动回落规则，有 Key 由模型输出意图与槽位；模型输出经严格 schema、金额原文溯源与通讯录匹配校验，攻击判定始终由代码先行，模型不可信、不可授权。
+4. **可中断、可恢复**：超过 1000 元或新收款人等高风险动作会挂起为审批态，靠 checkpoint 与 thread_id 持久化上下文，审批 TTL 300 秒；前端关掉再回来仍能继续同一个线程。
+5. **可审计、可复盘**：每一次意图、策略决策、工具调用、审批、撤销都写入 events 与 audit 表，审计用 canonical JSON + SHA-256 + prev_hash 组成哈希链，scripts/verify_audit.py 可离线验证链是否被篡改；转账支持 60 秒内撤销，并在写后回读余额做二次校验。
+6. **可评测、可扩展**：tasks/ 下 30 条任务覆盖 7 个类别（账单、转账、理财、卡片、订阅、跨场景、安全攻击），scripts/run_tasks.py 一条命令跑完全部断言，两种解析模式实测均 30/30 通过，并带 --filter、--category、JSON 报告等选项，新增用例只需加一个 JSON 文件。
 
 ---
 
@@ -27,10 +28,12 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
         ▼
     编排层  backend/app/engine.py
         run_turn：parse_intent → plan → policy_gate → act → verify → respond
+                 parse_intent = llm.parse（按 rule / llm / auto 分派到规则或模型）
         resume  ：审批恢复（checkpoint + thread_id）
         ▼
-    安全与策略  nlu.py（意图/攻击识别） · policy.py（三级权限） ·
-                approvals.py（审批单/TTL） · totp.py（RFC 6238） · audit.py（哈希链）
+    解析与安全  llm.py（可选模型解析，三模式） · nlu.py（规则解析/攻击识别） ·
+                policy.py（三级权限） · approvals.py（审批单/TTL） ·
+                totp.py（RFC 6238） · audit.py（哈希链）
         ▼
     领域层  backend/app/mock_core.py（转账/理财/卡片/订阅/还款/提醒，金额整数分）
         ▼
@@ -53,6 +56,8 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 
 服务默认监听 127.0.0.1:8000，浏览器打开 http://127.0.0.1:8000 即可对话。首次启动会自动建库并写入确定性种子数据（3 个用户、6 个月流水、5 个收款人、4 支理财、5 个订阅）。
 
+不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，30 条评测全部通过。想体验模型解析，启动前设置 DEEPSEEK_API_KEY 即可，界面顶栏可在「规则 / 自动 / DeepSeek」之间切换。
+
 常用环境变量：
 
 | 变量 | 默认值 | 说明 |
@@ -60,12 +65,39 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 | PORT | 8000 | HTTP 端口 |
 | HOST | 127.0.0.1 | 监听地址 |
 | DEMO_MODE | 1（开启） | 设为 0 关闭 /api/demo/totp 等演示接口 |
-| DEEPSEEK_API_KEY | 空 | 可选。配置后 config 中 LLM_ENABLED 为真、健康检查与事件里 llm_mode 变为 deepseek（当前版本解析链仍以规则引擎为准，大模型增强入口为预留，详见 docs/security.md 已知限制） |
-| ZEROSTEP_DISABLE_LLM | 空 | 设为 1 强制关闭 LLM 模式 |
+| DEEPSEEK_API_KEY | 空 | 可选。设置后启用 LLM 解析（默认 auto 模式下生效）；不设置时自动使用规则解析，功能与评测结果不受影响 |
+| DEEPSEEK_BASE_URL | https://api.deepseek.com | 可选。OpenAI 兼容接口地址，接入其他兼容服务时只需改这一项 |
+| DEEPSEEK_MODEL | deepseek-flash | 可选。模型名，需与接口支持的型号一致 |
+| DEEPSEEK_TIMEOUT | 12 | 可选。单次模型调用超时秒数，超时自动回退规则解析 |
+| ZEROSTEP_DISABLE_LLM | 空 | 设为 1 时即使有 Key 也强制走规则模式 |
 
 想快速感受一次完整交互，可直接跑演示脚本：
 
     python scripts/replay.py --script scripts/demo_flow.json
+
+---
+
+## 大模型接入（三模式）
+
+解析层支持三种模式，可在界面顶栏或通过 POST /api/llm/mode 运行时切换：
+
+| 模式 | 解析方式 | 适用场景 |
+| --- | --- | --- |
+| rule | nlu.py 规则/正则解析 | 离线演示、可复现评测、无 Key 环境 |
+| llm | 调用 DeepSeek 模型输出意图与槽位，再经代码层严格校验 | 口语化、开放表达 |
+| auto（默认） | 有 Key 用 llm，无 Key 回落 rule | 默认体验 |
+
+接入是真实 HTTP 调用，不是占位：backend/app/llm.py 用标准库 urllib 请求 OpenAI 兼容接口 /chat/completions，默认模型 deepseek-flash，temperature=0、response_format=json_object、单次超时 12 秒（均可用环境变量覆盖）。模型只被允许输出一份 JSON：16 个预定义意图之一、金额、收款人、月份、品类、产品、订阅、卡、分账列表、提醒与理由；未在原文出现的字段必须为 null，不允许猜测。
+
+三道约束保证模型不影响资金安全：
+
+1. 攻击判定在模型之前：每次解析先走 nlu.detect_attack 的代码规则，命中注入、钓鱼、越权或陌生收款人直接返回 attack，模型不参与判定，也不会被调用。
+2. 输出必须过校验：金额必须在原文中找到出处，否则改用规则金额并在审批卡提示冲突；收款人必须命中通讯录或出现在原文；产品、订阅、卡必须匹配种子数据；字段越界一律回退规则值。
+3. 风险与动作仍在代码层：模型只产出意图与槽位，build_plan、policy.evaluate、审批、执行、回读、审计全部由确定性代码完成，模型无法决定放行、降低风险或选择工具。
+
+调用失败（网络不可达、超时、返回非 JSON、字段异常）会自动回退规则解析，事件与审计里记 source=fallback，失败原因通过 GET /api/llm/status 的 last_error 暴露；API Key 只从环境变量读取，不写入数据库、仓库与日志，状态接口只返回脱敏后的 key_masked。
+
+实测（2026-10-27 11:18，deepseek-flash，temperature=0，超时 12 秒）：30 条标准用例两种模式均 30/30；10 条口语化变体规则听懂 4 条、模型听懂 10 条；安全用例 t26–t30 两种模式均 5/5。完整对比表见「评测」节，接口与字段见 docs/api.md，安全边界见 docs/security.md。
 
 ---
 
@@ -99,6 +131,27 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     python scripts/smoke18.py                           # 18 轮端到端演示流 + 审计链自证
     python scripts/smoke18.py --json scripts/smoke18_result.json
 
+    python scripts/smoke_llm_fallback.py                # 模型不可用 → 自动回退规则（无需 Key）
+    python scripts/smoke_llm_http.py                    # LLM 三模式 HTTP 冒烟（需 Key）
+
+### 规则模式与 LLM 模式对比
+
+同一批用例在两种解析模式下各跑一遍（脚本 scripts/compare_modes.py，结果落在 scripts/eval_modes.md 与 eval_modes.json；2026-10-27 11:18 生成，模型 deepseek-flash，temperature=0，超时 12 秒）：
+
+| 指标 | 规则模式 | LLM 模式 |
+| --- | --- | --- |
+| 30 条标准用例通过率 | 30/30 | 30/30 |
+| 10 条口语化变体听懂率 | 4/10 | 10/10 |
+| 安全用例通过（t26–t30） | 5/5 | 5/5 |
+| 解析耗时 均值 / p95 | 0.03 ms / 0.04 ms | 1219.37 ms / 1969.92 ms |
+
+复跑：
+
+    python scripts/compare_modes.py            # 需要 DEEPSEEK_API_KEY，否则 llm 模式自动回落规则
+    python scripts/compare_modes.py --no-llm   # 只跑规则模式，离线可跑
+
+结论：模型解析把口语化表达的听懂率从 4/10 提升到 10/10，代价是单次解析约 1.2 秒；标准用例与安全用例结果不变，说明风险分级、审批与拦截完全由代码层决定，接入模型没有放宽任何安全边界。规则模式保留为默认回退路径，保证无 Key、断网时演示与评测仍可复现。
+
 实测结果（本机 Python 3.14.6，2026-10-26）：
 
     结果：30/30 通过，0 失败
@@ -124,6 +177,7 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 - **TOTP 标准实现**：totp.py 按 RFC 6238 用标准库实现，HMAC-SHA1、30 秒步长、6 位数字、±1 个时间窗容错，无需 pyotp。
 - **审计哈希链**：audit.py 对排序后的 canonical JSON 做 SHA-256，并把上一条 hash 作为 prev_hash 字段一并哈希，任何一条被改写都会在 verify 时定位到 broken_at。
 - **提示注入四层防御**：入口规则检测 → 意图与执行隔离（攻击意图不建计划）→ 工具返回内容消毒（可疑指令替换为占位符并标记）→ 策略门 + 审批 + 哈希链兜底。
+- **模型只出意图、不出决策**：LLM 模式沿用同一套策略门与审批；模型输出经 schema、金额原文溯源与通讯录匹配校验，攻击判定和金额/收款人校验都在代码层，调用失败自动回退规则，模型不可信。
 - **可撤销与写后回读**：转账/申购 60 秒内可撤销（生成冲正流水）；转账成功后回读余额，不一致即标记审计异常并提示用户。
 
 完整威胁模型、攻击用例与已知限制见 [docs/security.md](docs/security.md)。
@@ -134,11 +188,12 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 
     bank-agent/
     ├── backend/
-    │   ├── server.py              HTTP/SSE 服务入口（零依赖，270 行）
+    │   ├── server.py              HTTP/SSE 服务入口（零依赖，278 行）
     │   ├── app/
     │   │   ├── config.py          路径、阈值、LLM 与演示开关
     │   │   ├── db.py              SQLite 建表、索引与确定性种子数据
     │   │   ├── nlu.py             规则意图解析 + 注入/钓鱼/越权检测
+    │   │   ├── llm.py            模型解析（DeepSeek 三模式、严格校验与回退）
     │   │   ├── engine.py          六阶段编排、计划生成、审批恢复、撤销
     │   │   ├── policy.py          三级权限矩阵与参数级校验
     │   │   ├── approvals.py       审批单创建、TTL 校验、TOTP 联动
@@ -154,16 +209,20 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     ├── scripts/
     │   ├── run_tasks.py           评测执行器
     │   ├── verify_audit.py        离线校验审计链
+    │   ├── compare_modes.py       规则 / LLM 双模式对比评测
     │   ├── replay.py              命令行演示
     │   ├── demo_flow.json         6 轮演示脚本
-    │   ├── smoke_http.py          HTTP 冒烟测试（13 个接口 + SSE 全链路）
+    │   ├── smoke_http.py          HTTP 冒烟测试（REST + SSE 全链路）
+    │   ├── smoke_llm_http.py      LLM 接口 HTTP 冒烟（三模式切换与状态）
+    │   ├── smoke_llm_fallback.py  模型不可用时回退规则链路的冒烟测试
     │   ├── smoke18.py             18 轮端到端演示流 + 审计链自证
     │   └── smoke18_result.json    上述运行器的完整实测输出（供复核）
     ├── docs/
-    │   ├── api.md                 v1 HTTP 接口契约
-    │   ├── architecture.md        架构与流水线详解
-    │   ├── security.md            安全设计与攻击测试
-    │   └── evaluation.md          评测任务与断言说明
+    │   ├── api.md                 HTTP 接口契约（含 LLM 三模式接口）
+    │   ├── architecture.md        架构与流水线详解（三模式解析）
+    │   ├── security.md            安全设计与攻击测试（含模型不可信组件）
+    │   ├── design-system.md       界面设计规范（去 AI 味、视觉令牌、审批卡）
+    │   └── evaluation.md          评测任务、断言与双模式对比
     └── .github/workflows/ci.yml   CI：3.10/3.12 跑评测与演示
 
 ---
@@ -174,8 +233,9 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化 |
 | [docs/security.md](docs/security.md) | 三级权限矩阵、阈值理由、TOTP 与哈希链实现、注入四层防御、攻击测试、已知限制 |
-| [docs/evaluation.md](docs/evaluation.md) | 30 条任务表、断言字段说明、运行方式与报告、新增任务方法 |
-| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1，部分字段与实现有偏差，以 architecture.md 与代码为准） |
+| [docs/evaluation.md](docs/evaluation.md) | 30 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、新增任务方法 |
+| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（含 LLM 状态与模式切换接口、审批对象新字段） |
+| [docs/design-system.md](docs/design-system.md) | 前端 v2 设计规范：视觉令牌、三栏布局、审批卡与来源标注 |
 
 ---
 
