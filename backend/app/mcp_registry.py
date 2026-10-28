@@ -27,12 +27,29 @@ _LEGACY_LABELS = {"fx": "汇率服务", "risk": "反欺诈风控"}
 
 # 只用于「配置里没写 read_only=False 时」的兜底判断；显式 write_tools 优先级更高。
 # v0.6.1：不再只看整体前缀（bank_transfer 会被漏判），改为「分词 + 驼峰拆分」后按词判断。
+# v0.6.2：补上复核发现的漏判词（card_spend / send_money / funds_move / xfer / authorize /
+# apply_loan / close_account / post_entry / book_entry / set_limit 等），原则是「宁可误拦只读，
+# 不可漏放写」。
 _WRITE_WORDS = frozenset({
     "transfer", "transfers", "remit", "remittance", "wire", "pay", "payment", "payments",
     "payout", "withdraw", "withdrawal", "deposit", "refund", "purchase", "buy", "sell",
     "trade", "repay", "repayment", "redeem", "subscribe", "cancel", "revoke", "delete",
     "remove", "update", "modify", "create", "submit", "execute", "recharge", "topup",
     "settle", "settlement", "charge", "debit", "credit", "disburse", "disbursement",
+    # v0.6.2 补充
+    "spend", "send", "move", "xfer", "authorize", "authorise", "approve", "loan",
+    "close", "open", "post", "book", "import", "upload", "bind", "unbind", "set",
+    "limit", "freeze", "unfreeze", "hold", "release", "grant", "revoke", "issue",
+    # v0.6.2 补充。注意：convert / exchange / swap / invest / allocate 这类「换算/配置」类
+    # 动词刻意不进来——内置只读服务 fx 的工具名就叫 fx_convert，进词表会把只读汇率查询判成
+    # 写操作（实测 mcp_e2e 4/7、gw-19 失败）。真正的资金动词（transfer / purchase / withdraw /
+    # repay / redeem / charge …）已在上方覆盖，写风险不靠这几个歧义词兜底。
+    "spend", "send", "move", "xfer", "authorize", "authorise", "approve", "loan",
+    "close", "open", "post", "book", "import", "upload", "bind", "unbind", "set",
+    "limit", "freeze", "unfreeze", "hold", "release", "grant", "revoke", "issue",
+    "mint", "burn", "adjust",
+    "reconcile", "write", "save", "insert", "patch", "put", "sign", "confirm",
+    "commit", "apply", "order", "reserve", "booking", "entry", "record", "clear",
 })
 # 兼容连写（banktransfer / prepayment / overpay）：长度 >=5 的词做前后缀包含判断，
 # 太短的词（set / pay）只做整词匹配，避免 asset / offset 这类误伤。

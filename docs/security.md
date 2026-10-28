@@ -303,7 +303,7 @@ Key 与日志：
 | 审批原子 CAS | approvals.mark 改为 `UPDATE ... WHERE status='pending'`，未命中 409 APPROVAL_ALREADY_DECIDED | 并发双击审批不会重复执行工具 |
 | 审批参数摘要 | approvals.params_digest + engine.resume 比对 checkpoint steps 摘要，篡改/换单 400 APPROVAL_PARAMS_MISMATCH | 防「审批 A 执行 B」与库内改写 |
 | TOTP 随机密钥 + 锁定 | db.totp_secrets 每用户随机密钥、compare_digest、连续 5 次失败锁 60 秒 | 修「user_id 可复算动态码」与在线爆破 |
-| 资金条件扣款 | mock_core 六个资金函数改 BEGIN IMMEDIATE + `WHERE balance_cents>=?`，失败回滚抛 INSUFFICIENT_FUNDS；撤销改 CAS | 修同进程并发读-改-写双花 |
+| 资金条件扣款 | mock_core 六个资金函数改 BEGIN IMMEDIATE + `WHERE balance_cents>=?`，失败回滚抛 INSUFFICIENT_FUNDS；撤销改 CAS；服务端连接改为每线程一条（db.thread_conn）；`audit.append`/`Emitter.emit` 的序号分配与审批决策+审计改为同一事务、冲突退避重试 | 修同进程并发读-改-写双花；HTTP 级 20 并发审批实测 20/20、账实一致；120 次并发审批 0 失败、0 卡死单 |
 | MCP 注册表合并 | mcp_registry.load 内置 fx/risk + MCP_SERVERS 合并，同名以配置为准并记 error | 不再因配置外部服务导致反欺诈闸门静默消失 |
 | MCP 写闸分词 | looks_write_tool 驼峰/分隔符分词 + 整词匹配，tools=[] 也逐工具判写；status url/last_error 脱敏 | 修 bank_transfer 漏判与内部端点/凭据泄露 |
 
@@ -319,7 +319,7 @@ Key 与日志：
 6. **内部划转不触发 1000 元阈值**：internal=True 的转账按 MEDIUM 处理，只受 5 万元硬上限约束；如果业务上需要「本人账户间大额也强验证」，应把 internal 分支也纳入累计判定。
 7. **理财申购无幂等键**：purchase_wealth 未接 idempotency_key，重复执行靠审批单一次性状态兜底；若未来支持自动重试，应补幂等键。
 8. **幂等检查在余额校验之后**：mock_core.create_transfer 先校验金额与余额、再查 idempotency_key（mock_core.py:185-199），极端情况下重复请求可能先因余额不足报错而不是返回去重结果，属于可改进点。
-9. **单进程 SQLite**：http.server 为单进程演示服务器，SQLite 单文件，未做连接池、并发写隔离与多租户隔离。
+9. **单进程 SQLite**：http.server 为单进程演示服务器，SQLite 单文件；v0.6.1 起每个请求线程各持一条连接（db.thread_conn），写并发由 SQLite 的 `BEGIN IMMEDIATE` 串行化，没有连接池与多进程/多租户隔离。
 10. **文档与实现的同步状态**：本轮已把 docs/api.md 的 /api/llm/status、/api/llm/mode、审批对象新字段、intent 事件字段、/api/audit 与 /api/demo/totp 返回结构对齐到代码；审计哈希的写法以本文为准（prev_hash 作为 canonical JSON 的一个字段后整体做 SHA-256，不是字符串拼接）。若后续改接口，需同步 api.md 与 architecture.md。
 11. **5 万元硬上限与各项阈值为产品设定**：不是监管条文，真实部署前需按合规要求重新评估（结论由部署方合规团队给出）。
 12. **插件状态是本地文件、无鉴权**：backend/data/plugins.json 可被本机进程直接改写（路径可由 PLUGINS_FILE 覆盖）；接口没有登录态，能访问 8000 的人都能启停插件。缓解是「停用只收能力」——policy、审批、TOTP 与审计不可停用，插件文件损坏时按全启用处理。版本号在启动时读取仓库根 VERSION，升级需重启进程。
@@ -338,9 +338,14 @@ Key 与日志：
 25. **洞察结论是启发式估算**：订阅识别靠「连续 3 次、间隔 25–35 天、相邻金额差 ≤10%」的规则，一次性消费、改价、跨月缺记录都可能误报或漏报；潜在可省金额按订阅月费或分类压缩 10% 估算，不是财务建议（v0.5.0）。
 26. **流式参数是演示取值**：每块 12 字符、块间 18ms 由代码常量与环境变量 ZS_STREAM_DELAY_MS 控制，不同机器与网络下节奏不同；取消只在服务端置标记，已发出的 SSE 片段不会撤回，前端需自行丢弃后续内容（v0.5.0）。
 27. **审批参数摘要只防「库内篡改与换单」**：v0.6.1 的 params_digest 由归一化 JSON 计算，能发现 approvals 表被手工改写、以及「审批 A 执行 B」；但它不是签名（无外部密钥），整库重算仍不可检测，与审计链同样的信任假设。
-28. **资金原子性只在单进程内成立**：v0.6.1 的 BEGIN IMMEDIATE + 条件扣款解决了同进程并发双花，但 SQLite 单文件、单进程服务器仍是演示形态；多实例 / 多机部署需要真正的数据库事务与行锁。
+28. **资金原子性只在单进程内成立**：v0.6.1 的 `BEGIN IMMEDIATE` + 条件扣款 + **每线程独立连接**解决了同进程并发双花（HTTP 级 20 并发审批实测 20/20 成功、20 笔各 ¥300 精确减少 ¥6,000、流水分录 20 条）；审计 `seq` 的「取 MAX+1 → 插入」也已并入同一事务并在冲突时退避重试，120 次并发审批 0 失败、0 张「已 approved 但未执行」的卡死单、审计链 140 条 valid。但 SQLite 单文件、单进程服务器仍是演示形态，多实例 / 多机部署需要真正的数据库事务与行锁。
 29. **MCP 写闸是「宁拦勿放」的启发式**：v0.6.1 用分词/驼峰判定写风险（bank_transfer、funds.transfer、bankTransfer、remit、wire、buy、sell、trade、repay 都会被判写），但 credit_score、get_transfer_status 这类含动词的只读工具也会被保守拦截；真实接入应以银行侧工具清单 + 显式 write_tools 为准。
 30. **演示接口本机限制不是强安全边界**：DEMO_MODE=1 时 /api/demo/* 与 /api/admin/reset 只接受 127.0.0.1/::1，但本机任意进程（含恶意脚本）仍可调用；演示场景接受该风险，线上必须 DEMO_MODE=0 并删除数据文件。
+31. **MCP 端点没有 host 白名单（SSRF 纵深不足）**：mcp_client 对 `MCP_SERVERS[].url` 只校验 scheme 与 hostname 非空，可指向内网/云元数据地址；写闸只挡工具调用，不挡「配置一个只读服务连到任意地址」。真实接入应限制为可信内网端点并加 host allowlist（v0.6.1）。
+32. **MCP 外部响应没有大小上限**：mcp_client 直接 `response.read()`，单个故障服务可能把主进程内存读爆；生产应加 Content-Length 预检与读取上限（v0.6.1）。
+33. **多步计划部分执行无补偿**：一个计划跨多步时，前面步骤成功、后面步骤失败只回「操作未完成：<原因>」，不汇总已执行步骤、不自动回滚；余额临界时可能出现「转了一笔却没完成整个计划」。演示脚本应避开临界余额（v0.6.1）。
+34. **LLM 侧金额 clamp 放大 100 倍**：llm.py 的解析分支用 `HARD_SINGLE_LIMIT_CENTS * 100` 截断（阈值 ¥500 万），真正生效的上限在 policy 与 mock_core（¥5 万），因此该层「纵深防御」实际失效，不作为安全承诺（v0.6.1）。
+35. **审批 nonce 只是展示字段**：approvals 会生成并入库 nonce，但 check/resume 不校验它；一次性由 CAS 状态保证（同一 approval 二次决策 409），同一 TOTP 码在 ±30 秒窗口内可批准另一笔审批（v0.6.1）。
 
 ---
 

@@ -28,14 +28,18 @@ def _begin_immediate(conn) -> None:
     并发请求会互相覆盖（丢失更新），也可能把余额扣成负数。BEGIN IMMEDIATE 保证
     读到的余额与随后的条件更新在同一把写锁内，配合 `UPDATE ... WHERE balance_cents>=?`
     的 rowcount 校验，任何余额不足都会整体回滚。
+
+    v0.6.2：连接改为「每线程一条」（db.thread_conn），因此这里看到的 in_transaction
+    只可能是本线程上一条未收尾的事务；一律回滚后再开新事务，绝不 commit 别人的工作
+    （v0.6.1 的共享连接 + 顺手 commit 正是并发 500 / 账实不符的根因）。
     """
     if getattr(conn, "in_transaction", False):
-        conn.commit()
+        conn.rollback()
     try:
         conn.execute("BEGIN IMMEDIATE")
     except sqlite3.OperationalError:
-        # 连接已处于显式事务中（极少见）：沿用现有事务，仍由 outer try 统一提交/回滚
-        pass
+        conn.rollback()
+        conn.execute("BEGIN IMMEDIATE")
 
 
 def _rollback_quietly(conn) -> None:

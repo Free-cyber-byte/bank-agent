@@ -1,7 +1,14 @@
-"""SQLite 存储：建表、种子数据、连接管理。金额全部用整数分。"""
+"""SQLite 存储：建表、种子数据、连接管理。金额全部用整数分。
+
+连接模型（v0.6.2）：每个线程各自持有一个 sqlite3 连接（thread-local）。
+v0.6.1 及以前全进程共享一个连接，多线程写请求互相提交/回滚对方事务，
+实测 20 并发会出现 500、账实不符与 audit.seq 主键冲突；改为每线程连接后，
+由 SQLite 的 `BEGIN IMMEDIATE` + 条件更新负责并发正确性。
+"""
 import json
 import random
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -130,6 +137,38 @@ def connect(path: Path = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA foreign_keys=ON")
     return conn
+
+
+# ---------------- 每线程连接（v0.6.2） ----------------
+# 说明：HTTP 服务每个请求跑在独立线程里，共享一个连接会让两个写事务互相
+# commit/rollback（v0.6.1 实测并发 500 与账实不符的根因）。这里改成 thread-local，
+# 线程结束时由 close_thread_conn() 释放，避免连接泄漏。
+_LOCAL = threading.local()
+
+
+def thread_conn() -> sqlite3.Connection:
+    """返回当前线程的连接；首次调用时创建。"""
+    conn = getattr(_LOCAL, "conn", None)
+    if conn is None:
+        conn = connect()
+        _LOCAL.conn = conn
+    return conn
+
+
+def close_thread_conn() -> None:
+    """关闭当前线程的连接（幂等）；服务端在每个请求结束时调用。"""
+    conn = getattr(_LOCAL, "conn", None)
+    _LOCAL.conn = None
+    if conn is not None:
+        try:
+            if getattr(conn, "in_transaction", False):
+                conn.rollback()
+        except Exception:  # noqa: BLE001 - 收尾失败不影响请求结果
+            pass
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 def init_schema(conn: sqlite3.Connection) -> None:

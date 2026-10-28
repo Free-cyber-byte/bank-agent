@@ -73,13 +73,18 @@ def pending_for_session(conn, session_id: str) -> Optional[Dict[str, Any]]:
     return d
 
 
-def mark(conn, approval_id: str, status: str) -> bool:
-    """CAS 状态迁移：仅当审批单仍为 pending 时生效，返回是否命中。"""
+def mark(conn, approval_id: str, status: str, commit: bool = True) -> bool:
+    """CAS 状态迁移：仅当审批单仍为 pending 时生效，返回是否命中。
+
+    commit=False 用于让调用方把「决策落地」和「写审计」放进同一个事务：
+    两者要么都生效，要么都不生效，避免出现「已 approved 但审计没写、执行没跑」的卡死单。
+    """
     cur = conn.execute(
         "UPDATE approvals SET status=?, decided_at=? WHERE approval_id=? AND status='pending'",
         (status, db.now_iso(), approval_id),
     )
-    conn.commit()
+    if commit:
+        conn.commit()
     return cur.rowcount == 1
 
 

@@ -394,7 +394,7 @@
     <div class="dlg__rules" id="apReasons"></div>
     <div class="dlg__preview" id="apPreview"></div>
     <div class="dlg__foot">
-      <p class="dlg__note">确认环节不经过模型。审批绑定单次 nonce，限时有效，过期或重复提交均无效。</p>
+      <p class="dlg__note">确认环节不经过模型。审批绑定会话与参数摘要，一次性决策：同一审批重复提交会被拒绝；动态码在 30 秒窗口内可复用。</p>
       <div class="dlg__btns">
         <button class="btn-secondary" type="button" id="btnReject">拒绝</button>
         <button class="btn-primary" type="button" id="btnApprove">确认执行</button>

@@ -6,6 +6,7 @@
 import json
 import re
 import secrets
+import sqlite3
 import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -73,10 +74,28 @@ class Emitter:
         self.seq = int(row["n"])
 
     def emit(self, event_type: str, payload: Dict[str, Any]) -> None:
-        self.seq += 1
-        self.conn.execute("INSERT INTO events (session_id, seq, type, payload_json, ts) VALUES (?,?,?,?,?)",
-                          (self.session_id, self.seq, event_type, json.dumps(payload, ensure_ascii=False), db.now_iso()))
-        self.conn.commit()
+        # seq 是「会话内的自增号」，读-算-写必须原子：两个并发请求算到同一个 seq 会撞
+        # UNIQUE(events.session_id, events.seq) 直接 500。已在调用方事务里就沿用调用方事务，
+        # 否则自己开 BEGIN IMMEDIATE，被别的写事务占用时退避重试。
+        own = not self.conn.in_transaction
+        for attempt in range(6):
+            try:
+                if own:
+                    self.conn.execute("BEGIN IMMEDIATE")
+                row = self.conn.execute("SELECT COALESCE(MAX(seq),0) AS n FROM events WHERE session_id=?",
+                                        (self.session_id,)).fetchone()
+                self.seq = int(row["n"]) + 1
+                self.conn.execute("INSERT INTO events (session_id, seq, type, payload_json, ts) VALUES (?,?,?,?,?)",
+                                  (self.session_id, self.seq, event_type, json.dumps(payload, ensure_ascii=False), db.now_iso()))
+                if own:
+                    self.conn.commit()
+                break
+            except sqlite3.Error:
+                if own and self.conn.in_transaction:
+                    self.conn.rollback()
+                if attempt == 5:
+                    raise
+                time.sleep(0.005 * (attempt + 1))
         item = {"seq": self.seq, "type": event_type, "payload": payload}
         self.events.append(item)
         if self.sink:
@@ -1295,6 +1314,30 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
     return _finalize(conn, ctx, exec_result, emit)
 
 
+def _decide_and_audit(conn, approval_id: str, status: str, session_id: str, ap: Dict[str, Any],
+                      event_type: str, result: Dict[str, Any]) -> None:
+    """把审批决策（CAS）与它的审计记录放进同一个事务。
+
+    原实现先 mark(approved) 再 audit.append，两步之间失败就会留下「审批已通过、审计没写、
+    资金没动」的卡死单；并发下 audit 的 seq 竞争直接 500。现在一个事务内完成，任一失败整单回滚，
+    审批单仍是 pending，用户可重试。
+    """
+    own = not conn.in_transaction
+    if own:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        if not approvals.mark(conn, approval_id, status, commit=False):
+            raise EngineError("APPROVAL_ALREADY_DECIDED", "该审批已处理过，不能重复提交", 409)
+        audit.append(conn, event_type, session_id=session_id, tool=ap["action"], args=ap["params"],
+                     result=result, risk_level=ap["risk_level"], approval_id=approval_id)
+        if own:
+            conn.commit()
+    except BaseException:
+        if own and conn.in_transaction:
+            conn.rollback()
+        raise
+
+
 def resume(conn, session_id: str, approval_id: str, decision: str, code: str, method: str = "", sink=None) -> Dict[str, Any]:
     """v0.4.1：method 指定强验证因子（totp / sms / face），缺省按 totp，保持旧调用方兼容。
 
@@ -1328,21 +1371,16 @@ def resume(conn, session_id: str, approval_id: str, decision: str, code: str, me
     if approvals.params_digest({"steps": approved_steps}) != approvals.params_digest({"steps": ctx.get("steps")}):
         raise EngineError("APPROVAL_PARAMS_MISMATCH", "审批参数与会话状态不一致，已拒绝执行", 400)
     if decision == "reject":
-        if not approvals.mark(conn, approval_id, "rejected"):
-            raise EngineError("APPROVAL_ALREADY_DECIDED", "该审批已处理过，不能重复提交", 409)
-        audit.append(conn, "approval_rejected", session_id=session_id, tool=ap["action"], args=ap["params"], result={"decision": "reject"}, risk_level=ap["risk_level"], approval_id=approval_id)
+        _decide_and_audit(conn, approval_id, "rejected", session_id, ap, "approval_rejected", {"decision": "reject"})
         reply = "好的，已取消这笔操作，没有发生任何资金变动。"
         emit.emit("message", {"delta": reply})
         emit.emit("done", {"status": "ok", "thread_id": ap["thread_id"]})
         return {"session_id": session_id, "thread_id": ap["thread_id"], "status": "ok", "reply": reply, "intent": ctx.get("intent"),
                 "plan": {"steps": ctx.get("steps", []), "edges": ctx.get("edges", [])}, "executed": [], "approval": None, "undo": None,
                 "audit": audit.entries(conn, session_id, 20), "events": emit.events}
-    if not approvals.mark(conn, approval_id, "approved"):
-        raise EngineError("APPROVAL_ALREADY_DECIDED", "该审批已处理过，不能重复提交", 409)
     used_method = (method or "totp") if ap["challenge"] == "totp" else "confirm"
-    audit.append(conn, "approval_granted", session_id=session_id, tool=ap["action"], args=ap["params"],
-                 result={"decision": "approve", "challenge": ap["challenge"], "method": used_method},
-                 risk_level=ap["risk_level"], approval_id=approval_id)
+    _decide_and_audit(conn, approval_id, "approved", session_id, ap, "approval_granted",
+                      {"decision": "approve", "challenge": ap["challenge"], "method": used_method})
     ctx["approval_id"] = approval_id
     exec_result = execute_steps(conn, ctx, emit)
     return _finalize(conn, ctx, exec_result, emit)

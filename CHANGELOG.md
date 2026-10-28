@@ -22,6 +22,9 @@ v0.6.1 是「审计整改」批次：针对 v0.6.0 的三份独立安全审查�
 - 审批单记录参数摘要：`approvals.create` 写入 `params_digest`（归一化 JSON 的 SHA-256），`engine.resume` 比对「审批时的 steps」与 checkpoint 待执行 steps，不一致 400 APPROVAL_PARAMS_MISMATCH 且不执行任何工具。
 - `approvals.mark` 返回是否命中（CAS），engine.resume 的 reject / approve 分支未命中即 409 APPROVAL_ALREADY_DECIDED，且不再写 approval_granted。
 - 资金函数（create_transfer / undo_transfer / purchase_wealth / undo_purchase / redeem_wealth / card_spend）改为 `BEGIN IMMEDIATE` 单事务 + 条件扣款（普通账户 `balance_cents>=?`，信用卡 `balance_cents+credit_limit_cents>=?`），rowcount≠1 回滚并抛 INSUFFICIENT_FUNDS；撤销类改 ±amount 重读余额，transfers/holdings 用 CAS 防重复入账。
+- 连接模型改为「每线程一条 sqlite 连接」：`db.thread_conn()` / `db.close_thread_conn()` + `server.py` 的 `_ThreadConn` 代理（历史代码里的 `CONN.xxx` 全部照旧，实际执行在当前线程的连接上），请求线程结束时在 `Handler.finish()` 回收；`mock_core._begin_immediate` 不再 commit 他人事务，改为回滚后重开事务。（首版整改仍是全局单连接，复核实测 20 并发审批 17 个 500、账实差 ¥500，同版内补齐本项。）
+- 序号分配原子化：`audit.append` 与 `Emitter.emit` 的「读末尾 hash / 取 MAX(seq)+1 → 插入」改为 `BEGIN IMMEDIATE` 包住整段、被占用时退避重试（已在调用方事务内则沿用调用方事务）；审批决策与它的审计记录改为同一事务（`approvals.mark(commit=False)` + `engine._decide_and_audit`），任一失败整单回滚，审批单仍是 pending。（首版整改在 120 次并发审批下仍有 2.5% 的 `UNIQUE audit.seq` 500 和 1 张「已 approved 但审计没写、资金没动」的卡死单；修后复测 120 次并发审批 0 失败、0 卡死单、审计链 140 条 valid。）
+- MCP 写闸词表补 `spend/send/move/xfer/authorize/loan/close/post/book/set/limit` 等（复核发现：项目自己的 `card_spend` 会被判成「非写」并转发）；`convert/exchange/swap/invest/allocate` 这类「换算/配置」动词刻意不进词表——内置只读服务 fx 的工具名就是 `fx_convert`，进表会把只读汇率查询判成写操作（实测 mcp_e2e 4/7、gw-19 失败），资金动词仍由 transfer/purchase/withdraw/repay/redeem 等覆盖。
 - TOTP 密钥改为每用户 `secrets.token_bytes(20)` 随机并持久化；`verify_code`/`current_code` 增加可选 `conn`，签名向后兼容。
 - plugins._status_of：探测跑过但缺 probe 行 → degraded；探测整体未跑（mcp_rows 为空）保留 enabled（兼容 plugin_e2e plg-10）。
 - 演示接口（/api/demo/{totp,sms,face}、/api/admin/reset）只接受 127.0.0.1/::1（403 DEMO_LOCAL_ONLY）；`DEMO_MODE` 默认值保持不变，启动日志提示「演示模式：二次因子接口仅本机可用」。
@@ -32,7 +35,7 @@ v0.6.1 是「审计整改」批次：针对 v0.6.0 的三份独立安全审查�
 - 修 IDOR：审批单只能由创建它的会话提交（旧实现只按 approval_id 查，任何会话拿到 ID 即可批准）。
 - 修「审批 A 执行 B」：审批参数摘要绑定 checkpoint steps。
 - 修 TOTP 可复算：旧实现 `sha256("zerostep:"+user_id)` 派生，知道 user_id 即可离线算出 6 位码；现密钥随机不可推导，且 `hmac.compare_digest` 常量时间比较、连续 5 次失败锁 60 秒。
-- 修 money 读-改-写竞态：并发转账可同时读到旧余额导致双花 / 余额转负。
+- 修 money 读-改-写竞态：并发转账可同时读到旧余额导致双花 / 余额转负。最终实现为「BEGIN IMMEDIATE + 条件扣款 + 每线程独立连接」；实测 HTTP 级 20 并发审批 20/20 成功、20 笔各 ¥300 精确减少 ¥6000、流水分录 20 条；120 次并发审批 0 失败、审计链 valid（见 Changed 的「序号分配原子化」）。
 - 修 MCP 写闸漏判：`tools=[]` 且未配置 write_tools 时白名单整段跳过，bank_transfer / funds_transfer / bankTransfer 被真实转发（实测服务端 calls=1、write_calls=1）；现逐工具分词判写，被判写即零转发。
 - 修 MCP_SERVERS 替换内置 fx/risk：配置外部服务后 risk_screen 变「未知工具」，转账前反欺诈静默放行、插件页仍谎报 enabled；现合并注册表 + probe 行缺失判 degraded。
 - 修 `/api/mcp/status` 泄露内部端点与错误原文：url / last_error 脱敏。

@@ -251,6 +251,9 @@ v0.6.0 起由 transport 字段决定握手方式：
 3. --slow 仅用于自检/演示，不应出现在正式启动参数里。
 4. 外部服务与主服务同机，跨机部署需要额外配置 URL 与防火墙。
 5. mcp_client.py、backend/external 与本文档已对齐（2026-10-27）；scripts/mcp_e2e.py 已落盘并实测 7/7。
+6. **端点没有 host 白名单（SSRF 纵深不足）**：`MCP_SERVERS[].url` 只校验 scheme 与 hostname 非空，可指向内网/云元数据地址；写闸只挡工具调用，不挡「配置一个只读服务连到任意地址」。生产应限制为可信内网端点并加 allowlist（v0.6.1 复核记录）。
+7. **外部响应没有大小上限**：mcp_client 直接 `response.read()`，单个故障服务可能把主进程内存读爆；生产应加 Content-Length 预检与读取上限（v0.6.1 复核记录）。
+8. **写闸词表是启发式**：v0.6.1 已补 `spend/send/move/xfer/authorize/loan/close/post/book` 等词（复核发现 `card_spend` 曾被判非写）；`convert/exchange/swap` 这类换算类动词不在表内，避免把只读的 `fx_convert` 判成写。词表仍可能漏判全新命名，真实接入应以银行侧工具清单 + 显式 `write_tools` 为准，宁可误拦只读。
 
 ## 十、验证清单
 

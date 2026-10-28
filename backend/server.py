@@ -32,10 +32,33 @@ mimetypes.add_type("application/json", ".json")
 mimetypes.add_type("application/manifest+json", ".webmanifest")
 mimetypes.add_type("image/png", ".png")
 
-CONN = db.connect()
-db.init_schema(CONN)
-db.seed_if_needed(CONN)
-plugins.bind_conn(lambda: CONN)  # 插件开关的审计写入复用主服务连接
+_BOOT_CONN = db.connect()
+db.init_schema(_BOOT_CONN)
+db.seed_if_needed(_BOOT_CONN)
+_BOOT_CONN.close()
+
+
+class _ThreadConn:
+    """把「当前线程的连接」伪装成连接对象：历史代码里的 CONN.xxx 全部照旧可用。
+
+    v0.6.2：真正执行 SQL 的是 db.thread_conn()，每个请求线程一条连接，
+    避免共享连接下的事务互相 commit/rollback（v0.6.1 并发实测的根因）。
+    """
+
+    __slots__ = ()
+
+    def __getattr__(self, name):
+        return getattr(db.thread_conn(), name)
+
+    def __enter__(self):
+        return db.thread_conn().__enter__()
+
+    def __exit__(self, *exc_info):
+        return db.thread_conn().__exit__(*exc_info)
+
+
+CONN = _ThreadConn()
+plugins.bind_conn(lambda: CONN)  # 插件开关的审计写入复用当前线程连接
 
 # v0.4.1 多因子审批：engine 统一抛 EngineError，这里补齐新增错误码的可读中文文案（均 400）
 _APPROVAL_ERROR_MESSAGES = {
@@ -233,6 +256,12 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # 安静一点，只保留错误
         if args and str(args[0]).startswith(("4", "5")):
             sys.stderr.write("%s - %s " % (self.address_string(), fmt % args))
+
+    def finish(self):  # v0.6.2：请求线程结束时回收它自己的 sqlite 连接
+        try:
+            super().finish()
+        finally:
+            db.close_thread_conn()
 
     # ---------- 路由 ----------
     def do_OPTIONS(self):
