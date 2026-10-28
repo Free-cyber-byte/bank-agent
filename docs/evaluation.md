@@ -15,13 +15,14 @@ ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条�
 | 运行器 | scripts/run_tasks.py（零依赖；串行、每任务独立临时库） |
 | 解析模式 | rule / llm / auto（默认 auto：有 Key 用模型，无 Key 回落规则） |
 | 对比评测 | scripts/compare_modes.py：30 条基线 + 10 条口语化变体（v0.2.0 未扩展，仍为基线对比数据） |
-| 实测结果 | 规则模式 56/56，0 失败（2026-10-28 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消），node frontend/_selftest.js PASS=238 FAIL=0 |
+| 实测结果 | 规则模式 56/56，0 失败（2026-10-28 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消），node frontend/_selftest.js PASS=247 FAIL=0（v0.5.1 时点） |
 | v0.3.0 增量自检 | scripts/plugin_e2e.py 17/17、node frontend/_selftest.js PASS=100 FAIL=0（2026-10-27 实测；不改变 36 条任务） |
 | v0.3.1 增量自检 | scripts/llm_e2e.py 8/8 场景、52/52 项检查；node frontend/_selftest.js PASS=134 FAIL=0；run_tasks 36/36（均 2026-10-27 本机实测）；scripts/llm_smoke.py 需真实 Key，无 Key 自动跳过 |
 | v0.3.2 增量自检 | 企业微信自检 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13、node frontend/_selftest.js PASS=182 FAIL=0（2026-10-27，与 QA 报告一致；QA 全量回归 15/15 步 exit 0、0 FAIL）；v0.4.0 时前端断言已增至 190 项 |
 | v0.4.0 增量自检 | scripts/run_tasks.py 43/43（0 失败）、node frontend/_selftest.js PASS=190 FAIL=0（2026-10-27 本机实测）；QA 全量回归 audit/qa-report-v0.4.0.md 全绿：15/15 步 exit 0、0 FAIL，capability_e2e 63/63 |
 | v0.4.1 增量自检 | scripts/run_tasks.py 46/46（0 失败，含 t44–t46）、node frontend/_selftest.js PASS=206 FAIL=0（v0.4.0 为 190，新增多因子 13 + 锁定 3）、scripts/security_factor_e2e.py 53/53（均 2026-10-28 实测）；全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md：审计 valid checked=105、smoke18 审计 52 条/事件 84 条、llm_e2e 9/9 场景 79/79、冻结 85 文件 SHA 一致） |
 | v0.5.0 增量自检 | scripts/run_tasks.py 56/56（0 失败，新增 t47–t56）、scripts/e2e_stream.py 33/33（流式事件序 / stream_text=false 降级 / 中途取消 / 审计 / 端口清理，2026-10-28 实测 2.25 秒）、node frontend/_selftest.js PASS=238 FAIL=0（v0.4.1 为 206，新增流式与洞察 32 项）；全量 17 步 QA 全 exit 0 |
+| v0.5.1 增量自检 | scripts/run_tasks.py 56/56（0 失败，用例未增）、scripts/e2e_stream.py 33/33（不变）、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，新增 9 条「资金流向与余额刷新」：kind 字段口径、信用卡待还脚注、理财持仓行、资产构成理财段放宽、回合结束自动刷新余额与持仓）；均为 2026-10-28 实测 |
 
 ---
 
@@ -246,9 +247,9 @@ v0.5.0 的回答改为逐字下发，取消走独立接口 POST /api/turn/cancel
 实测（2026-10-28 本机，Python 3.14.6）：
 
     python scripts/e2e_stream.py --json
-    summary: total 33 / pass 33 / fail 0, elapsed_s 2.25, full_stream_s 0.61
+    summary: total 33 / pass 33 / fail 0, elapsed_s 2.25, full_stream_s 0.62（2026-10-28 复跑）
     node frontend/_selftest.js
-    PASS = 238   FAIL = 0
+    PASS = 247   FAIL = 0
 
 e2e_stream.py 的 33 项断言分四组：
 

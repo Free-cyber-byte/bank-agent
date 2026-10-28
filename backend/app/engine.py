@@ -53,6 +53,7 @@ def session_snapshot(conn, session_id: str) -> Dict[str, Any]:
         "cards": mock_core.list_cards(conn, sess["user_id"]),
         "subscriptions": mock_core.list_subscriptions(conn, sess["user_id"])["subscriptions"],
         "payees": mock_core.list_payees(conn, sess["user_id"]),
+        "wealth": mock_core.list_wealth(conn, sess["user_id"]),
         "pending_approval": serialize_approval(pending) if pending else None,
         "llm_mode": llm.effective(),
         "llm_status": llm.status(),

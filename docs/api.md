@@ -1,6 +1,6 @@
-# ZeroStep API 契约（v1.7）
+# ZeroStep API 契约（v1.8）
 
-v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 spending_insights 与 detect_subscriptions 的结果结构（§4）、insight 意图与 insight_card 事件、/api/chat 的 answer_start / answer_delta / answer_end 事件序（含 stream_text=false 降级）、POST /api/turn/cancel 与 answer_cancelled 审计（§2、§5、§7）；v1.6 的 v0.4.1 多因子强验证与会话锁定（审批 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 与 security_lock 事件）、v1.5 的预约与调度、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页均保持不变。
+v1.8（2026-10-28）新增 v0.5.1 的 /api/session wealth 字段与 accounts.kind 字段口径（§1，纯增量，无破坏性变更）；v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 spending_insights 与 detect_subscriptions 的结果结构（§4）、insight 意图与 insight_card 事件、/api/chat 的 answer_start / answer_delta / answer_end 事件序（含 stream_text=false 降级）、POST /api/turn/cancel 与 answer_cancelled 审计（§2、§5、§7）；v1.6 的 v0.4.1 多因子强验证与会话锁定（审批 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 与 security_lock 事件）、v1.5 的预约与调度、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页均保持不变。
 
 零依赖 Python 标准库实现。所有接口返回 JSON（UTF-8），金额单位一律为「分」（整数），前端负责格式化。
 
@@ -21,17 +21,30 @@ v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 
     {
       "session_id": "s_xxx",
       "user": { "user_id": "u001", "name": "张伟", "risk_level": "稳健型" },
-      "accounts": [ { "account_id": "acc_001", "type": "checking", "name": "工资卡", "number_masked": "**** 8821", "balance_cents": 1286050, "currency": "CNY" } ],
+      "accounts": [ { "account_id": "acc_001", "kind": "checking", "name": "工资卡", "number_masked": "**** 8821", "balance_cents": 1286050, "currency": "CNY" } ],
       "cards": [ ... ],
       "subscriptions": [ ... ],
       "payees": [ ... ],
+      "wealth": { "products": [ ... ], "holdings": [ ... ], "holding_total_cents": 0, "holding_total_display": "¥0.00" },
       "llm_mode": "rule",
       "llm_status": { "mode": "auto", "effective": "rule", "enabled": false, "provider": "DeepSeek", "model": "deepseek-flash", "base_host": "api.deepseek.com", "key_masked": "", "last_error": null },
       "demo_mode": true
     }
 
+说明：accounts 的账户类型字段名是 kind（checking 活期 / credit 信用卡 / savings 储蓄），不是 type；前端 acctKind(a) = a.kind || a.type 兼容旧数据。wealth 为 v0.5.1 新增（见下）。
+
 ### GET /api/session/{session_id}
-返回当前会话：user / accounts / cards / subscriptions / payees / pending_approval（可能为 null）/ llm_mode / llm_status（结构见第 3 节）/ demo_mode
+返回当前会话：user / accounts / cards / subscriptions / payees / wealth / pending_approval（可能为 null）/ llm_mode / llm_status（结构见第 3 节）/ demo_mode
+
+wealth（v0.5.1 新增，与 POST /api/session 同一份 session_snapshot）：
+    {
+      "products": [ ... ],                       // 在售理财产品
+      "holdings": [ { "product_id": "p_001", "name": "稳健 30 天", "amount_cents": 1000000, ... } ],
+      "holding_total_cents": 1000000,            // 持仓合计，单位分（= sum(holdings.amount_cents)）
+      "holding_total_display": "¥10,000.00"
+    }
+
+前端在回合结束、审批通过与撤销完成后调用本接口重新渲染资产构成与账户列表（只读，不写库、不触发任何资金动作）；调用失败时保留旧数字并静默，不阻塞对话。字段实现见 backend/app/engine.py:46 session_snapshot 与 backend/app/mock_core.py:253 list_wealth。
 
 ### POST /api/admin/reset
 重置演示数据库为种子数据（评委一键还原）。返回 { "reset": true, "seed_version": "..." }；DEMO_MODE=0 时返回 403 DEMO_MODE_DISABLED。
@@ -361,7 +374,7 @@ Key 无效（HTTP 401）：
 - GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "chain": { "valid": true, "checked": 21, "broken_at": null, "reason": null } }
   entry 字段：seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash, hash
 - GET /api/events?session_id=...&after=0 → { "events": [ { "seq": 1, "type": "message", "payload": {...} } ] }  // 会话回放
-- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.5.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.5.0；改 VERSION 后需重启进程生效
+- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.5.1", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.5.1；改 VERSION 后需重启进程生效
 - GET /api/tasks[?limit=N&offset=M] → 任务列表，前端快捷按钮；user_input 即 turns[0]。
   无参数时与旧版完全一致，只返回 tasks（全部 56 条）：
 
@@ -527,7 +540,7 @@ IM 渠道配置与最近 5 条投递记录（不返回令牌明文）。实测�
           "id": "mcp-fx",
           "name": "汇率服务",
           "kind": "mcp",
-          "version": "0.5.0",
+          "version": "0.5.1",
           "description": "通过 MCP 调用外部汇率服务，只用于查询与展示；不可用时回退内置参考价，绝不影响资金动作。",
           "status": "enabled",
           "enabled": true,

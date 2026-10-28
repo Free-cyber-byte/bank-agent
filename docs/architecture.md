@@ -679,5 +679,57 @@ v0.5.0 加了两件互不干扰的事：一是只读的消费洞察（新增 ins
 - 取消只覆盖逐字输出阶段；审批挂起时的「取消」走撤销窗口（60 秒）与 approvals 的既有语义，两者不共用接口。
 - 洞察卡的数据来自同一份 tool_result；如果未来改成流式边算边发，需要重新定义 insight_card 与 answer_end 的先后顺序。
 
-**接口字段见** [api.md](api.md) §2 流式小节与 §4 v0.5.0 工具段，只读与取消口径见 [security.md](security.md) §2、§9、§10，用例见 [evaluation.md](evaluation.md) §3.4 与 §5 v0.5.0 表。
+## 14. 账户总览刷新链路（v0.5.1）
+
+v0.5.1 修的是「钱动了，左边总览不动」：账户类型字段口径错、理财持仓没计入资产构成、操作完成后不重新取快照。三处改动都在会话快照层与前端展示层，不碰 policy、审批 TTL、幂等键与审计链。
+
+### 14.1 会话快照新增 wealth（后端）
+
+engine.py:46 的 session_snapshot(conn, session_id) 负责组装 GET /api/session/{id} 与 POST /api/session 的响应；engine.py:56 新增一项：
+
+    "wealth": mock_core.list_wealth(conn, sess["user_id"])
+
+数据来自 mock_core.py:253 list_wealth：
+
+    session_snapshot（engine.py:46）
+        ├─ session_id / user
+        ├─ accounts / cards / subscriptions / payees
+        ├─ pending_approval / llm_mode / llm_status / demo_mode
+        └─ wealth ← mock_core.list_wealth（mock_core.py:253）
+                └─ { products, holdings,
+                     holding_total_cents = sum(holdings.amount_cents),
+                     holding_total_display = yuan(total) }
+
+GET /api/session/{id} 在 server.py:116 直接返回该快照；POST /api/session 复用同一函数，因此新建会话与刷新会话的字段完全一致（旧响应只有增量，不破坏既有字段）。
+
+### 14.2 前端字段口径：acctKind()
+
+旧代码按 a.type 判断账户类型，后端字段实际是 kind，结果三处都错：信用卡被当成存款计入「存款」总额、资产构成条的「理财」段恒为 0、账户脚注「信用卡待还」不出现。app.js:412 增加一处口径函数：
+
+    function acctKind(a) { return (a && (a.kind || a.type)) || ''; }
+
+renderAccounts（app.js:413）的总额、信用卡待还与资产构成全部改用它；renderMix（app.js:449）把 holdings 计入「理财」段；账户列表在常规行之后追加一行「理财 · 持仓 ¥X」（app.js:440-444，class acct__row--wealth），资金流向因此能看出申购后的钱去了哪里。
+
+### 14.3 刷新触发点：refreshAccountSnapshot()
+
+app.js:468 定义 refreshAccountSnapshot()：GET /api/session/{id} → 覆盖 state.accounts 与 state.wealth → renderAccounts；用 state.acctRefreshing 防重入，失败静默（保留旧数字，不弹错、不阻塞对话）。
+
+| 触发 | 位置 | 说明 |
+| --- | --- | --- |
+| 回合结束（ok / blocked） | app.js:1070 finishTurn | 转账、申购、还款等写操作完成后自动刷新 |
+| 审批通过 / 拒绝 | app.js:1547 applyApprovalResult → app.js:1564 finishTurn | 复用同一条结束路径，不单独调用 |
+| 撤销完成 | app.js:981 undoAction | 原路退回后余额与总览同步 |
+| 首屏加载 | 初始快照 | 直接用 POST /api/session 的返回渲染，不再额外请求 |
+
+**为什么只是只读刷新**：快照接口不写库、不产生审计事件、不占幂等键；即使刷新请求失败，真实结果仍可从审计面板与对话里的 tool_result 看到，界面最多短暂显示旧数字，不会出现「界面显示成功、账务没动」或相反的情况。
+
+### 14.4 静态资源缓存版本
+
+frontend/sw.js:6 的 VERSION 为 0.5.1，CACHE_NAME 为 zerostep-shell-v0.5.1，activate 阶段删除旧前缀缓存。只改 app.js / styles.css 而不改这一行时，已安装的 PWA 会继续用旧外壳，这是「改了代码、页面没变」最常见的原因。
+
+### 14.5 验证
+
+frontend/_selftest.js:600-625 新增 9 条「资金流向与余额刷新」断言：启动时理财段仅最小宽度、启动无持仓行、刷新后工资卡余额跟随服务端、信用卡待还写进脚注、多出理财持仓行（4 行）、持仓行写明金额、理财段按持仓放宽、回合结束自动刷新余额、回合结束自动刷新持仓；前端自检总数 238 → 247。
+
+**接口字段见** [api.md](api.md) §1（wealth 与 kind），用例与测试口径见 [evaluation.md](evaluation.md) §5，审计与安全边界见 [security.md](security.md)。
 

@@ -4,6 +4,23 @@
 
 v0.2.0 为 2026-10-27 启动的能力批次，代码合并与验收由 Lead 统一复核；尚未通过验收的接口与命令在对应位置单独注明。
 
+## [0.5.1] - 2026-10-28（进行中，未打 tag）
+
+v0.5.1 是「操作后界面不刷新」的修复批次：统一账户类型字段口径、把理财持仓计入资产构成、在回合结束 / 审批通过 / 撤销后自动刷新账户总览。接口只做增量（/api/session 响应新增 wealth），资金边界、1000 元阈值、审批 TTL 300 秒、撤销窗口 60 秒与审计哈希链均不变。
+
+### Fixed
+
+- 账户类型字段口径不一致：后端账户对象返回 kind，前端旧代码按 a.type 判断，导致信用卡被算进「存款」、资产构成条「理财」段恒为 0、账户脚注「信用卡待还」不显示。frontend/app.js:412 新增 acctKind(a) = a.kind || a.type 并全量替换，活期 / 储蓄 / 信用卡 / 理财分类恢复正确。
+- 资产构成与账户列表漏掉理财持仓：renderAccounts 现在读 session.wealth.holding_total_cents 计入「理财」段（app.js:449），并在账户列表补一行「理财 · 持仓 ¥X」（app.js:440-444，class acct__row--wealth），申购后能看到钱去了哪里。
+- 操作后左侧总览不刷新：前端新增 refreshAccountSnapshot()（app.js:468），在回合结束（ok / blocked，app.js:1070）、审批通过（applyApprovalResult → finishTurn，app.js:1547/1564）与撤销完成（app.js:981）后重新 GET /api/session/{id} 并 renderAccounts；只读接口，失败静默保留旧数字、不阻塞对话。
+- session_snapshot 未返回理财数据：backend/app/engine.py:56 新增 "wealth": mock_core.list_wealth(...)（products / holdings / holding_total_cents / holding_total_display），GET /api/session/{id} 与 POST /api/session 一并返回，前端一次取全。
+- 静态资源缓存版本滞后：frontend/sw.js 的 VERSION 由 0.3.2 改为 0.5.1，CACHE_NAME 随之为 zerostep-shell-v0.5.1，旧缓存在 activate 阶段清除；后续升级静态资源时须同步改这一行，否则浏览器会继续用旧 app.js / styles.css。
+
+### 兼容性与验证状态
+
+- 契约：/api/session 的响应为新增字段 wealth（增量），既有字段不变；前端只读该接口刷新总览，不触发写操作。
+- 本机实测（2026-10-28）：scripts/run_tasks.py 56/56 通过、0 失败；scripts/e2e_stream.py 33/33；node frontend/_selftest.js PASS=247 / FAIL=0（原 238，新增 9 条「资金流向与余额刷新」）；VERSION 0.5.1。
+
 ## [0.5.0] - 2026-10-28（进行中，未打 tag）
 
 v0.5.0 是「消费洞察 + 逐字流式回答」批次：新增只读的消费洞察能力（统一口径的月度统计、环比、可省金额、预算预测），并把最终回答改成 SSE 逐字流式输出，同时提供「停止输出」的接口。资金边界、审批 TTL（300 秒）、撤销窗口（60 秒）、审计哈希链与既有接口字段均不变；新增能力全部是增量。

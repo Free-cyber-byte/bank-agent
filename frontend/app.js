@@ -76,7 +76,7 @@
   // ===================== 状态 =====================
   var state = {
     sessionId: null, threadId: null, user: null,
-    accounts: [], tasks: [], sampleUsed: false,
+    accounts: [], tasks: [], sampleUsed: false, acctRefreshing: false,
     llmMode: 'auto', llmStatus: null, modeBusy: false, llmTesting: false,
     busy: false, lastUserText: '', lastIntentSource: '',
     view: 'home',
@@ -407,6 +407,9 @@
     void dom.acctTotal.offsetWidth;
     dom.acctTotal.classList.add('is-in');
   }
+  // 后端返回的账户类型字段叫 kind（不是 type），旧代码按 type 判断会全部落到「其它」，
+  // 导致信用卡被算进存款、资产构成条永远没有理财段。这里统一取 kind，兼容 type。
+  function acctKind(a) { return (a && (a.kind || a.type)) || ''; }
   function renderAccounts(session) {
     var accounts = (session && session.accounts) || [];
     state.accounts = accounts;
@@ -417,7 +420,7 @@
     var total = 0, credit = 0;
     accounts.forEach(function (a) {
       total += Number(a.balance_cents || 0);
-      if (a.type === 'credit') credit += Math.abs(Number(a.balance_cents || 0));
+      if (acctKind(a) === 'credit') credit += Math.abs(Number(a.balance_cents || 0));
     });
     renderBalance(total);
     if (dom.acctTag) dom.acctTag.textContent = '演示账户';
@@ -428,21 +431,29 @@
     }
     if (dom.acctList) {
       var typeName = { checking: '活期', savings: '储蓄', wealth: '理财', credit: '信用卡' };
-      dom.acctList.innerHTML = accounts.map(function (a) {
+      var rows = accounts.map(function (a) {
         var bal = Number(a.balance_cents || 0);
-        return '<div class="acct__row"><span>' + esc(typeName[a.type] || a.name || '账户') + ' · ' + esc(a.number_masked || '') + '</span>' +
+        return '<div class="acct__row"><span>' + esc(typeName[acctKind(a)] || a.name || '账户') + ' · ' + esc(a.number_masked || '') + '</span>' +
           '<span class="v">' + esc(fmtMoney(bal)) + '</span></div>';
-      }).join('');
+      });
+      // 理财持仓不是银行账户行，但它是「钱去哪了」的一部分，单独补一行，避免申购后看不到去向
+      var holdings = (session && session.wealth && session.wealth.holding_total_cents) || 0;
+      if (holdings > 0) {
+        rows.push('<div class="acct__row acct__row--wealth"><span>理财 · 持仓</span>' +
+          '<span class="v">' + esc(fmtMoney(holdings)) + '</span></div>');
+      }
+      dom.acctList.innerHTML = rows.join('');
     }
-    renderMix(accounts);
+    renderMix(accounts, (session && session.wealth && session.wealth.holding_total_cents) || 0);
   }
-  function renderMix(accounts) {
+  function renderMix(accounts, holdingsCents) {
     if (!dom.acctMix) return;
-    var dep = 0, wealth = 0, credit = 0;
+    var dep = 0, wealth = Number(holdingsCents || 0), credit = 0;
     accounts.forEach(function (a) {
       var v = Math.abs(Number(a.balance_cents || 0));
-      if (a.type === 'credit') credit += v;
-      else if (a.type === 'wealth') wealth += v;
+      var kind = acctKind(a);
+      if (kind === 'credit') credit += v;
+      else if (kind === 'wealth') wealth += v;
       else dep += v;
     });
     var sum = dep + wealth + credit;
@@ -451,6 +462,20 @@
     var w2 = Math.max(2, Math.round(wealth / sum * 1000) / 10);
     var w3 = Math.max(2, Math.round(credit / sum * 1000) / 10);
     dom.acctMix.innerHTML = '<i style="width:' + w1 + '%"></i><i style="width:' + w2 + '%"></i><i style="width:' + w3 + '%"></i>';
+  }
+  // 资金变动后重新拉一次会话快照，让左侧「可用余额 / 账户 / 资产构成」跟着操作走。
+  // 只读接口，不触发任何写操作；失败时保持旧数字并提示，不阻塞对话。
+  async function refreshAccountSnapshot() {
+    if (!state.sessionId || state.acctRefreshing) return;
+    state.acctRefreshing = true;
+    try {
+      var s = await getJson('/api/session/' + encodeURIComponent(state.sessionId));
+      if (s && s.accounts) renderAccounts(s);
+    } catch (e) {
+      // 静默失败：下一次回合结束会再试
+    } finally {
+      state.acctRefreshing = false;
+    }
   }
   function renderChips(tasks) {
     if (!dom.chips) return;
@@ -953,6 +978,7 @@
       toast('已撤销这笔操作', { type: 'success', sub: (res && res.message) || '资金已原路退回' });
       renderNote('撤销完成 · 已追加撤销审计事件');
       loadAudit(true);
+      refreshAccountSnapshot();
     } catch (e) {
       if (handle) { handle.enableAction('重试'); handle.setSub(e.message || '撤销失败'); }
       toast(e.message || '撤销失败', { type: 'error' });
@@ -1041,7 +1067,7 @@
     if (status === 'awaiting_approval') traceDone('awaiting');
     else if (status === 'blocked') traceDone('blocked');
     else traceDone('done');
-    if (status === 'ok' || status === 'blocked') loadAudit(true);
+    if (status === 'ok' || status === 'blocked') { loadAudit(true); refreshAccountSnapshot(); }
     state.streaming = false;
     state.streamCancelRequested = false;
     setSendMode('idle');
@@ -2881,7 +2907,7 @@
     handleEvent: handleEvent, showView: showView, sendText: sendText,
     openApproval: openApproval, submitApproval: submitApproval,
     renderAudit: renderAudit, loadAudit: loadAudit, openAudit: openAudit, closeAudit: closeAudit,
-    renderAccounts: renderAccounts, loadSkills: loadSkills, loadServices: loadServices, loadSettings: loadSettings,
+    renderAccounts: renderAccounts, refreshAccountSnapshot: refreshAccountSnapshot, loadSkills: loadSkills, loadServices: loadServices, loadSettings: loadSettings,
     applyLlmStatus: applyLlmStatus, loadLlmStatus: loadLlmStatus, renderLlmCard: renderLlmCard, testLlm: testLlm, toast: toast, showModal: showModal, closeAll: function () { closeMenu(); closeModal(); closeApprovalSheet(); closeAudit(); },
     loadTasks: loadTasks, loadTasksPage: loadTasksPage, nextTaskPage: nextTaskPage, taskPageCount: taskPageCount,
     loadPlugins: loadPlugins, renderPlugins: renderPlugins, togglePlugin: togglePlugin, togglePluginOpen: togglePluginOpen, pluginCounts: pluginCounts,

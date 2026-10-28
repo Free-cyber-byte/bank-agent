@@ -111,7 +111,7 @@
 | 组件 | 关键类 / id | 要点 |
 | --- | --- | --- |
 | 顶栏 | .topbar、.brand、.seg、.audit-btn、.avatar | 品牌 A 默认（data-v="a"）；模式分段三段（规则/自动/模型）为轨道式（--surface-3 轨道 + 白滑块）；右侧审计、更多、时间 |
-| 账户卡 | .acct、.acct__bal、.digits | 全屏唯一深色块，152deg navy 渐变；金额 40px/600/tabular，货币符号 0.6em；金额逐位入场 22ms；资产构成微条 3 段 |
+| 账户卡 | .acct、.acct__bal、.digits | 全屏唯一深色块，152deg navy 渐变；金额 40px/600/tabular，货币符号 0.6em；金额逐位入场 22ms；资产构成微条 3 段（活期 / 信用卡 / 理财，按 acctKind(a) = a.kind || a.type 分类）；账户列表末行「理财 · 持仓」（.acct__row--wealth），金额取 wealth.holding_total_cents；回合结束、审批通过、撤销后自动刷新（v0.5.1） |
 | 侧栏块 | .rail__block、.chips、.chip | 白卡 + 1px 发丝线 + shadow-1；chip 高 29、pill 圆角、hover 变 accent-soft |
 | 页头 | .hero、.hero__eyebrow、.hero h1、.hero__sub | eyebrow 12px 大写 +0.08em；标题 28px；副标题 14px/23px 最大 54ch |
 | 业务流水 | .msg--user、.intent、.plan、.tool、.turn__msg | 意图 chip（意图 + 置信度 + 来源规则/模型/技能）→ 编号执行计划（风险色点）→ 工具 KPI 卡（可展开参数与返回）→ 结论卡 |

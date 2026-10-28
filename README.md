@@ -4,7 +4,7 @@
 
 ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的可运行参考实现：用户用一句自然语言说出需求，Agent 走完「理解 → 规划 → 策略校验 → 执行 → 回读 → 回复」六阶段流水线，把查询、转账、理财、卡片、订阅、跨场景分账真正做完。它同时是一份可被审计、可被评测的工程样本：资金动作全部由确定性工具执行，模型只负责产出意图与槽位，任何高风险动作都必须经过用户确认或强验证因子（TOTP 动态码 / 短信码 / 人脸令牌），连续可疑操作还会临时锁定会话；整条事件链用 SHA-256 哈希链固化。
 
-本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.5.0：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）。
+本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.5.1：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56。
 
 ---
 
@@ -25,6 +25,24 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 13. **逐字流式、可随时停止（v0.5.0）**：最终回答按 SSE answer_start → answer_delta ×n（每块 12 字符，块间 ZS_STREAM_DELAY_MS 默认 18ms）→ answer_end → insight_card → done 输出，像真人打字；POST /api/turn/cancel 按 thread_id 停止输出，补 answer_end{cancelled:true} 与「已停止输出」，审计写 answer_cancelled；stream_text=false 时退回旧的整段 message 事件。
 14. **洞察只读、建议不代做（v0.5.0）**：洞察计划只有 LOW 只读工具（spending_insights / detect_subscriptions），savings 只是建议（取消订阅、查看账单），任何资金动作仍需用户点按并重新走三级授权；停止输出只作用于文本，不撤销已执行的工具。
 
+15. **操作后总览即刻对齐（v0.5.1）**：账户类型统一按 kind 判断（acctKind），资产构成与账户列表计入理财持仓并单列「理财 · 持仓」一行，回合结束、审批通过与撤销后自动 GET /api/session/{id} 刷新快照；实测 56/56、e2e_stream 33/33、前端自检 247 项全过。
+
+---
+
+## v0.5.1 修复（账户总览刷新 · 资金流向）
+
+v0.5.1 修的是「操作完了，左边数字没动」：账户类型字段口径、理财持仓入账、操作后自动刷新。只改会话快照与前端展示层，资金边界、1000 元阈值、审批 TTL 300 秒、撤销窗口 60 秒与审计哈希链均不变。
+
+| 问题 | 原因 | 修复 | 文档 |
+| --- | --- | --- | --- |
+| 信用卡被算成存款、理财段恒 0 | 后端字段是 kind，前端按 type 判断 | app.js:412 新增 acctKind(a) = a.kind || a.type，总额 / 待还 / 资产构成统一口径 | [docs/architecture.md](docs/architecture.md) |
+| 申购后看不到持仓 | 资产构成与账户列表只算活期账户 | 读 session.wealth.holding_total_cents 计入理财段，并追加「理财 · 持仓 ¥X」一行（acct__row--wealth） | [docs/architecture.md](docs/architecture.md) |
+| 操作后总览不刷新 | 只在首屏取过一次快照 | refreshAccountSnapshot() 在回合结束 / 审批通过 / 撤销后重新 GET /api/session/{id} 并重渲染 | [docs/api.md](docs/api.md) |
+| 快照没有理财字段 | session_snapshot 未返回持仓 | engine.py:56 新增 wealth（holding_total_cents 单位分） | [docs/api.md](docs/api.md) |
+| 前端静态资源不更新 | sw.js 缓存版本停在 0.3.2 | VERSION 改 0.5.1，activate 阶段清旧缓存 | [docs/architecture.md](docs/architecture.md) |
+
+实测（2026-10-28）：scripts/run_tasks.py 56/56、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（新增 9 条「资金流向与余额刷新」）。
+
 ---
 
 ## v0.5.0 新能力（消费洞察 · 逐字流式可打断）
@@ -43,7 +61,7 @@ v0.5.0 是「看得懂钱花到哪 + 说得像人在打字」批次：新增只�
 - 版本 0.5.0（VERSION 唯一来源，改后需重启进程生效；/api/health 与插件 version 字段随之一致）。
 - 评测 46 → 56 条：新增 t47–t56 共 10 条 insight 用例（统计口径、环比符号、可省公式、零写操作、订阅命中、一次性消费不误报、SSE 事件序、中途取消、取消不撤销工具、LLM 模式洞察）；规则模式实测 56/56 通过、0 失败（2026-10-28 本机）。
 - 工具分支 24 → 26（engine._exec_tool 口径）：新增 spending_insights 与 detect_subscriptions，均登记在 LOW_TOOLS、只读、无需审批；意图 ALLOWED_INTENTS 由 23 增至 24（基础 17 + v0.4.0 六类资金能力 + insight），nlu 与 INTENT_ALIASES 补「洞察 / 花费分析 / 钱都花哪了 / 能省 / 订阅在烧钱」等说法。
-- 新增脚本 scripts/e2e_stream.py 覆盖流式事件序与取消（起服务、真实 SSE、端口清理），本机实测 33/33；前端自检 206 → 238 项，PASS=238 FAIL=0。
+- 新增脚本 scripts/e2e_stream.py 覆盖流式事件序与取消（起服务、真实 SSE、端口清理），本机实测 33/33；前端自检 206 → 238 项，PASS=238 FAIL=0（v0.5.1 时点为 247）。
 - 兼容性：/api/chat 既有字段不变（新增可选 stream_text）；非流式响应仅在 insight 意图新增顶层 insight 字段；SSE 旧客户端仍收到 message + done。
 - 界面：回答气泡逐字追加，生成中「发送」变「停止」，点击后消息补「已停止输出」；洞察回答下方新增洞察卡（收支、分类、可省、预算）。
 
@@ -115,7 +133,7 @@ v0.3.2 不改资金链路与安全语义，只扩展「消息怎么进来、提�
 | 企业微信回调 | backend/channels/wecom.py + wecom_crypto.py：URL 验签、AES-128-CBC 解密、XML 转发、加密被动回包；默认 8401，MsgId 去重 300 秒 | [docs/channel.md](docs/channel.md) |
 | 主动触达 | POST /api/push：subscription / large_txn / repayment 三类提醒，三态 not_configured / delivered / failed，每次写 push_message 审计 | [docs/api.md](docs/api.md) |
 | 手机端 | ≤720px 顶栏精简、模式切换移入抽屉、底部 tabbar（工作台/技能/插件/设置，56px + 安全区）、审批弹层按 visualViewport 限高 | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
-| PWA | manifest.webmanifest（standalone、5 个图标含 maskable、theme #0B5FD0）+ sw.js（外壳预缓存、/api/ 永不缓存、导航 network-first 回落） | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
+| PWA | manifest.webmanifest（standalone、5 个图标含 maskable、theme #0B5FD0）+ sw.js（外壳预缓存、/api/ 永不缓存、导航 network-first 回落；VERSION 0.5.1） | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
 | 模拟推送 | 设置页「模拟推送」卡：三种 kind、一键预览、结果四态，演示环境不真的发短信 | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
 
 同时升级：
@@ -159,14 +177,14 @@ v0.3.0 不新增业务动作，也不改 v0.2.0 的接口语义；它把已有�
 
 同时升级：
 
-- 版本号 0.3.0（当时 VERSION 值），/api/health 与插件 version 字段读取仓库根 VERSION（改后需重启新进程生效）；当前为 0.5.0。
+- 版本号 0.3.0（当时 VERSION 值），/api/health 与插件 version 字段读取仓库根 VERSION（改后需重启新进程生效）；当前为 0.5.1。
 - 测试（2026-10-27 QA 回归，全部 exit 0）：run_tasks 36/36、plugin_e2e 17/17、smoke18 18/18（审计链 valid，checked=81）、smoke_normalize 10/10、skill_check 6/6、mcp_e2e 7/7、channel_e2e 9/9、verify_audit valid 13 条、前端 selftest PASS=100 FAIL=0。明细见工作区根 audit/qa-report-v0.3.0.md（2026-10-27，212 行，0 FAIL）。
 
 插件状态落盘与演示前检查：
 
 - 状态文件 backend/data/plugins.json，可用环境变量 PLUGINS_FILE 指定路径；POST /api/admin/reset 会把它一并复位，该文件已被 .gitignore 忽略，不进仓库。
 - 演示前先看 GET /api/plugins 的 enabled_count 是否为 7（七项均启用）；不是的话在设置页点「全部恢复」或调用 POST /api/admin/reset，再刷新界面。
-- 版本号在进程启动时从仓库根 VERSION 读取（v0.3.0 当时为 0.3.0，当前为 0.5.0），改完要重启才生效（已知限制）。
+- 版本号在进程启动时从仓库根 VERSION 读取（v0.3.0 当时为 0.3.0，当前为 0.5.1），改完要重启才生效（已知限制）。
 
 ---
 
@@ -188,7 +206,7 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 - **新意图 query_fx**：汇率/换汇/兑换类问题规划为单步 fx_convert。
 - **评测扩到 36 条**：新增 t31–t36，覆盖外部汇率、外部关闭降级、技能命中、policy hits、注入绕过、账单+提醒跨场景；2026-10-27 全量实测 36/36 通过（规则模式）。
 
-版本号见 VERSION（0.5.0），后端 config.py 从该文件读取且为唯一来源，/api/health 的 version 字段与之一致；变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+版本号见 VERSION（0.5.1），后端 config.py 从该文件读取且为唯一来源，/api/health 的 version 字段与之一致；变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -207,6 +225,8 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 
 ![审计抽屉](docs/screenshots/04-audit.png)
 *审计抽屉：SHA-256 哈希链逐条可校验，可导出 audit.log*
+
+> v0.5.1 起账户区在常规账户行后追加一行「理财 · 持仓」，资产构成按 kind 分活期 / 信用卡 / 理财，回合结束、审批通过与撤销后自动刷新（四张截图摄于 v0.5.0，尚未包含该行）。
 
 ---
 
@@ -251,12 +271,14 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 
 手机访问：用 HOST=0.0.0.0 启动（Windows 可先 set HOST=0.0.0.0），手机与电脑在同一局域网，浏览器打开 http://<电脑局域网IP>:8000。页面在 ≤720px 自动切换为手机布局，可「添加到主屏幕」；PWA 的 Service Worker 只在 localhost 或 HTTPS 下注册，局域网 HTTP 仍可正常使用页面，只是没有离线缓存。
 
+更新后看不到变化：先 Ctrl+F5 强刷；若改的是前端静态资源（app.js / styles.css / index.html），必须同步把 frontend/sw.js 的 VERSION 改成新版本号（当前 0.5.1），否则已安装的 PWA 会继续用旧缓存外壳。
+
 启动后先看两个只读接口，确认版本与插件清单：
 
     curl.exe -s http://127.0.0.1:8000/api/health
     curl.exe -s http://127.0.0.1:8000/api/plugins
 
-/api/health 返回 version=0.5.0；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（56 条任务按每批 6 条分 10 批）。
+/api/health 返回 version=0.5.1；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（56 条任务按每批 6 条分 10 批）。
 
 不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，56 条评测全部通过（规则模式）。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / 模型」之间切换（「模型」即调用大模型解析，悬停可看到当前厂商与模型名）。
 
@@ -356,6 +378,27 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
 
 此时 GET /api/mcp/status 显示 degraded=true，汇率回落内置表、反欺诈评分跳过；端口可用 --port 覆盖，环境变量 MCP_ENABLED=0 可整体关闭外部调用。手机访问同上：HOST=0.0.0.0 后用局域网 IP 打开。
 
+停止服务（演示结束、换端口、清理残留）：
+
+    # 一键停止 8000 / 8300 / 8301（Windows 双击 stop.bat 同理）
+    python scripts/stop_services.py
+
+    # 只停指定端口；只看占用了谁，不动手
+    python scripts/stop_services.py --ports 8000
+    python scripts/stop_services.py --dry-run
+
+脚本按端口找监听进程再结束，结束不了会提示改用任务管理器；不依赖第三方库，Windows 用 netstat + taskkill（被拒时兜底 TerminateProcess），macOS/Linux 用 lsof + kill。手动处理也只要两步：
+
+    # Windows：查占用这个端口的 PID，再结束它
+    netstat -ano | findstr :8000
+    taskkill /PID <上面查到的PID> /F
+
+    # Windows PowerShell 等价写法
+    Get-NetTCPConnection -LocalPort 8000 -State Listen | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force }
+
+    # macOS / Linux
+    lsof -ti tcp:8000 | xargs kill
+
 状态检查：
 
     curl.exe -s http://127.0.0.1:8000/api/mcp/status
@@ -364,7 +407,7 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
     curl.exe -s http://127.0.0.1:8401/health
     curl.exe -s http://127.0.0.1:8000/api/channel/status
 
-后端已冻结：v0.5.0 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=238 FAIL=0（v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件，字段见 docs/api.md §2 / §4 / §7。
+后端已冻结：v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件，字段见 docs/api.md §2 / §4 / §7。
 
 ---
 
@@ -525,9 +568,9 @@ v0.5.0 增量自检（2026-10-28 实测）：
 
     python scripts/run_tasks.py       # 56/56 通过（含 t47–t56）
     python scripts/e2e_stream.py      # 33/33 项 SSE 事件序、取消与端口清理断言
-    node frontend/_selftest.js        # PASS=238 FAIL=0（v0.4.1 为 206，新增流式与洞察 32 项）
+    node frontend/_selftest.js        # PASS=247 FAIL=0（v0.4.1 为 206，v0.5.0 流式与洞察增至 238，v0.5.1 账户刷新新增 9 项）
 
-v0.5.0 新增 10 条 insight 任务覆盖消费统计、可省金额、订阅识别与流式/取消；scripts/e2e_stream.py 用 33 项断言在真实服务上验证事件序（answer_start 到 done 的完整序列、每块 12 字符、末块可短）、stream_text=false 降级、取消两种返回、审计 answer_cancelled 与取消不撤销工具。前端自检从 206 增至 238：逐字追加、生成中「发送 → 停止」、取消后按钮恢复与「已停止输出」提示、洞察卡字段渲染。
+v0.5.0 新增 10 条 insight 任务覆盖消费统计、可省金额、订阅识别与流式/取消；scripts/e2e_stream.py 用 33 项断言在真实服务上验证事件序（answer_start 到 done 的完整序列、每块 12 字符、末块可短）、stream_text=false 降级、取消两种返回、审计 answer_cancelled 与取消不撤销工具。前端自检从 206 增至 238、v0.5.1 再到 247：逐字追加、生成中「发送 → 停止」、取消后按钮恢复与「已停止输出」提示、洞察卡字段渲染。
 
 v0.4.1 增量自检（2026-10-28 实测，当时数字）：
 
@@ -615,7 +658,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     bank-agent/
     ├── README.md                 项目说明与快速开始
     ├── CHANGELOG.md              版本变更与兼容性记录
-    ├── VERSION                   版本号（0.5.0）
+    ├── VERSION                   版本号（0.5.1）
     ├── backend/
     │   ├── server.py              HTTP/SSE 服务入口（零依赖，698 行，含插件、分页、推送、预约/调度、多因子演示与逐字流式/取消路由）
     │   ├── app/
@@ -658,8 +701,8 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   ├── app.js                 SSE 消费、审批弹层、审计面板、模拟推送
     │   ├── styles.css             样式（设计令牌、三栏布局、手机端与 tabbar）
     │   ├── manifest.webmanifest   PWA 清单（standalone、4 图标、主题色）
-    │   ├── sw.js                  Service Worker（外壳预缓存、/api/ 不缓存）
-    │   └── _selftest.js           前端自检（238 项断言，含 PWA、手机端、推送、多因子、锁定态与逐字流式）
+    │   ├── sw.js                  Service Worker（外壳预缓存、/api/ 不缓存；VERSION 0.5.1，改静态资源须同步改）
+    │   └── _selftest.js           前端自检（247 项断言，含 PWA、手机端、推送、多因子、锁定态、逐字流式与资金流向刷新）
     ├── tasks/t01.json … t56.json  56 条评测任务（声明式断言）
     ├── scripts/
     │   ├── run_tasks.py           评测执行器
@@ -706,7 +749,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
 | [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化、插件注册表与渠道接入 |
 | [docs/security.md](docs/security.md) | 三级权限矩阵、阈值理由、TOTP 与哈希链实现、注入四层防御、攻击测试、已知限制 |
 | [docs/evaluation.md](docs/evaluation.md) | 56 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、流式 e2e 33/33、v0.4.0/v0.4.1/v0.5.0 增量自检、新增任务方法 |
-| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.7：v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
+| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.8：v0.5.1 会话 wealth 与 accounts.kind 口径、v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
 | [docs/design-system.md](docs/design-system.md) | 前端设计规范（v0.3.2，延续 v4 视觉）：Win11 Fluent、7 档字号、264/1fr/296 三栏、审批卡规则行、技能页/外部服务页/设置页、插件页与开关/徽章/手风琴/换一批、移动端与 PWA（tabbar、推送卡、安装态） |
 | [docs/mcp.md](docs/mcp.md) | MCP 外部只读服务：协议、接口、两个工具、降级行为、启动与演示 |
 | [docs/skills.md](docs/skills.md) | Skill 技能包：六张卡、front-matter 字段、match/summary/status、接入位置与新增方法 |

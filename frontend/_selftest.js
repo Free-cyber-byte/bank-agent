@@ -597,6 +597,32 @@ function one(sel) { return doc.querySelector(sel); }
   ok('首页为空态视图', ZS.state.view === 'home' && one('#view-home').classList.contains('is-on'));
   ok('模式徽章写实际模式', /实际：/.test(one('#modeBadge .effective__text').textContent), one('#modeBadge .effective__text').textContent);
   ok('模式按钮 title 含 provider', /deepseek/.test(one('#modeBadge').title), one('#modeBadge').title);
+  console.log('== 资金流向与余额刷新（kind 字段 / 理财持仓）==');
+  var mixBoot = getEls('#acctMix i').map(function (el) { return parseFloat(String(el.getAttribute('style') || '').replace(/[^0-9.]/g, '')) || 0; });
+  ok('启动时理财段仅占最小宽度', mixBoot.length === 3 && mixBoot[1] <= 2.1, JSON.stringify(mixBoot));
+  ok('启动时无理财持仓行', getEls('#acctList .acct__row--wealth').length === 0);
+  // 模拟一次理财申购后服务端快照：账户用 kind 字段（真实接口返回的是 kind），并带 wealth.holding_total_cents
+  FIX.session.accounts = [
+    { account_id: 'a1', kind: 'checking', name: '工资卡', number_masked: '**** 8821', balance_cents: 284450, currency: 'CNY' },
+    { account_id: 'a2', kind: 'credit', name: '信用卡', number_masked: '**** 6712', balance_cents: -843200, currency: 'CNY' },
+    { account_id: 'a3', kind: 'savings', name: '储蓄', number_masked: '**** 3390', balance_cents: 4500000, currency: 'CNY' }
+  ];
+  FIX.session.wealth = { holding_total_cents: 1000000, holding_total_display: '¥10,000.00', holdings: [], products: [] };
+  await ZS.refreshAccountSnapshot();
+  await sleep(30);
+  ok('刷新后工资卡余额跟随服务端', ZS.state.accounts[0].balance_cents === 284450, String(ZS.state.accounts[0].balance_cents));
+  ok('信用卡待还写进账户脚注', /信用卡待还 ¥8,432.00/.test(one('#acctDelta').textContent || one('#acctDelta').innerHTML), one('#acctDelta').textContent);
+  ok('多出理财持仓行', getEls('#acctList .acct__row').length === 4, String(getEls('#acctList .acct__row').length));
+  ok('理财持仓行写明金额', /理财 · 持仓/.test(getEls('#acctList .acct__row--wealth')[0].textContent) && /¥10,000.00/.test(getEls('#acctList .acct__row--wealth')[0].textContent), getEls('#acctList .acct__row--wealth')[0].textContent);
+  var mixAfter = getEls('#acctMix i').map(function (el) { return parseFloat(String(el.getAttribute('style') || '').replace(/[^0-9.]/g, '')) || 0; });
+  ok('理财段按持仓放宽', mixAfter.length === 3 && mixAfter[1] > 5, JSON.stringify(mixAfter));
+  // 回合结束时应自动再拉一次快照：模拟第二次申购后的服务端状态
+  FIX.session.accounts[0].balance_cents = 184450;
+  FIX.session.wealth.holding_total_cents = 2000000;
+  ZS.finishTurn('ok', {});
+  await sleep(60);
+  ok('回合结束自动刷新余额', ZS.state.accounts[0].balance_cents === 184450, String(ZS.state.accounts[0].balance_cents));
+  ok('回合结束自动刷新持仓', /¥20,000.00/.test(getEls('#acctList .acct__row--wealth')[0].textContent), getEls('#acctList .acct__row--wealth')[0].textContent);
 
   console.log('== 视图切换 ==');
   ZS.showView('skills'); await sleep(30);
