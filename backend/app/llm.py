@@ -61,6 +61,8 @@ ALLOWED_INTENTS = (
     # v0.4.0 新增能力（模型可识别，但风险分级与执行仍由代码层判定）
     "wealth_redeem", "card_limit", "card_spend", "anomaly_scan", "annual_report",
     "scheduled_transfer",
+    # v0.5.0 新增：消费洞察（只读汇总；是否执行仍由代码层判定）
+    "insight",
 )
 
 INTENT_ALIASES = {
@@ -95,6 +97,11 @@ INTENT_ALIASES = {
     "年度支出": "annual_report", "年度消费": "annual_report",
     "预约转账": "scheduled_transfer", "定时转账": "scheduled_transfer",
     "预约汇款": "scheduled_transfer", "计划转账": "scheduled_transfer",
+    # v0.5.0
+    "洞察": "insight", "消费洞察": "insight", "花费分析": "insight",
+    "我最近花钱": "insight", "钱都花哪了": "insight", "能省": "insight",
+    "省钱": "insight", "有什么可以省": "insight", "订阅在烧钱": "insight",
+    "账单洞察": "insight",
 }
 
 PRODUCT_ALIASES = {
@@ -124,6 +131,7 @@ cross_scenario 一句话里有多件要办的事（如发工资后分账、生�
 v0.4.0 新增：wealth_redeem 赎回/取出理财；card_limit 调整银行卡额度或限额（日累计/单笔）；
 card_spend 刷信用卡或储蓄卡消费；anomaly_scan 查"最近有没有异常交易/可疑交易"（注意：只是扫描，不是查流水）；
 annual_report 年度/全年账单报告；scheduled_transfer 预约/定时转账（含创建、查询、取消）。
+v0.5.0 新增：insight 消费洞察/花费分析/哪里能省钱（只做只读汇总与建议，不执行任何资金操作）。
 
 输出严格 JSON，字段如下（没有提到的字段一律填 null，不要编造）：
 {
@@ -161,7 +169,8 @@ annual_report 年度/全年账单报告；scheduled_transfer 预约/定时转账
 6. 只输出 JSON，不要输出 Markdown、解释或代码块。
 7. 赎回、改额度、刷卡、预约转账这些新动作同样只是"解析意图"，用户没说金额就填 null。
 8. "查一下最近有没有异常交易"是 anomaly_scan（扫描可疑交易）；"查流水/查明细"才是 query_transactions。
-9. 预约转账的时间只照抄用户说法填 schedule_hint，绝对不要自己计算具体日期时间。"""
+9. 预约转账的时间只照抄用户说法填 schedule_hint，绝对不要自己计算具体日期时间。
+10. 「洞察/花费分析/钱都花哪了/哪里能省钱」是 insight（只读分析），绝不因此执行转账、申购等写操作。"""
 
 
 _PROVIDER_HINTS = (

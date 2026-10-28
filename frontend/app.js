@@ -92,7 +92,8 @@
     approvalFactor: 'totp', approvalSms: { code: '', expiresAt: 0, busy: false },
     approvalFace: { token: '', expiresAt: 0, busy: false, error: '' },
     lockUntil: 0, lockTimer: null, lockActive: false,
-    lastAction: null
+    lastAction: null,
+    streaming: false, streamCancelRequested: false, streamTurnId: null
   };
   var dom = {};
 
@@ -505,7 +506,9 @@
       thinking: thinking, intentEl: null, planEl: null, planSteps: {},
       msgEl: null, typer: null, auditEl: null, noteEl: null,
       status: 'running', done: false, replyText: '',
-      auditCount: 0, actions: [], latency: null
+      auditCount: 0, actions: [], latency: null,
+      answerEl: null, answerBody: null, answerCaret: null, answerRaw: '', answerChunks: {},
+      answerNext: 0, answerSeen: false, answerGotDelta: false, insightEl: null
     };
     state.currentTurn = turn;
     traceReset('已接收指令 · 正在解析');
@@ -638,9 +641,187 @@
   }
   function renderDelta(text) {
     var turn = ensureTurn();
+    // 后端未发 answer_delta（关闭流式 / 老服务）：整段 message 仍显示在同一个气泡里
+    if (turn.answerEl && !turn.answerGotDelta) {
+      turn.replyText += text;
+      turn.answerRaw += text;
+      paintAnswer(turn);
+      return;
+    }
     ensureMessage(turn);
     turn.replyText += text;
     turn.typer.push(text);
+    scrollChat();
+  }
+
+  // ---- v0.5.0：逐字流式回答（answer_start / answer_delta / answer_end）----
+  function setSendMode(mode) {
+    if (!dom.btnSend) return;
+    var stop = mode === 'stop';
+    dom.btnSend.classList.toggle('is-stop', stop);
+    dom.btnSend.disabled = lockedNow() || mode === 'busy';
+    dom.btnSend.textContent = stop ? '停止' : (mode === 'busy' ? '处理中…' : '发送');
+    dom.btnSend.setAttribute('aria-label', stop ? '停止输出' : '发送');
+  }
+  function ensureAnswerBubble(turn) {
+    if (!turn) return null;
+    if (turn.answerEl) return turn.answerEl;
+    dropThinking(turn);
+    var el = document.createElement('div');
+    el.className = 'result result--stream is-typing';
+    el.setAttribute('role', 'status');
+    el.setAttribute('aria-live', 'polite');
+    var body = document.createElement('span');
+    body.className = 'answer__body';
+    el.appendChild(body);
+    var caret = document.createElement('i');
+    caret.className = 'answer__caret';
+    caret.setAttribute('aria-hidden', 'true');
+    el.appendChild(caret);
+    turn.root.appendChild(el);
+    turn.answerEl = el;
+    turn.answerBody = body;
+    turn.answerCaret = caret;
+    return el;
+  }
+  function paintAnswer(turn) {
+    if (!turn || !turn.answerBody) return;
+    turn.answerBody.textContent = turn.answerRaw;
+    scrollChat();
+  }
+  function renderAnswerStart(data) {
+    var turn = ensureTurn();
+    data = data || {};
+    ensureAnswerBubble(turn);
+    if (!turn.answerSeen) {
+      turn.answerSeen = true;
+      turn.answerRaw = '';
+      turn.answerChunks = {};
+      turn.answerNext = 0;
+    }
+    turn.answerEl.classList.add('is-typing');
+    if (data.turn_id) { state.streamTurnId = data.turn_id; turn.streamTurnId = data.turn_id; }
+    if (data.thread_id) state.threadId = data.thread_id;
+    state.streaming = true;
+    state.streamCancelRequested = false;
+    setSendMode('stop');
+  }
+  function renderAnswerDelta(data) {
+    var turn = ensureTurn();
+    data = data || {};
+    if (!turn.answerSeen) renderAnswerStart({ turn_id: data.turn_id, thread_id: data.thread_id });
+    var i = Number(data.i);
+    if (!isFinite(i) || i < 0) i = turn.answerNext;
+    var text = data.text != null ? data.text : (data.delta || '');
+    turn.answerChunks[i] = String(text);
+    turn.answerGotDelta = true;
+    while (Object.prototype.hasOwnProperty.call(turn.answerChunks, turn.answerNext)) {
+      turn.answerRaw += turn.answerChunks[turn.answerNext];
+      delete turn.answerChunks[turn.answerNext];
+      turn.answerNext += 1;
+    }
+    paintAnswer(turn);
+  }
+  function finishAnswerBubble(turn, data) {
+    if (!turn || !turn.answerEl) return;
+    var rest = Object.keys(turn.answerChunks || {});
+    if (rest.length) {
+      rest.sort(function (a, b) { return Number(a) - Number(b); });
+      rest.forEach(function (k) { turn.answerRaw += turn.answerChunks[k]; });
+      turn.answerChunks = {};
+    }
+    turn.answerEl.classList.remove('is-typing');
+    if (turn.answerCaret && turn.answerCaret.parentNode) turn.answerCaret.parentNode.removeChild(turn.answerCaret);
+    turn.answerCaret = null;
+    if (turn.answerBody) turn.answerBody.innerHTML = fmtRich(turn.answerRaw);
+    if (data && data.cancelled) {
+      turn.answerEl.classList.add('is-cancelled');
+      var stopped = document.createElement('span');
+      stopped.className = 'answer__stopped';
+      stopped.textContent = '已停止输出';
+      turn.answerEl.appendChild(stopped);
+    }
+    if (data && data.elapsed_ms != null) turn.answerEl.setAttribute('data-elapsed', String(data.elapsed_ms));
+    if (data && data.chunks != null) turn.answerEl.setAttribute('data-chunks', String(data.chunks));
+  }
+  function renderAnswerEnd(data) {
+    data = data || {};
+    state.streaming = false;
+    finishAnswerBubble(state.currentTurn, data);
+    setSendMode('idle');
+    scrollChat();
+  }
+  async function cancelTurn() {
+    if (!state.streaming || state.streamCancelRequested) return;
+    state.streamCancelRequested = true;
+    if (dom.btnSend) { dom.btnSend.disabled = true; dom.btnSend.textContent = '停止中…'; }
+    try {
+      var res = await postJson('/api/turn/cancel', { thread_id: state.threadId || '' });
+      if (!res || res.cancelled !== true) {
+        state.streaming = false;
+        setSendMode(state.busy ? 'busy' : 'idle');
+      }
+    } catch (e) {
+      state.streamCancelRequested = false;
+      setSendMode('stop');
+      toast('停止失败，请稍后重试', { type: 'error', sub: e.message || '' });
+    }
+  }
+  // ---- v0.5.0：消费洞察卡 ----
+  function fmtPct(n) {
+    var v = Number(n);
+    if (!isFinite(v)) return '—';
+    var r = Math.round(v * 10) / 10;
+    var s = String(Math.abs(r));
+    if (s.indexOf('.') !== -1) s = s.replace(/0+$/, '').replace(/\.$/, '');
+    return (r > 0 ? '+' : (r < 0 ? '-' : '')) + s + '%';
+  }
+  function insightSentence(action) {
+    var a = action || {};
+    if (a.kind === 'subscription_cancel' && a.merchant) return '取消 ' + a.merchant + ' 订阅';
+    if (a.kind === 'query_bills' && a.category) return '查一下 ' + a.category + ' 分类的账单';
+    return '';
+  }
+  function renderInsightCard(turn, data) {
+    var ins = data && (data.insight || data.card) ? (data.insight || data.card) : data;
+    if (!ins || !(ins.totals || ins.savings || ins.top_categories)) return;
+    turn = turn || ensureTurn();
+    dropThinking(turn);
+    if (turn.insightEl && turn.insightEl.parentNode) turn.insightEl.parentNode.removeChild(turn.insightEl);
+    var totals = ins.totals || {};
+    var top = (ins.top_categories || [])[0] || {};
+    var save = totals.potential_save_monthly_cents;
+    var stats = [
+      { label: '环比', value: fmtPct(totals.delta_pct), sub: '较上月支出' },
+      { label: '最大分类', value: top.category || '—', sub: top.pct == null ? '本月最大支出' : fmtPct(top.pct).replace('+', '') + ' 占比' },
+      { label: '可省', value: save == null ? '—' : fmtMoney(save), sub: '每月可优化' }
+    ];
+    var html = '<div class="insight__head"><span class="insight__title">本月的三件事</span>' +
+      '<span class="insight__tag">只读洞察</span></div><div class="insight__stats">' +
+      stats.map(function (s) {
+        return '<div class="insight__stat"><span class="insight__stat-k">' + esc(s.label) + '</span>' +
+          '<span class="insight__stat-v">' + esc(s.value) + '</span>' +
+          '<span class="insight__stat-s">' + esc(s.sub) + '</span></div>';
+      }).join('') + '</div>';
+    var savings = ins.savings || [];
+    if (savings.length) {
+      html += '<div class="insight__save-head">还能省下的钱</div><ul class="insight__saves">' +
+        savings.map(function (s) {
+          var sentence = insightSentence(s.action);
+          var btn = sentence
+            ? '<button class="insight__go" type="button" data-insight-text="' + esc(sentence) + '">去处理</button>'
+            : '';
+          return '<li class="insight__save"><span class="insight__save-main">' +
+            '<span class="insight__save-title">' + esc(s.title || s.detail || '可优化项') + '</span>' +
+            '<span class="insight__save-note">' + esc(s.detail || '') + '</span></span>' +
+            '<span class="insight__save-money">' + esc(fmtMoney(s.monthly_cents)) + '<i>/月</i></span>' + btn + '</li>';
+        }).join('') + '</ul>';
+    }
+    var el = document.createElement('div');
+    el.className = 'insight';
+    el.innerHTML = html;
+    turn.root.appendChild(el);
+    turn.insightEl = el;
     scrollChat();
   }
   function renderAuditChip(data) {
@@ -809,7 +990,22 @@
     }
     if (name === 'message') {
       var delta = typeof data === 'string' ? data : (data && data.delta) || '';
+      var msgTurn = ensureTurn();
+      // 已经走逐字流式（收到过 answer_delta）时忽略整段 message，避免重复显示
+      if (msgTurn && msgTurn.answerGotDelta) return;
       if (delta) renderDelta(delta);
+      return;
+    }
+    if (name === 'answer_start') { renderAnswerStart(data); return; }
+    if (name === 'answer_delta') { renderAnswerDelta(data); return; }
+    if (name === 'answer_end') { renderAnswerEnd(data); return; }
+    if (name === 'insight_card') { renderInsightCard(ensureTurn(), data); return; }
+    if (name === 'note') {
+      var noteText = (data && (data.text || data.note)) || '已停止输出';
+      var canceledTurn = state.currentTurn;
+      var alreadyMarked = !!(canceledTurn && canceledTurn.answerEl && canceledTurn.answerEl.classList.contains('is-cancelled'));
+      if (alreadyMarked && noteText === '已停止输出') return;
+      renderNote(noteText);
       return;
     }
     if (name === 'audit') { renderAuditChip(data || {}); return; }
@@ -827,6 +1023,7 @@
       turn.status = status || 'ok';
       turn.done = true;
       dropThinking(turn);
+      if (turn.answerSeen && turn.answerCaret) finishAnswerBubble(turn, null);
       if (turn.typer && status !== 'awaiting_approval') turn.typer.flush();
       if (turn.tags) {
         if (status === 'blocked') turn.tags.insertAdjacentHTML('beforeend', '<span class="tag tag--err">已拦截</span>');
@@ -845,6 +1042,9 @@
     else if (status === 'blocked') traceDone('blocked');
     else traceDone('done');
     if (status === 'ok' || status === 'blocked') loadAudit(true);
+    state.streaming = false;
+    state.streamCancelRequested = false;
+    setSendMode('idle');
   }
   function applyFullResult(data) {
     if (!data) return;
@@ -855,6 +1055,7 @@
     if (data.plan) renderPlan(turn, data.plan);
     (data.audit || []).forEach(function (a) { renderAuditChip(a); });
     if (data.approval) { openApproval(data.approval); traceDone('awaiting'); }
+    if (data.insight) renderInsightCard(turn, data.insight);
     if (data.reply) {
       ensureMessage(turn);
       turn.replyText = data.reply;
@@ -2420,11 +2621,11 @@
   }
   function setBusy(busy) {
     state.busy = busy;
-    if (dom.btnSend) dom.btnSend.disabled = busy || lockedNow();
+    if (!busy) { state.streaming = false; state.streamCancelRequested = false; }
     if (dom.input) dom.input.disabled = lockedNow();
     var composer = dom.btnSend ? dom.btnSend.closest('.composer') : null;
     if (composer) composer.classList.toggle('is-busy', busy);
-    if (dom.btnSend) dom.btnSend.textContent = busy ? '处理中…' : '发送';
+    setSendMode(busy ? (state.streaming ? 'stop' : 'busy') : 'idle');
   }
   function userMessage(text) {
     removeEmptyState();
@@ -2452,11 +2653,17 @@
       if (turn && !turn.done) finishTurn('ok', null);
     } catch (e) {
       var cur = state.currentTurn;
-      if (cur) { dropThinking(cur); cur.done = true; }
+      if (cur) {
+        dropThinking(cur);
+        if (cur.answerSeen && !cur.done) finishAnswerBubble(cur, null);
+        cur.done = true;
+      }
       renderErrorLine(e.message || '请求失败，请重试');
       traceDone('error');
       showError(e.message || '网络异常，请求失败', function () { sendText(t); });
     } finally {
+      state.streaming = false;
+      state.streamCancelRequested = false;
       setBusy(false);
       if (!opts || !opts.keepFocus) {
         if (dom.input && !isOtpRequired() && !lockedNow()) { try { dom.input.focus(); } catch (e) {} }
@@ -2503,7 +2710,10 @@
   }
   // ===================== 事件绑定 =====================
   function bindEvents() {
-    if (dom.btnSend) dom.btnSend.addEventListener('click', function () { sendText(dom.input ? dom.input.value : ''); });
+    if (dom.btnSend) dom.btnSend.addEventListener('click', function () {
+      if (dom.btnSend.classList.contains('is-stop')) { cancelTurn(); return; }
+      sendText(dom.input ? dom.input.value : '');
+    });
     if (dom.input) {
       dom.input.addEventListener('input', autoGrow);
       dom.input.addEventListener('keydown', function (ev) {
@@ -2519,6 +2729,14 @@
     document.addEventListener('click', function (ev) {
       var nav = ev.target && ev.target.closest ? ev.target.closest('[data-nav]') : null;
       if (nav) { ev.preventDefault(); showView(nav.getAttribute('data-nav')); return; }
+      var goBtn = ev.target && ev.target.closest ? ev.target.closest('[data-insight-text]') : null;
+      if (goBtn) {
+        ev.preventDefault();
+        var sentence = goBtn.getAttribute('data-insight-text') || '';
+        if (state.busy) { toast('请等当前指令执行完再处理', { type: 'error' }); return; }
+        if (sentence) sendText(sentence);
+        return;
+      }
       var textEl = ev.target && ev.target.closest ? ev.target.closest('[data-text]') : null;
       if (textEl && (textEl.classList.contains('chip') || textEl.classList.contains('sample'))) {
         ev.preventDefault();
@@ -2672,7 +2890,9 @@
     toolLabel: toolLabel,
     setApprovalFactor: setApprovalFactor, sendDemoSms: sendDemoSms, startFaceScan: startFaceScan,
     applyLocked: applyLocked, clearLocked: clearLocked, lockedNow: lockedNow,
-    finishTurn: finishTurn, traceIdle: traceIdle, applyFullResult: applyFullResult, setBusy: setBusy, init: init
+    finishTurn: finishTurn, traceIdle: traceIdle, applyFullResult: applyFullResult, setBusy: setBusy, init: init,
+    renderAnswerStart: renderAnswerStart, renderAnswerDelta: renderAnswerDelta, renderAnswerEnd: renderAnswerEnd,
+    renderInsightCard: renderInsightCard, cancelTurn: cancelTurn, setSendMode: setSendMode
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();

@@ -1,0 +1,32 @@
+{
+  "id": "t47",
+  "title": "消费洞察统计与 mock_core 直算一致",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "看看我这个月的消费洞察"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "expected_tools": [
+      "spending_insights"
+    ],
+    "insight_checks": [
+      "totals_match",
+      "top_match",
+      "budget_formula"
+    ],
+    "reply_contains": [
+      "近 30 天",
+      "比上期",
+      "每月可省约",
+      "预计支出"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "洞察的 totals.out_cents/in_cents 必须与 mock_core.bill_summary(1) 完全一致，top_categories 前 5 与 by_category 的分类/金额/占比一致，预算字段与 budgets 表和直算一致；回复包含本月支出、环比、可省金额与预算预测。"
+}

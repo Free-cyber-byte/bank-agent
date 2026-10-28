@@ -1,0 +1,30 @@
+{
+  "id": "t51",
+  "title": "周期扣费识别命中 5 个已登记订阅",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看这个月的消费洞察"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "detect": {
+      "registered": [
+        "爱奇艺 VIP",
+        "网易云音乐",
+        "iCloud 200G",
+        "健身私教",
+        "财经周刊"
+      ],
+      "registered_count": 5,
+      "min_detected": 10,
+      "window_days": 120
+    },
+    "audit_valid": true
+  },
+  "judge_rubric": "detect_subscriptions(window_days=120) 必须识别出 10 条周期扣费，其中 subscriptions 表已登记的 5 个商户（爱奇艺 VIP/网易云音乐/iCloud 200G/健身私教/财经周刊）全部在 detected 中且 registered=true、sub_id 非空；registered_count=5。"
+}

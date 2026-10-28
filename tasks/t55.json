@@ -1,0 +1,27 @@
+{
+  "id": "t55",
+  "title": "取消不撤销已执行工具且余额不变",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看这个月的消费洞察"
+  ],
+  "stream": {
+    "case": "cancel",
+    "delay_ms": 40,
+    "checks": [
+      "balance_unchanged",
+      "executed_not_undone",
+      "audit_cancelled"
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "取消只停止输出：取消前后 GET /api/accounts 的 total_cents 完全相等；tool_end 中保留 spending_insights，取消后仍下发 insight_card 且 totals.out_cents>0（已执行的只读工具不撤销）；审计有 answer_cancelled 且链 valid。"
+}

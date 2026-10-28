@@ -10,7 +10,10 @@
 import json
 import mimetypes
 import os
+import secrets
 import sys
+import threading
+import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -39,6 +42,23 @@ _APPROVAL_ERROR_MESSAGES = {
     "INVALID_FACE": "人脸确认已过期，请重新发起",
     "INVALID_METHOD": "不支持的校验方式",
 }
+
+# v0.5.0 流式输出注册表：thread_id -> 当前流状态（进程内存；只存「停止输出」信号，不撤销已执行工具）
+_STREAMS: dict = {}
+_STREAMS_LOCK = threading.Lock()
+_STREAM_CHUNK_CHARS = 12
+_STREAM_DELAY_DEFAULT_MS = 18
+
+
+def _stream_delay_ms() -> int:
+    """块间延迟（毫秒）：默认 18，环境变量 ZS_STREAM_DELAY_MS 覆盖（测试传 0 可秒回）。"""
+    raw = os.environ.get("ZS_STREAM_DELAY_MS")
+    if raw is None or str(raw).strip() == "":
+        return _STREAM_DELAY_DEFAULT_MS
+    try:
+        return max(0, int(str(raw).strip()))
+    except (TypeError, ValueError):
+        return _STREAM_DELAY_DEFAULT_MS
 
 
 def json_bytes(obj) -> bytes:
@@ -227,6 +247,22 @@ class Handler(BaseHTTPRequestHandler):
                 db.reset_demo(CONN)
                 plugins.reset()  # 插件状态一并回到默认「全部启用」
                 return self._send(200, {"reset": True, "seed_version": config.SEED_VERSION})
+            if path == "/api/turn/cancel":
+                # v0.5.0：只停止「输出」，不撤销已执行工具；不在流式中则如实返回 cancelled=false
+                body = self._body()
+                if not isinstance(body, dict):
+                    return self._error(400, "BAD_REQUEST", "请求体必须是 JSON 对象")
+                thread_id = str(body.get("thread_id") or "").strip()
+                state = None
+                emitted = 0
+                with _STREAMS_LOCK:
+                    state = _STREAMS.get(thread_id) if thread_id else None
+                    if state is not None:
+                        state["stop"] = True
+                        emitted = int(state.get("emitted_chunks") or 0)
+                if state is None:
+                    return self._send(200, {"cancelled": False, "reason": "not_streaming"})
+                return self._send(200, {"cancelled": True, "emitted_chunks": emitted})
             if path == "/api/chat":
                 body = self._body()
                 sid = body.get("session_id") or ""
@@ -234,7 +270,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not sid or not text:
                     return self._error(400, "BAD_REQUEST", "缺少 session_id 或 text")
                 if body.get("stream"):
-                    return self._stream_chat(sid, text)
+                    # v0.5.0：stream_text=false 时保持旧「整段 message」行为（老测试兼容）
+                    return self._stream_chat(sid, text, body.get("stream_text") is not False)
                 result = engine.run_turn(CONN, sid, text)
                 return self._send(200, _public(result))
             if path == "/api/demo/face":
@@ -334,7 +371,12 @@ class Handler(BaseHTTPRequestHandler):
             return self._error(500, "INTERNAL", str(exc))
 
     # ---------- SSE ----------
-    def _stream_chat(self, sid: str, text: str) -> None:
+    def _stream_chat(self, sid: str, text: str, stream_text: bool = True) -> None:
+        """v0.5.0：结构化事件照旧实时下发；最终回答按 contract 逐字流式。
+
+        事件序（冻结）：answer_start → answer_delta ×n → answer_end → [insight_card] → done。
+        stream_text=False 时退回旧行为：message 事件整段下发（老测试兼容）。
+        """
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
@@ -347,11 +389,68 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(frame.encode("utf-8"))
             self.wfile.flush()
 
-        final = {}
+        if stream_text:
+            def sink(event_type: str, payload) -> None:
+                # 最终回答改由 answer_* 下发：过滤 message，避免前端先整段渲染再重复建气泡
+                if event_type == "message":
+                    return
+                write_event(event_type, payload)
+        else:
+            sink = write_event
+
+        turn_id = "turn_" + secrets.token_hex(4)
+        stream_key = ""
+        stream_state = None
         try:
-            final = engine.run_turn(CONN, sid, text, sink=write_event)
-            write_event("done", {"status": final.get("status"), "thread_id": final.get("thread_id"),
-                                 "undo": final.get("undo"), "approval": final.get("approval")})
+            started = time.time()
+            final = engine.run_turn(CONN, sid, text, sink=sink)
+            reply = str(final.get("reply") or "")
+            thread_id = str(final.get("thread_id") or "")
+            cancelled = False
+            chunks = 0
+            if stream_text and reply:
+                stream_state = {"thread_id": thread_id, "turn_id": turn_id, "stop": False,
+                                "emitted_chunks": 0, "chars_total": len(reply)}
+                if thread_id:
+                    stream_key = thread_id
+                    with _STREAMS_LOCK:
+                        _STREAMS[thread_id] = stream_state
+                write_event("answer_start", {"turn_id": turn_id, "thread_id": thread_id, "chars": len(reply)})
+                delay = _stream_delay_ms()
+                for i, offset in enumerate(range(0, len(reply), _STREAM_CHUNK_CHARS)):
+                    with _STREAMS_LOCK:
+                        stopped = bool(stream_state.get("stop"))
+                    if stopped:
+                        cancelled = True
+                        break
+                    piece = reply[offset:offset + _STREAM_CHUNK_CHARS]
+                    stream_state["emitted_chunks"] = i + 1
+                    write_event("answer_delta", {"turn_id": turn_id, "i": i, "text": piece})
+                    chunks = i + 1
+                    if delay > 0 and offset + _STREAM_CHUNK_CHARS < len(reply):
+                        time.sleep(delay / 1000.0)
+                if not cancelled:
+                    with _STREAMS_LOCK:
+                        cancelled = bool(stream_state.get("stop"))
+                write_event("answer_end", {"turn_id": turn_id, "chunks": chunks,
+                                           "elapsed_ms": int((time.time() - started) * 1000),
+                                           "cancelled": cancelled})
+                if cancelled:
+                    # 只停输出：已执行的工具不回滚；补 note 让前端显示「已停止输出」
+                    write_event("note", {"text": "已停止输出"})
+                    try:
+                        audit.append(CONN, "answer_cancelled", session_id=sid, tool="stream",
+                                     args={"thread_id": thread_id, "emitted_chunks": chunks,
+                                           "chars_total": len(reply)},
+                                     result={"cancelled": True}, risk_level="low")
+                    except Exception:  # noqa: BLE001 - 审计失败不能反向影响停止输出
+                        traceback.print_exc()
+            if final.get("insight"):
+                write_event("insight_card", {"turn_id": turn_id, "thread_id": thread_id,
+                                             "insight": final.get("insight")})
+            write_event("done", {"status": final.get("status"), "thread_id": thread_id,
+                                 "undo": final.get("undo"), "approval": final.get("approval"),
+                                 "turn_id": turn_id})
         except engine.EngineError as exc:
             write_event("error", {"code": exc.code, "message": exc.message})
             write_event("done", {"status": "error"})
@@ -362,6 +461,10 @@ class Handler(BaseHTTPRequestHandler):
                 write_event("done", {"status": "error"})
             except Exception:
                 pass
+        finally:
+            if stream_key:
+                with _STREAMS_LOCK:
+                    _STREAMS.pop(stream_key, None)
 
     # ---------- 静态文件 ----------
     def _static(self, path: str) -> None:

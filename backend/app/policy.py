@@ -20,7 +20,8 @@ from .mock_core import yuan
 LOW_TOOLS = {"get_accounts", "get_transactions", "get_bill_summary", "budget_analysis", "list_wealth",
              "list_payees", "get_payees", "list_subscriptions", "list_cards", "create_reminder", "get_products",
              "get_recent_transactions", "fx_convert", "risk_screen",
-             "scan_anomalies", "annual_report", "list_scheduled_transfers"}
+             "scan_anomalies", "annual_report", "list_scheduled_transfers",
+             "spending_insights", "detect_subscriptions"}
 MEDIUM_TOOLS = {"cancel_subscription", "apply_virtual_card", "create_transfer",
                 "redeem_wealth", "set_card_limit", "cancel_scheduled_transfer"}
 # v0.4.1：挂失/解挂按官方红线归入红色强验证（多因子 + TOTP）

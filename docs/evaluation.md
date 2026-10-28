@@ -1,6 +1,6 @@
 # ZeroStep 评测说明
 
-ZeroStep 用「46 条任务 + 声明式断言」验证整条流水线：每条任务是一段真实用户话术，运行器在独立数据库里跑完整链路（含审批恢复），再对状态、意图、技能命中、计划、拦截码、审批规则、回复文案与审计链逐项断言。v0.1.0 基线 30 条（t01–t30），v0.2.0 新增 6 条（t31–t36）；v0.3.0 不新增任务，36 条口径不变，插件与前端另由 scripts/plugin_e2e.py 与 frontend/_selftest.js 覆盖；v0.3.1 加固模型接入，同样不新增业务任务，改由桩服务端的 scripts/llm_e2e.py 覆盖 8 个模型交互场景；v0.3.2 扩展渠道与手机端，不新增业务任务，由 scripts/push_e2e.py、scripts/channel_wecom_e2e.py、backend/channels/wecom.py --selftest 与前端自检覆盖；v0.4.0 新增 7 条业务任务（t37–t43），覆盖理财赎回、卡限额、刷卡拦截、异常交易扫描、年度账单、手机号转账与预约转账，资金动作类能力同时由 scripts/capability_e2e.py 与前端自检另行覆盖；v0.4.1 新增 3 条安全任务（t44–t46），覆盖挂失/解挂升红后的多因子强验证与连续可疑操作触发的会话锁定，不新增能力类 e2e。
+ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条任务是一段真实用户话术，运行器在独立数据库里跑完整链路（含审批恢复），再对状态、意图、技能命中、计划、拦截码、审批规则、回复文案与审计链逐项断言。v0.1.0 基线 30 条（t01–t30），v0.2.0 新增 6 条（t31–t36）；v0.3.0 不新增任务，36 条口径不变，插件与前端另由 scripts/plugin_e2e.py 与 frontend/_selftest.js 覆盖；v0.3.1 加固模型接入，同样不新增业务任务，改由桩服务端的 scripts/llm_e2e.py 覆盖 8 个模型交互场景；v0.3.2 扩展渠道与手机端，不新增业务任务，由 scripts/push_e2e.py、scripts/channel_wecom_e2e.py、backend/channels/wecom.py --selftest 与前端自检覆盖；v0.4.0 新增 7 条业务任务（t37–t43），覆盖理财赎回、卡限额、刷卡拦截、异常交易扫描、年度账单、手机号转账与预约转账，资金动作类能力同时由 scripts/capability_e2e.py 与前端自检另行覆盖；v0.4.1 新增 3 条安全任务（t44–t46），覆盖挂失/解挂升红后的多因子强验证与连续可疑操作触发的会话锁定，不新增能力类 e2e；v0.5.0 新增 10 条洞察类任务（t47–t56），覆盖消费洞察统计与环比、可省金额口径、只读零写操作、订阅识别与误报、逐字流式事件序、中途取消与取消不撤销已执行工具，以及 LLM 模式下的洞察意图解析，流式链路另由 scripts/e2e_stream.py 与前端自检覆盖。
 
 ---
 
@@ -8,19 +8,20 @@ ZeroStep 用「46 条任务 + 声明式断言」验证整条流水线：每条�
 
 | 维度 | 数值 |
 | --- | --- |
-| 任务总数 | 46（tasks/t01.json 至 t30.json 为 v0.1.0 基线，t31.json 至 t36.json 为 v0.2.0 新增，t37.json 至 t43.json 为 v0.4.0 新增，t44.json 至 t46.json 为 v0.4.1 新增） |
-| 类别数 | 8（v0.1.0 的 7 类 + v0.2.0 的 mcp） |
-| 类别分布 | bills 6、transfer 8、wealth 5、card 7、subscription 4、cross 4、security 10、mcp 2（合计 46） |
-| 首轮结果分布 | ok 16 条、awaiting_approval 16 条、blocked 14 条（按 46 条任务的 expect.status 统计，2026-10-28） |
+| 任务总数 | 56（tasks/t01.json 至 t30.json 为 v0.1.0 基线，t31.json 至 t36.json 为 v0.2.0 新增，t37.json 至 t43.json 为 v0.4.0 新增，t44.json 至 t46.json 为 v0.4.1 新增，t47.json 至 t56.json 为 v0.5.0 新增） |
+| 类别数 | 9（v0.1.0 的 7 类 + v0.2.0 的 mcp + v0.5.0 的 insight） |
+| 类别分布 | bills 6、transfer 8、wealth 5、card 7、subscription 4、cross 4、security 10、mcp 2、insight 10（合计 56） |
+| 首轮结果分布 | ok 26 条、awaiting_approval 16 条、blocked 14 条（按 56 条任务的 expect.status 统计，2026-10-28） |
 | 运行器 | scripts/run_tasks.py（零依赖；串行、每任务独立临时库） |
 | 解析模式 | rule / llm / auto（默认 auto：有 Key 用模型，无 Key 回落规则） |
 | 对比评测 | scripts/compare_modes.py：30 条基线 + 10 条口语化变体（v0.2.0 未扩展，仍为基线对比数据） |
-| 实测结果 | 规则模式 46/46，0 失败（2026-10-28 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18） |
+| 实测结果 | 规则模式 56/56，0 失败（2026-10-28 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消），node frontend/_selftest.js PASS=238 FAIL=0 |
 | v0.3.0 增量自检 | scripts/plugin_e2e.py 17/17、node frontend/_selftest.js PASS=100 FAIL=0（2026-10-27 实测；不改变 36 条任务） |
 | v0.3.1 增量自检 | scripts/llm_e2e.py 8/8 场景、52/52 项检查；node frontend/_selftest.js PASS=134 FAIL=0；run_tasks 36/36（均 2026-10-27 本机实测）；scripts/llm_smoke.py 需真实 Key，无 Key 自动跳过 |
 | v0.3.2 增量自检 | 企业微信自检 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13、node frontend/_selftest.js PASS=182 FAIL=0（2026-10-27，与 QA 报告一致；QA 全量回归 15/15 步 exit 0、0 FAIL）；v0.4.0 时前端断言已增至 190 项 |
 | v0.4.0 增量自检 | scripts/run_tasks.py 43/43（0 失败）、node frontend/_selftest.js PASS=190 FAIL=0（2026-10-27 本机实测）；QA 全量回归 audit/qa-report-v0.4.0.md 全绿：15/15 步 exit 0、0 FAIL，capability_e2e 63/63 |
 | v0.4.1 增量自检 | scripts/run_tasks.py 46/46（0 失败，含 t44–t46）、node frontend/_selftest.js PASS=206 FAIL=0（v0.4.0 为 190，新增多因子 13 + 锁定 3）、scripts/security_factor_e2e.py 53/53（均 2026-10-28 实测）；全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md：审计 valid checked=105、smoke18 审计 52 条/事件 84 条、llm_e2e 9/9 场景 79/79、冻结 85 文件 SHA 一致） |
+| v0.5.0 增量自检 | scripts/run_tasks.py 56/56（0 失败，新增 t47–t56）、scripts/e2e_stream.py 33/33（流式事件序 / stream_text=false 降级 / 中途取消 / 审计 / 端口清理，2026-10-28 实测 2.25 秒）、node frontend/_selftest.js PASS=238 FAIL=0（v0.4.1 为 206，新增流式与洞察 32 项）；全量 17 步 QA 全 exit 0 |
 
 ---
 
@@ -95,7 +96,7 @@ ZeroStep 用「46 条任务 + 声明式断言」验证整条流水线：每条�
 
 实测输出（本机，节选）：
 
-    ZeroStep 评测：共 46 条任务
+    ZeroStep 评测：共 56 条任务
     ------------------------------------------------------------------------
     PASS  t01  查询本月账单                  query_bills
     PASS  t06  小额转账 800 元给妈妈           transfer
@@ -119,8 +120,18 @@ ZeroStep 用「46 条任务 + 声明式断言」验证整条流水线：每条�
     PASS  t44  挂失银行卡（红色强验证）            card_freeze
     PASS  t45  连续被拦触发会话锁定                security
     PASS  t46  连续注入触发会话锁定                security
+    PASS  t47  消费洞察统计与 mock_core 直算一致      insight
+    PASS  t48  消费洞察环比符号与数值正确            insight
+    PASS  t49  可省金额等于订阅年化之和除以 12        insight
+    PASS  t50  消费洞察零写操作（只读建议）          insight
+    PASS  t51  周期扣费识别命中 5 个已登记订阅        insight
+    PASS  t52  一次性消费不被误报为周期扣费          insight
+    PASS  t53  流式回答事件序正确且拼接等于完整回答    insight
+    PASS  t54  流式阶段中途取消返回 cancelled 并补发 answer_end   insight
+    PASS  t55  取消不撤销已执行工具且余额不变        insight
+    PASS  t56  LLM 模式可解析消费洞察意图（本地桩模型）  insight
     ------------------------------------------------------------------------
-    结果：46/46 通过，0 失败
+    结果：56/56 通过，0 失败
 
 退出码：全部通过为 0，存在失败为 1，没有匹配任务为 2。可直接用于 CI（.github/workflows/ci.yml 在 Python 3.10 与 3.12 上跑全量评测，再跑 replay.py 演示脚本）。
 
@@ -221,6 +232,34 @@ v0.4.1 起 smoke18 的演示语义随锁定变化（QA 报告 audit/qa-report-v0
 
 ---
 
+### 3.4 逐字流式与取消自检（v0.5.0）
+
+v0.5.0 的回答改为逐字下发，取消走独立接口 POST /api/turn/cancel，流式链路因此单独用 scripts/e2e_stream.py 端到端验证（33 项断言），不占用 run_tasks 的 t 编号；t53–t55 则在 run_tasks 内部用进程内 HTTP+SSE 回放覆盖三条关键语义。
+
+运行：
+
+    cd D:/DeepSeek/buildagent/bank-agent
+    $env:PYTHONIOENCODING = "utf-8"
+    python scripts/e2e_stream.py
+    node frontend/_selftest.js
+
+实测（2026-10-28 本机，Python 3.14.6）：
+
+    python scripts/e2e_stream.py --json
+    summary: total 33 / pass 33 / fail 0, elapsed_s 2.25, full_stream_s 0.61
+    node frontend/_selftest.js
+    PASS = 238   FAIL = 0
+
+e2e_stream.py 的 33 项断言分四组：
+
+| 组 | 断言要点 |
+| --- | --- |
+| 事件序 | session → intent → plan → tool_start → tool_end → answer_start → answer_delta × n → answer_end → insight_card → done；每块 12 字符、末块可短，拼接全部 delta 等于完整回答，answer_end.chunks 等于 delta 条数 |
+| 降级 | 请求体带 stream_text=false 时不出现 answer_*，只有一条整段 message，其余事件不变 |
+| 取消 | 不存在的 thread_id 返回 200 {cancelled:false, reason:not_streaming}；流式中途取消返回 200 {cancelled:true, emitted_chunks:n}，随后 answer_end.cancelled=true、chunks 等于已发 delta 条数、note 含「已停止输出」，done 与 insight_card 仍下发 |
+| 审计与清理 | 有且仅有 1 条 answer_cancelled（tool=stream，risk low）；取消前后余额与支出合计不变，tool_end 保留 spending_insights；演示服务退出后 8010 端口无残留、日志无 Traceback |
+
+块间延时由环境变量 ZS_STREAM_DELAY_MS 控制（默认 18ms，演示观感用），e2e 里置 0 加速。取消语义的验证方法（t54 / t55 同款）：先起服务并打开 SSE，收到 answer_start 与至少 2 个 answer_delta 后调 POST /api/turn/cancel，再断言后续事件与审计；t55 额外比对取消前后账户余额与流水合计，确认「停止输出」不等于「回滚已执行工具」。
 ## 4. 断言字段说明
 
 每条任务的 expect 对象支持以下字段，运行器逐项比对，任一不符即 FAIL 并打印原因。
@@ -243,16 +282,23 @@ v0.4.1 起 smoke18 的演示语义随锁定变化（QA 报告 audit/qa-report-v0
 | expected_attack | 字符串 | status=blocked 且 blocked.code 相等 | t35 期望 PROMPT_INJECTION |
 | expected_attack_type | 字符串 | intent.attack_type 相等 | t35 期望 prompt_injection |
 | audit_valid | 布尔 | audit.verify 返回 valid 且 checked 大于 0 | 校验该任务产生的审计链完整、非空 |
+| expected_intent_source | 字符串 | intent.source 精确相等 | t56 用本地桩模型验证模型链路（期望 llm）；不写则不校验 |
+| mock_llm | 对象 | 用例级桩返回 | 预置模型输出（patch llm.call_model，不连外网）；t56 用它返回 intent=insight，配合 expected_intent_source 断言 |
+| insight_checks | 字符串数组 | 对 result.insight 与 mock_core / 独立 SQL 交叉校验 | 可选：totals_match、top_match、delta_sign、top_delta_sign、potential_formula、savings_kinds、readonly、audit_readonly、anomalies_match（v0.5.0） |
+| detect | 对象 | 直接调用 insight.detect_subscriptions 按契约校验 | registered（商户列表）、registered_count、min_detected、absent（不得误报的商户）、no_category（不得出现的分类）、window_days（v0.5.0） |
+| stream | 对象 | 该用例改为进程内 HTTP+SSE 回放 | case=full 或 cancel、delay_ms（块间延迟）、checks（额外断言清单），t53–t55 使用（v0.5.0） |
 
 补充机制：
 
 - **自动审批**：任务带 approval 或 after 时，运行器拿到审批单后会调用 engine.resume(session, approval_id, "approve", totp.current_code(uid))，用当前 TOTP 真实走完审批恢复，而不是绕过策略门直接执行。因此测的是含审批中断的完整链路。
 - **回复取最终轮**：多轮任务与审批任务都用最后一轮的 reply 做 reply_contains 匹配。
 - **审计链按任务独立校验**：每个任务一个临时库，链从 GENESIS 开始，所以 checked 数量与任务本身的事件量对应。
+- **洞察校验不信任被测数值**：insight_checks 里的期望值由 mock_core.bill_summary / scan_anomalies 与独立 SQL（上期分类合计、budgets 表、日历天数）现算，再与被测返回逐项比对；readonly / audit_readonly 还要求计划、执行、审计里都不出现写工具（v0.5.0）。
+- **流式用例起真实服务**：stream 用例在临时库上启动一个 HTTP 服务，用进程内 SSE 客户端回放真实请求，因此事件序、块大小、取消与审计都是端到端断言，而不是直接调函数（v0.5.0）。
 
 ---
 
-## 5. 46 条任务表（30 条基线 + 6 条 v0.2.0 新增 + 7 条 v0.4.0 新增 + 3 条 v0.4.1 新增）
+## 5. 56 条任务表（30 条基线 + 6 条 v0.2.0 新增 + 7 条 v0.4.0 新增 + 3 条 v0.4.1 新增 + 10 条 v0.5.0 新增）
 
 ### bills 账单（t01–t05）
 
@@ -358,13 +404,31 @@ v0.4.1 起 smoke18 的演示语义随锁定变化（QA 报告 audit/qa-report-v0
 
 ---
 
+### v0.5.0 新增（t47–t56）
+
+这 10 条都属于 insight 类别，意图统一为 insight、计划固定单步 spending_insights（只读），因此断言重点不在状态跳转，而在「数字对不对」与「有没有偷偷写」：t47–t50 校验统计口径与只读性，t51–t52 校验订阅识别与误报，t53–t55 用进程内 SSE 回放校验流式与取消，t56 校验 LLM 模式下能解析洞察意图。
+
+| id | 类别 | 标题 | 用户输入 | 首轮状态 | 关键期望 |
+| --- | --- | --- | --- | --- | --- |
+| t47 | insight | 消费洞察统计与 mock_core 直算一致 | 看看我这个月的消费洞察 | ok | intent=insight，plan_tools=[spending_insights]；insight_checks=[totals_match,top_match,budget_formula]；回复含「近 30 天」「比上期」「每月可省约」「预计支出」 |
+| t48 | insight | 消费洞察环比符号与数值正确 | 帮我看看钱都花哪了 | ok | insight_checks=[delta_sign,top_delta_sign]；环比数值与独立直算一致、符号方向正确；回复含「比上期」 |
+| t49 | insight | 可省金额等于订阅年化之和除以 12 | 有什么可以省的钱吗 | ok | insight_checks=[potential_formula,savings_kinds]；potential_save_monthly_cents 等于订阅 monthly 之和，且等于订阅年化 ÷12；savings.kind 只允许 subscription / category |
+| t50 | insight | 消费洞察零写操作（只读建议） | 帮我看看消费洞察 | ok | insight_checks=[readonly,audit_readonly,savings_kinds]；计划与执行都只有 spending_insights，余额不变；审计不含 approval_required / tool_end / undo_done 等写事件 |
+| t51 | insight | 周期扣费识别命中 5 个已登记订阅 | 帮我看看这个月的消费洞察 | ok | detect：registered=[爱奇艺 VIP,网易云音乐,iCloud 200G,健身私教,财经周刊]、registered_count=5、min_detected=10、window_days=120 |
+| t52 | insight | 一次性消费不被误报为周期扣费 | 帮我看看这个月的消费洞察 | ok | detect：absent=[美团外卖,京东,海底捞,数码专卖店]、no_category=餐饮、min_detected≥1；误报即失败 |
+| t53 | insight | 流式回答事件序正确且拼接等于完整回答 | 帮我看看这个月的消费洞察 | ok | stream case=full、delay_ms=0；事件序含 answer_start → answer_delta × n → answer_end → insight_card → done，拼接等于完整回答，reply 含「近 30 天」 |
+| t54 | insight | 流式阶段中途取消返回 cancelled 并补发 answer_end | 帮我看看这个月的消费洞察 | ok | stream case=cancel、delay_ms=40；不存在的 thread_id 返回 not_streaming；取消返回 cancelled=true 与 emitted_chunks；answer_end.cancelled=true、note 含「已停止输出」；审计恰 1 条 answer_cancelled |
+| t55 | insight | 取消不撤销已执行工具且余额不变 | 帮我看看这个月的消费洞察 | ok | stream checks=[balance_unchanged,executed_not_undone,audit_cancelled]；取消前后余额与支出合计不变，tool_end 仍保留 spending_insights |
+| t56 | insight | LLM 模式可解析消费洞察意图（本地桩模型） | 我最近的开销都去了哪里，帮我总结一下 | ok | mock_llm 返回 intent=insight，expected_intent_source=llm；plan_tools=[spending_insights]；insight_checks=[totals_match] |
+
+本轮 10 条的实测均为 PASS（t47–t56），合计 56/56；t53–t55 的完整流式断言另由 scripts/e2e_stream.py 33/33 兜底（见 3.4）。
 ## 6. 隔离与可重复性
 
 - **独立数据库**：每条任务把 config.DB_PATH 临时指向仓库内 .eval_tmp/任务id/bank.db，跑完合并回原值并清理临时文件；任务之间零污染，可任意顺序、任意子集执行。
 - **确定性种子**：db.seed 用 random.Random(42)，账户余额、流水、收款人、理财、订阅每次都一样，断言可以写死具体金额与文案。
 - **双模式可切换**：compare_modes.py 用同一份种子数据与临时库，只切换解析模式后重跑，标准用例断言不受模式影响；解析失败回退规则也在同一批用例里被间接覆盖。
 - **真实时间语义**：审批 TTL 300 秒与撤销窗口 60 秒按真实时间计算；评测里审批是立即通过的，不会触发过期分支。TOTP 由 totp.current_code 现算，不依赖固定时钟。
-- **单线程顺序执行**：运行器串行跑任务，避免 SQLite 并发写干扰；每条任务通常毫秒级到百毫秒级，全量 46 条在本机数秒内完成（2026-10-28 实测一次全量低于 5 秒）。
+- **单线程顺序执行**：运行器串行跑任务，避免 SQLite 并发写干扰；每条任务通常毫秒级到百毫秒级，全量 56 条在本机数秒内完成（2026-10-28 实测全量 56/56 一次跑完，脚本自身计时见第 3 节输出）。
 
 ---
 
@@ -373,8 +437,8 @@ v0.4.1 起 smoke18 的演示语义随锁定变化（QA 报告 audit/qa-report-v0
 加 --json 参数会生成如下结构的报告（scripts/eval_report.json 即示例产物）：
 
     {
-      "total": 46,
-      "passed": 46,
+      "total": 56,
+      "passed": 56,
       "failed": 0,
       "tasks": [
         {
@@ -402,7 +466,7 @@ CI（.github/workflows/ci.yml）在 Python 3.10 与 3.12 两个版本上执行�
     python scripts/run_tasks.py
     python scripts/replay.py --script scripts/demo_flow.json
 
-前者保证 46 条断言全过，后者保证 CLI 演示链路可跑通。
+前者保证 56 条断言全过，后者保证 CLI 演示链路可跑通；流式链路另在本地跑 python scripts/e2e_stream.py（33 项断言，起真实 HTTP 服务，CI 未接入）。
 
 端到端演示流另有 scripts/smoke18.py（不受 CI 调用，供本地或评委复跑）：它在一个临时库上依次执行 17 轮真实对话与第 18 轮撤销，逐轮打印意图、状态、审批挑战类型与执行结果，最后汇总审计链校验、事件与业务表数量；带 --json 时把完整结构写入指定文件。本机实测（Python 3.14.6，2026-10-26）：18 轮 / 0.41 秒 / 审计链 valid=True、checked=56 / 本会话审计 56 条 / 事件 111 条 / 业务表 17 张，事件类型为 approval_required=7、intent=17、message=17、plan=17、session=17、tool_end=21、tool_start=14、undo_done=1；完整输出已随仓库提交在 scripts/smoke18_result.json。
 
@@ -410,7 +474,7 @@ CI（.github/workflows/ci.yml）在 Python 3.10 与 3.12 两个版本上执行�
 
 ## 8. 如何新增任务
 
-1. 在 bank-agent/tasks/ 下新建任务文件（编号必须补零，运行器按文件名排序加载，t100 会排在 t11 前面）。现网已占用 t01–t46，新任务从 t47 起按序编号；下面的示例用 t99 避免与现有文件冲突。
+1. 在 bank-agent/tasks/ 下新建任务文件（编号必须补零，运行器按文件名排序加载，t100 会排在 t11 前面）。现网已占用 t01–t56，新任务从 t57 起按序编号；下面的示例用 t99 避免与现有文件冲突。
 2. 写最小必填字段：id、category、title、turns、expect。expect 至少给 status 与 audit_valid。
 
 示例（新增用例，正式采用前需实跑确认）：
@@ -434,7 +498,7 @@ CI（.github/workflows/ci.yml）在 Python 3.10 与 3.12 两个版本上执行�
 4. 需要多轮对话时把多句话依次放进 turns 数组；只有第一个审批会被自动通过（运行器目前每条任务最多自动处理一次审批）。
 5. 想覆盖新的意图或新工具，需要在 nlu.py（识别）、engine.build_plan（计划）、policy.evaluate（风险）三处登记；这属于代码改动，不在纯任务文件范围内。
 
-任务文件约定：category 取 bills / transfer / wealth / card / subscription / cross / security / mcp 之一（未知类别仍可通过 --filter 单独运行）；expect 中未提供的字段不做断言，因此可以逐步加严。
+任务文件约定：category 取 bills / transfer / wealth / card / subscription / cross / security / mcp / insight 之一（未知类别仍可通过 --filter 单独运行）；expect 中未提供的字段不做断言，因此可以逐步加严。
 
 ---
 
@@ -443,6 +507,7 @@ CI（.github/workflows/ci.yml）在 Python 3.10 与 3.12 两个版本上执行�
 - **正向覆盖**：查询类（账单、余额、流水、持仓、卡、订阅、预算）与写入类（转账、理财申购、卡状态、订阅取消、还款、提醒）都有成功用例；v0.2.0 另覆盖 MCP 汇率（外部与降级两条路径）、技能卡命中、跨场景提醒；v0.4.0 覆盖理财赎回、卡限额调整、异常交易扫描、年度账单、手机号转账与预约转账创建。
 - **负向覆盖**：金额非法/超限/余额不足/未达起购/产品不存在/订阅不存在/新收款人未核验/拆分注入，以及 v0.4.0 的刷卡超单笔限额（t39，CARD_SINGLE_LIMIT），共 12 条 blocked 用例。
 - **安全覆盖**：直接注入、间接注入、验证码钓鱼、越权访问、陌生收款人、零宽+空格拆分注入共 6 条安全用例（t26–t30、t35）；t34 从审批规则明细角度加固，t08 覆盖新收款人；v0.4.0 的 t39 验证参数级拦截在 policy 阶段前移，t40 验证异常扫描只读不留资金动作。
-- **未覆盖**：审批超时（300 秒）与撤销超窗（60 秒）需要真实等待或注入时钟，当前没有用例；并发多审批覆盖 checkpoint 的行为也未测；v0.4.0 的调度器「到点自动执行」需要真实等待或注入服务端时钟，故 t43 只覆盖创建与列表，到期执行路径由 scripts/capability_e2e.py 覆盖（QA 报告 audit/qa-report-v0.4.0.md 已出，63/63 通过）。若要把这些纳入回归，建议给 run_tasks.py 增加时间注入能力（待核实优先级）。
+- **未覆盖**：审批超时（300 秒）与撤销超窗（60 秒）需要真实等待或注入时钟，当前没有用例；并发多审批覆盖 checkpoint 的行为也未测；v0.4.0 的调度器「到点自动执行」需要真实等待或注入服务端时钟，故 t43 只覆盖创建与列表，到期执行路径由 scripts/capability_e2e.py 覆盖（QA 报告 audit/qa-report-v0.4.0.md 已出，63/63 通过）。若要把这些纳入回归，建议给 run_tasks.py 增加时间注入能力（优先级另议）。v0.5.0 的流式用进程内 SSE 回放，真实浏览器在弱网、代理缓冲下的表现与前端丢弃已到片段的逻辑未纳入回归；洞察的订阅识别在改价、跨月缺记录场景下的误报也未构造用例（优先级另议）。
+- **v0.5.0 洞察与流式的覆盖**：正向覆盖消费洞察统计、环比与预算外推、可省金额口径、只读零写操作与订阅识别（t47–t52）；流式事件序、stream_text=false 降级、中途取消、取消不撤销已执行工具由 t53–t55 与 scripts/e2e_stream.py（33/33）覆盖；模型模式下的洞察意图由 t56 用本地桩模型覆盖，不连外网。
 - **外部服务与渠道不在任务回归内**：MCP 起停、超时、关闭降级由 scripts/mcp_e2e.py（7/7）覆盖；IM 渠道鉴权、幂等、两步确认由 scripts/channel_e2e.py（9/9）覆盖；v0.4.0 的新资金动作与两个新接口由 scripts/capability_e2e.py 覆盖；三者均为独立端到端脚本，不占用 t 编号。
-- **模型路径的边界用例不足**：模型超时、返回非 JSON、字段越界的回退分支没有独立断言用例，目前靠 compare_modes.py 的真实调用与 /api/llm/status 的 last_error 间接观察；不同模型或版本之间的解析差异也未纳入回归（待核实优先级）。
+- **模型路径的边界用例不足**：模型超时、返回非 JSON、字段越界的回退分支没有独立断言用例，目前靠 compare_modes.py 的真实调用与 /api/llm/status 的 last_error 间接观察；不同模型或版本之间的解析差异也未纳入回归（优先级另议）。

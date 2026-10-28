@@ -4,6 +4,44 @@
 
 v0.2.0 为 2026-10-27 启动的能力批次，代码合并与验收由 Lead 统一复核；尚未通过验收的接口与命令在对应位置单独注明。
 
+## [0.5.0] - 2026-10-28（进行中，未打 tag）
+
+v0.5.0 是「消费洞察 + 逐字流式回答」批次：新增只读的消费洞察能力（统一口径的月度统计、环比、可省金额、预算预测），并把最终回答改成 SSE 逐字流式输出，同时提供「停止输出」的接口。资金边界、审批 TTL（300 秒）、撤销窗口（60 秒）、审计哈希链与既有接口字段均不变；新增能力全部是增量。
+
+### Added
+
+- 消费洞察模块 backend/app/insight.py（纯标准库、只读、整数分）：spending_insights(conn, user_id) 返回冻结结构（as_of / window / totals / top_categories / anomalies / budget / savings），totals 与 top_categories 复用 mock_core.bill_summary 的近 30 天口径，环比为「再往前 30 天」SQL 聚合；detect_subscriptions(conn, user_id, window_days=120) 按商户归一 + 相邻间隔 25–35 天 + 金额差 ≤10% 识别周期扣款，并标注 registered / sub_id；每项另带 category 与 subscription_like（category=订阅 或命中已登记订阅才为 true），房租/还款/水电/通讯等固定周期扣费进独立 fixed_cycles 单列说明，不计入可省金额。
+- 意图 insight：nlu 规则 + llm 的 ALLOWED_INTENTS / INTENT_ALIASES（洞察、消费洞察、花费分析、我最近花钱、钱都花哪了、能省、省钱、有什么可以省、订阅在烧钱、账单洞察）。计划固定为单步 LOW 只读工具 spending_insights，绝不自动执行转账、申购等写操作。
+- 确定性回答：insight 回复 ≤180 字，覆盖本月支出与环比、最大分类、可省金额（月/年）、预算预测，所有数字只来自工具返回；run_turn 结果新增顶层 insight 字段（含 savings 建议数组，仅作建议）；固定周期扣费会单独说明，不计入可省金额。
+- SSE 逐字流式：事件序 answer_start → answer_delta ×n（每块 12 字符，i 从 0）→ answer_end → [insight_card] → done；块间延时由 ZS_STREAM_DELAY_MS 控制（缺省 18ms，测试传 0）。请求体 stream_text=false 时退回旧的整段 message 事件，老客户端不用改。
+- POST /api/turn/cancel：按 thread_id 停止输出，返回 {cancelled, emitted_chunks}；流式响应补 answer_end（cancelled=true）与 note「已停止输出」；未在流式时返回 {cancelled:false, reason:"not_streaming"}。
+- 审计新增事件 answer_cancelled（tool=stream，risk=low，payload 只含 thread_id / emitted_chunks / chars_total），取消不撤销已执行的工具。
+- 新增任务 t47–t56（消费洞察统计口径、可省金额、异常明细、预算预测、SSE 事件序、取消、非流式兼容、LLM 模式洞察等）。
+
+### Changed
+
+- VERSION 由 0.4.1 升为 0.5.0；/api/health 的 version 随仓库根 VERSION 变化，需重启进程生效。
+- policy：spending_insights、detect_subscriptions 加入 LOW_TOOLS（只读、无需审批）。
+- engine：build_plan 增加 insight 单步计划；_exec_tool 接入两个只读工具；build_reply 增加洞察摘要；_finalize 只在 insight 意图且拿到结果时附 insight 字段。nlu 增加一条最小洞察规则（契约 A 未列 nlu，属最小偏离，旧 t01–t46 关键词实测 0 命中）。
+
+### Fixed
+
+- 洞察 top_categories 的 pct 原按「占支出总额的百分比」计算会出现负数，改为份额百分比（如购物 47%、居住 19%）。
+- 流式模式下过滤 message 事件，避免前端先整段渲染、再逐字追加造成重复气泡。
+
+### Security
+
+- 洞察是纯只读能力：计划里只有 spending_insights / detect_subscriptions 两个 LOW 工具，savings 只作建议，不会触发任何资金动作、审批或撤销。
+- 取消只停止文本输出，不改变已执行工具的结果；审计事件 answer_cancelled 记录取消发生，供回溯。
+- 技能卡与 LLM 提示词提示一律不得放宽风控或放行审批（沿续 v0.4.1 边界）。
+
+### 兼容性与验证状态
+
+- 增量契约：/api/chat 既有字段不变（新增可选 stream_text）；SSE 旧客户端仍收到 message + done；非流式 /api/chat 响应新增 insight（仅 insight 意图出现）。
+- 本机实测（2026-10-28）：py_compile 6 文件通过（insight.py / engine.py / server.py / nlu.py / policy.py / llm.py）；scripts/run_tasks.py 56/56 通过、0 失败；frontend/_selftest.js PASS=238 / FAIL=0；scripts/e2e_stream.py 33/33 通过（逐字事件序与拼接、stream_text=false 退回 message、不存在 thread_id 返回 not_streaming、中途取消 emitted_chunks 与 answer_end.cancelled=true、note 已停止输出、审计恰 1 条 answer_cancelled、取消后余额不变且审计链 valid、端口无残留）。洞察回答实测 178 字（按每块 12 字符为 15 块，末块可短），full_stream_s 0.61。
+- 文档：README.md 与 docs/（api.md 升 v1.7、security.md、evaluation.md）同步 0.5.0——新增消费洞察、订阅识别、逐字流式与 POST /api/turn/cancel 的契约与安全口径，评测说明改为 56 条并补流式 e2e 33/33 与前端自检 238 项；历史版本小节保留当时数字。
+- 说明：detect_subscriptions 在种子数据上会识别 10 条周期扣款（含房租 / 电费 / 话费 / 还款 / 储蓄转账，均满足契约周期规则）；savings 只取已登记订阅或 category=订阅，故 monthly potential 仍为 ¥255.00。
+
 ## [0.4.1] - 2026-10-28（进行中，未打 tag）
 
 v0.4.1 是安全加固批次：把挂失 / 解挂从「确认」升为红色强验证，引入 TOTP / 短信 / 人脸三种因子，并对连续可疑或被拦的会话做临时锁定。资金工具、审批 TTL（300 秒）、撤销窗口（60 秒）与审计哈希链均不改动；新增能力全部是增量，缺省行为与 v0.4.0 兼容。

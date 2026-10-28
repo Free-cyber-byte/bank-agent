@@ -1,6 +1,6 @@
-# ZeroStep API 契约（v1.6）
+# ZeroStep API 契约（v1.7）
 
-v1.6（2026-10-28）新增 v0.4.1 的多因子强验证与会话锁定：审批对象 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 响应与 security_lock 事件；v1.5 的 GET /api/scheduled 与 POST /api/scheduler/tick、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页保持不变。
+v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 spending_insights 与 detect_subscriptions 的结果结构（§4）、insight 意图与 insight_card 事件、/api/chat 的 answer_start / answer_delta / answer_end 事件序（含 stream_text=false 降级）、POST /api/turn/cancel 与 answer_cancelled 审计（§2、§5、§7）；v1.6 的 v0.4.1 多因子强验证与会话锁定（审批 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 与 security_lock 事件）、v1.5 的预约与调度、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页均保持不变。
 
 零依赖 Python 标准库实现。所有接口返回 JSON（UTF-8），金额单位一律为「分」（整数），前端负责格式化。
 
@@ -84,8 +84,53 @@ stream=true：Content-Type: text/event-stream，事件按序：
     event: done
     data: {"status":"awaiting_approval","thread_id":"t_xxx"}
 
-无审批时事件序列为 session → intent → plan → (tool_start → tool_end)* → message → done。
+无审批时事件序列为 session → intent → plan → (tool_start → tool_end)* → answer_start → (answer_delta)* → answer_end → [insight_card] → done（v0.5.0 起，见下「逐字流式与中断」）；v0.4.x 及 stream_text=false 时为 message → done。
 
+#### 逐字流式与中断（v0.5.0）
+
+v0.5.0 起 /api/chat 的 stream 分支默认把回答按 12 字符切块逐条下发，块间延时由环境变量 ZS_STREAM_DELAY_MS 控制（默认 18ms，演示用）。事件序列在最后一个 tool_end 之后为：
+
+    event: answer_start
+    data: {"turn_id":"turn_abc123","thread_id":"t_abc123","chars":178}
+
+    event: answer_delta
+    data: {"turn_id":"turn_abc123","i":0,"text":"近 30 天你一共支出 "}
+
+    event: answer_delta
+    data: {"turn_id":"turn_abc123","i":1,"text":"**¥24,484.70**，比上期多 48%。"}
+
+    event: answer_end
+    data: {"turn_id":"turn_abc123","chunks":15,"elapsed_ms":270,"cancelled":false}
+
+    event: insight_card
+    data: {"insight":{ ... }}
+
+    event: done
+    data: {"status":"ok","thread_id":"t_abc123","undo":null,"approval":null}
+
+- 完整回答由 answer_delta 按 i 顺序拼接得到，delta 条数与 answer_end.chunks 相等；answer_start.chars 是回答总字符数（最后一个 delta 可短于 12 字符）。
+- insight_card 只在 intent.name=insight 时出现，携带 spending_insights 的完整结果，结构见 §4「v0.5.0 只读工具」。
+- 兼容：请求体带 "stream_text": false 时不发 answer_* 与 insight_card，退回旧的整段 message 事件（v0.4.x 行为）；不传或传 true 一律逐字流式。
+
+中断用独立接口，不占用 /api/chat：
+
+    POST /api/turn/cancel
+    请求：{ "thread_id": "t_abc123" }
+
+流式输出进行中取消，HTTP 200：
+
+    { "cancelled": true, "emitted_chunks": 4 }
+
+服务端随即停止再发 answer_delta，补发 answer_end（cancelled=true）与 note 事件 { "text": "已停止输出" }，done 与 insight_card 照常下发；同时写一条审计 answer_cancelled（event_type=answer_cancelled，tool=stream，risk_level=low，payload 含 thread_id / emitted_chunks / chars_total）。
+
+thread_id 当前不在流式阶段（已结束、拼错或服务重启后），HTTP 200：
+
+    { "cancelled": false, "reason": "not_streaming" }
+
+body 不是 JSON 对象时返回 400：{ "error": { "code": "BAD_REQUEST", "message": "请求体必须是 JSON 对象" } }。
+
+- 取消只作用于输出：已执行的工具、已写入的账务与幂等键都不回滚，audit 中 tool_end 仍然保留，因此「停止」不会制造半笔交易；要回滚资金动作请走 POST /api/undo（见下）。
+- 重复取消不需要特殊处理：首次取消后流式阶段结束，同一 thread_id 再次取消按 not_streaming 返回。
 #### 会话锁定（v0.4.1）
 
 同一会话在 10 分钟窗口内累计 3 次可疑或被拦操作（audit 里的 attack_blocked 或 turn_blocked）后，服务端按下述规则锁定该会话：锁定默认 300 秒，锁定期间 /api/chat 不再解析、不建计划、不执行任何工具，直接返回：
@@ -316,9 +361,9 @@ Key 无效（HTTP 401）：
 - GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "chain": { "valid": true, "checked": 21, "broken_at": null, "reason": null } }
   entry 字段：seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash, hash
 - GET /api/events?session_id=...&after=0 → { "events": [ { "seq": 1, "type": "message", "payload": {...} } ] }  // 会话回放
-- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.4.1", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.4.1；改 VERSION 后需重启进程生效
+- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.5.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.5.0；改 VERSION 后需重启进程生效
 - GET /api/tasks[?limit=N&offset=M] → 任务列表，前端快捷按钮；user_input 即 turns[0]。
-  无参数时与旧版完全一致，只返回 tasks（全部 43 条）：
+  无参数时与旧版完全一致，只返回 tasks（全部 56 条）：
 
     { "tasks": [ { "id": "t01", "title": "查账单", "category": "bills", "user_input": "帮我看看这个月花了多少钱", "expect": {...} }, ... ] }
 
@@ -329,13 +374,13 @@ Key 无效（HTTP 401）：
     {
       "tasks": [ { "id": "t07", ... }, { "id": "t08", ... }, { "id": "t09", ... },
                  { "id": "t10", ... }, { "id": "t11", ... }, { "id": "t12", ... } ],
-      "total": 43,
+      "total": 56,
       "offset": 6,
       "limit": 6,
       "has_more": true
     }
 
-  offset=42 时只返回 t43 且 has_more=false；offset=999 时 tasks=[]、total 仍为 43、has_more=false。has_more 的判定为 offset + 本页条数 < total。分页以请求是否出现 limit 为准：只传 offset 不触发分页，仍返回全部 43 条；limit=0 或大于 50 按默认 6 处理，offset 为负数按 0 处理。
+  offset=54 时只返回 t55、t56 且 has_more=false；offset=999 时 tasks=[]、total 仍为 56、has_more=false。has_more 的判定为 offset + 本页条数 < total。分页以请求是否出现 limit 为准：只传 offset 不触发分页，仍返回全部 56 条；limit=0 或大于 50 按默认 6 处理，offset 为负数按 0 处理。
 - GET /api/demo/totp?user_id=u001 → { "user_id":"u001", "code":"246810", "seconds_left":18 }  // 仅 DEMO_MODE 开启时可用，否则 403 DEMO_MODE_DISABLED
 
 ### v0.2.0 新增只读接口
@@ -482,7 +527,7 @@ IM 渠道配置与最近 5 条投递记录（不返回令牌明文）。实测�
           "id": "mcp-fx",
           "name": "汇率服务",
           "kind": "mcp",
-          "version": "0.4.1",
+          "version": "0.5.0",
           "description": "通过 MCP 调用外部汇率服务，只用于查询与展示；不可用时回退内置参考价，绝不影响资金动作。",
           "status": "enabled",
           "enabled": true,
@@ -734,19 +779,74 @@ v0.4.1 的红色动作（challenge.type=totp，如挂失 / 解挂、大额转账
 
 文案：INVALID_OTP「动态验证码不正确或已过期，请重新获取」、INVALID_SMS「短信验证码不正确或已过期，请重新获取」、INVALID_FACE「人脸确认已过期，请重新发起」、INVALID_METHOD「不支持的校验方式」。INVALID_SMS / INVALID_FACE / INVALID_METHOD 在 HTTP 层由 server.py 的 _APPROVAL_ERROR_MESSAGES 统一输出（INVALID_METHOD 会去掉 engine 版本里的「请选择动态码、短信或人脸」后缀），其余沿用 engine 文案；错误体统一为 {"error":{"code","message"}}。
 
+### v0.5.0 只读工具：消费洞察与订阅识别
+
+这两个不是 HTTP 路由，而是 /api/chat 里 insight 意图的执行步骤（工具名 spending_insights / detect_subscriptions），结果写入 tool_result 审计，流式时另由 insight_card 事件整包下发。两者都登记在 LOW_TOOLS，计划里只会出现只读步骤，不产生审批，也不执行写操作。
+
+#### spending_insights
+
+调用：spending_insights(conn, user_id)，无业务入参。返回结构（金额单位分；数值为演示种子 2026-10-28 实测）：
+
+    {
+      "as_of": "2026-10-28",
+      "window": { "months": 1 },
+      "totals": { "out_cents": 2448470, "in_cents": 2500001, "prev_out_cents": 1653372,
+                  "delta_pct": 48, "potential_save_monthly_cents": 25500 },
+      "top_categories": [
+        { "category": "购物", "cents": 1150671, "pct": 47, "prev_cents": 303290, "delta_pct": 279 }
+      ],
+      "anomalies": [
+        { "date": "2026-10-21", "merchant": "某商户", "cents": 0, "reason": "异常说明" }
+      ],
+      "budget": { "budget_cents": 1210000, "spent_cents": 2448470,
+                  "projected_cents": 2530086, "over_cents": 1320086, "days_left": 3 },
+      "savings": [
+        { "id": "sv1", "kind": "subscription", "title": "爱奇艺 VIP", "monthly_cents": 2500,
+          "yearly_cents": 30000, "detail": "连续 4 次自动扣费，最近一次 2026-10-08 扣款 ¥25.00",
+          "action": { "kind": "subscription_cancel", "merchant": "爱奇艺 VIP" } }
+      ],
+      "fixed_cycles": { "count": 5, "monthly_cents": 988500,
+                        "items": [ { "merchant": "房东王姐", "monthly_cents": 450000, "category": "居住" } ] }
+    }
+
+- top_categories 最多 5 条；pct 是占本期支出的整数百分比，delta_pct 是与上一周期的变化百分比（上期为 0 时记 0）。
+- anomalies 最多 5 条，来自近 30 天异常扫描，字段固定为 date / merchant / cents / reason，条目内容随演示数据变化。
+- budget.projected_cents 按已过天数线性外推月末支出，over_cents 是预计超支额。
+- savings 中 kind=subscription 的条目计入 potential_save_monthly_cents（yearly_cents = monthly_cents × 12）；kind=category 是一条分类优化建议（该分类超预算按超支额，否则按压缩 10% 估算）；action 只是建议动作，不会自动执行。
+- fixed_cycles 单列房租、还款、水电、通讯、储蓄转账等固定周期扣费，只做说明，不计入可省金额。演示种子识别 10 项周期扣费：5 项订阅合计 ¥255/月（年化 ¥3,060），5 项固定周期合计 ¥9,885/月。
+
+#### detect_subscriptions
+
+调用：detect_subscriptions(conn, user_id, window_days=120)。返回结构：
+
+    {
+      "window_days": 120,
+      "registered_count": 5,
+      "unregistered_monthly_cents": 0,
+      "detected": [
+        { "merchant": "爱奇艺 VIP", "monthly_cents": 2500, "occurrences": 4, "last_date": "2026-10-08",
+          "confidence": 80, "registered": true, "sub_id": "sub_001",
+          "category": "订阅", "subscription_like": true }
+      ]
+    }
+
+- 判定规则：同一商户连续出现 3 次及以上、相邻间隔在 25–35 天、相邻金额差不超过 10%，才算周期扣费；confidence = 60 + 10 ×（次数 - 2），上限 90。
+- detected 按 monthly_cents 降序；registered 表示命中已登记订阅（此时 sub_id 非空）；category 取最近一笔交易的分类；subscription_like 为 true 表示可归为订阅（已登记或分类为订阅），false 的进 fixed_cycles 做说明。
+- unregistered_monthly_cents 是未登记订阅的每月合计；演示种子 5 项订阅均已登记，因此为 0。
 ## 5. 审计哈希链
 
 - 每条审计行：payload = {seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash}；hash = sha256(canonical_json(payload))。canonical_json 指键排序 + 紧凑分隔符 + 不转义非 ASCII（audit.canonical）。prev_hash 是 payload 的一个普通字段，取上一行 hash，首行为 64 个 0；args_hash / result_hash 分别是对参数与结果做同样 canonical 序列化后的 sha256。
 - GET /api/audit 会现场重算并返回 valid。
-- 审计事件包含业务事件（tool_call / tool_result / approval_required / turn_blocked / mcp_call / mcp_fallback / skill_matched 等）、插件开关事件 plugin_toggled（tool=plugins.toggle，见 §4 v0.3.0 接口）与 v0.4.1 的会话安全事件 security_locked（tool=locks，risk high）/ security_unlocked（risk medium）/ turn_locked（tool=security_lock，risk high）。
+- 审计事件包含业务事件（tool_call / tool_result / approval_required / turn_blocked / mcp_call / mcp_fallback / skill_matched 等）、插件开关事件 plugin_toggled（tool=plugins.toggle，见 §4 v0.3.0 接口）、v0.5.0 的流式取消事件 answer_cancelled（tool=stream，risk low）与 v0.4.1 的会话安全事件 security_locked（tool=locks，risk high）/ security_unlocked（risk medium）/ turn_locked（tool=security_lock，risk high）。
 - scripts/verify_audit.py 可离线验链并检测篡改（返回退出码 0/1）。
 
 ## 6. 风险分级（与官方权限三级映射）
 
-- low（绿）：纯查询与读取（账单、流水、余额、持仓、收款人列表、异常扫描、年度账单、预约列表），自动执行，no approval。
+- low（绿）：纯查询与读取（账单、流水、余额、持仓、收款人列表、异常扫描、年度账单、预约列表、v0.5.0 的消费洞察与订阅识别），自动执行，no approval。
 - medium（黄）：小额转账（单笔 ≤ 1000 元且 24h 累计 ≤ 1000 元）、订阅查询/取消、虚拟卡申请、理财赎回、卡限额调整、撤销预约、1000 元以内的刷卡与预约创建。challenge.type=confirm，用户确认后执行。
 - high（红）：大额转账（> 1000 元 或 24h 累计 > 1000 元）、挂失 / 解挂银行卡（v0.4.1 起由 medium 升为 high）、理财申购、超过 1000 元的刷卡与预约创建。challenge.type=totp，需 6 位动态码 + 确认；审批对象同时给出 factors=[totp,sms,face]，用户可选其中任一因子。
 - blocked：命中注入/越权/余额不足/可疑收款人时直接拦截，status=blocked，不执行任何资金操作，审计记录风险事件。
+- insight 意图固定为单个 LOW 只读步骤（spending_insights）：洞察与订阅建议不写库、不放行审批，建议动作要用户点按后按该动作重新定级。
 - 解析来源不参与分级：无论意图来自规则还是模型，风险等级只由工具、金额、收款人与阈值决定；模型输出没有放行、降级或选择工具的权限。
 - 预约执行不再二次授权：创建时已完成 confirm 或 totp，到期由调度器按幂等键执行；执行过程仍写审计，失败写 scheduled_transfer_failed（risk high）。
 
@@ -757,7 +857,12 @@ v0.4.1 的红色动作（challenge.type=totp，如挂失 / 解挂、大额转账
 - tool_start：{step_id, tool, args_preview}
 - tool_end：{step_id, tool, ok, latency_ms, result}
 - approval_required：见上
-- message：{delta}
+- message：{delta}（v0.4.x 整段回答；v0.5.0 仅在 stream_text=false 时下发）
+- answer_start：{turn_id, thread_id, chars}
+- answer_delta：{turn_id, i, text}
+- answer_end：{turn_id, chunks, elapsed_ms, cancelled}
+- insight_card：{insight}（insight 意图的完整洞察结果，结构见 §4）
+- note：{text}（取消时为「已停止输出」）
 - audit：{seq, event_type, tool, risk_level, hash, prev_hash, ts}
 - security_lock：{locked, locked_until, reason, remaining_s, count, threshold, just_locked}；出现在触发锁定的那一轮或锁定态的响应流中
 - done：{status, thread_id}（status 可能是 locked）

@@ -1037,3 +1037,83 @@ body[data-theme="dark"] .infobar--off{border-color:var(--hairline);color:var(--t
   .factors{flex-wrap:wrap}
   .factor{flex:1 1 auto;min-width:0}
 }
+
+/* ==== v0.5.0 逐字流式回答 / 停止按钮 / 消费洞察卡 ==== */
+.result--stream{display:block;min-height:50px}
+.result--stream .answer__body{white-space:pre-wrap;overflow-wrap:anywhere}
+.answer__caret{
+  display:inline-block;width:2px;height:1.02em;margin-left:2px;
+  vertical-align:-.14em;background:var(--accent);
+  animation:caretblink 1s steps(1,end) infinite;
+}
+@keyframes caretblink{0%,45%{opacity:1}50%,100%{opacity:0}}
+.result--stream.is-typing{border-left-color:var(--accent-line);animation:none}
+.answer__stopped{
+  display:inline-block;margin-left:8px;padding:0 8px;
+  border:1px solid var(--hairline);border-radius:var(--r-pill);
+  color:var(--text-4);font-size:12px;line-height:1.6;white-space:nowrap;
+  vertical-align:1px;
+}
+.result--stream.is-cancelled{border-left-color:var(--hairline-strong);background:var(--surface-2)}
+
+.btn-primary.is-stop{background:var(--text-1);padding:0 16px}
+.btn-primary.is-stop:hover{background:#1B2534}
+.btn-primary.is-stop:active{transform:scale(.985)}
+.btn-primary.is-stop::before{
+  content:"";width:9px;height:9px;border-radius:2px;background:currentColor;opacity:.85;
+}
+
+.insight{
+  padding:14px 16px;
+  border:1px solid var(--hairline);border-radius:12px;background:var(--surface);
+  box-shadow:var(--shadow-1);
+  animation:rise .3s var(--ease) both;
+}
+.insight__head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
+.insight__title{font-size:14px;font-weight:600;letter-spacing:-.005em;color:var(--text-1)}
+.insight__tag{
+  flex:none;padding:1px 8px;border:1px solid var(--hairline);border-radius:var(--r-pill);
+  color:var(--text-3);font-size:11.5px;letter-spacing:.03em;
+}
+.insight__stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));border-top:1px solid var(--hairline)}
+.insight__stat{min-width:0;padding:10px 12px 9px 0}
+.insight__stat + .insight__stat{padding-left:14px;border-left:1px solid var(--hairline)}
+.insight__stat-k{display:block;color:var(--text-3);font-size:11.5px;letter-spacing:.04em}
+.insight__stat-v{
+  display:block;margin-top:2px;
+  font-family:var(--font-display);font-size:22px;font-weight:600;letter-spacing:-.02em;line-height:1.25;
+  color:var(--text-1);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;
+}
+.insight__stat-s{display:block;margin-top:2px;color:var(--text-4);font-size:11.5px}
+.insight__save-head{margin:12px 0 0;color:var(--text-3);font-size:12px;font-weight:600;letter-spacing:.05em}
+.insight__saves{list-style:none;margin:0;padding:0}
+.insight__save{display:flex;align-items:center;gap:12px;padding:9px 0;border-top:1px solid var(--hairline)}
+.insight__save:first-child{margin-top:4px}
+.insight__save-main{flex:1 1 auto;min-width:0;display:flex;flex-direction:column;gap:1px}
+.insight__save-title{font-size:13px;font-weight:500;color:var(--text-1)}
+.insight__save-note{color:var(--text-4);font-size:12px;line-height:1.5;overflow-wrap:anywhere}
+.insight__save-money{flex:0 0 auto;color:var(--text-1);font-size:13px;font-weight:600;white-space:nowrap;font-variant-numeric:tabular-nums}
+.insight__save-money i{font-style:normal;font-weight:400;font-size:11.5px;color:var(--text-4)}
+.insight__go{
+  flex:0 0 auto;height:28px;padding:0 11px;
+  border:1px solid var(--hairline-strong);border-radius:var(--r-1);
+  background:var(--surface);color:var(--accent);
+  font:inherit;font-size:12.5px;font-weight:500;cursor:pointer;
+  transition:background-color var(--t-fast) var(--ease),border-color var(--t-fast) var(--ease);
+}
+.insight__go:hover{background:var(--accent-soft);border-color:var(--accent-line)}
+.insight__go:active{transform:translateY(1px)}
+.insight__go:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+@media (max-width:720px){
+  .result--stream .answer__body{font-size:13.5px}
+  .insight{padding:12px 13px}
+  .insight__stats{grid-template-columns:1fr}
+  .insight__stat{padding:9px 0}
+  .insight__stat + .insight__stat{padding-left:0;border-left:0;border-top:1px solid var(--hairline)}
+  .insight__stat-v{font-size:19px}
+  .insight__save{flex-wrap:wrap;gap:6px 10px}
+  .insight__save-main{flex:1 1 100%}
+  .insight__save-money{margin-left:auto}
+  .insight__go{width:100%;height:32px}
+}
