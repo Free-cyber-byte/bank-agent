@@ -41,7 +41,7 @@ _BOOT_CONN.close()
 class _ThreadConn:
     """把「当前线程的连接」伪装成连接对象：历史代码里的 CONN.xxx 全部照旧可用。
 
-    v0.6.2：真正执行 SQL 的是 db.thread_conn()，每个请求线程一条连接，
+    v0.6.1：真正执行 SQL 的是 db.thread_conn()，每个请求线程一条连接，
     避免共享连接下的事务互相 commit/rollback（v0.6.1 并发实测的根因）。
     """
 
@@ -257,7 +257,7 @@ class Handler(BaseHTTPRequestHandler):
         if args and str(args[0]).startswith(("4", "5")):
             sys.stderr.write("%s - %s " % (self.address_string(), fmt % args))
 
-    def finish(self):  # v0.6.2：请求线程结束时回收它自己的 sqlite 连接
+    def finish(self):  # v0.6.1：请求线程结束时回收它自己的 sqlite 连接
         try:
             super().finish()
         finally:

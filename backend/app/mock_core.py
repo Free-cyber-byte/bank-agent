@@ -29,7 +29,7 @@ def _begin_immediate(conn) -> None:
     读到的余额与随后的条件更新在同一把写锁内，配合 `UPDATE ... WHERE balance_cents>=?`
     的 rowcount 校验，任何余额不足都会整体回滚。
 
-    v0.6.2：连接改为「每线程一条」（db.thread_conn），因此这里看到的 in_transaction
+    v0.6.1：连接改为「每线程一条」（db.thread_conn），因此这里看到的 in_transaction
     只可能是本线程上一条未收尾的事务；一律回滚后再开新事务，绝不 commit 别人的工作
     （v0.6.1 的共享连接 + 顺手 commit 正是并发 500 / 账实不符的根因）。
     """
