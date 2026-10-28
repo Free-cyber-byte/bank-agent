@@ -90,6 +90,16 @@ MCP_TOOLS_CACHE_SECONDS = 60
 MCP_RISK_BLOCK_SCORE = int(os.environ.get("MCP_RISK_BLOCK_SCORE", "60"))   # 外部风控分 >= 该值则拦截（只加严）
 MCP_FX_FALLBACK_RATE = {"USD": 0.1403, "HKD": 1.0921, "EUR": 0.1287, "JPY": 20.85}
 
+# ---------------- 通用 MCP 服务注册表（v0.6.0） ----------------
+# MCP_SERVERS：JSON 数组，可同时接入任意多个外部只读 MCP 服务（银行开放平台、
+# 汇率、风控……）。留空时保持 v0.5.x 行为：仍是 fx / risk 两个内置服务。
+# 每项字段与安全约定见 docs/mcp.md §8；密钥一律用 env:VAR / ${VAR} 间接引用，
+# 不把明文写进 JSON（JSON 可能出现在 CI 日志、演示命令里）。
+MCP_SERVERS = (os.environ.get("MCP_SERVERS", "") or "").strip()
+MCP_MAX_SERVERS = int(os.environ.get("MCP_MAX_SERVERS", "8"))            # 最多接入服务数（防误配置打爆）
+MCP_ALLOW_WRITE_TOOLS = os.environ.get("MCP_ALLOW_WRITE_TOOLS", "0") == "1"  # 全局写工具开关，默认关闭
+MCP_OAUTH_REFRESH_SKEW = int(os.environ.get("MCP_OAUTH_REFRESH_SKEW", "60"))  # OAuth2 token 提前刷新秒数
+
 # ---------------- IM 渠道适配层（webhook，两步确认） ----------------
 CHANNEL_ENABLED = os.environ.get("CHANNEL_ENABLED", "1") != "0"
 CHANNEL_PORT = int(os.environ.get("CHANNEL_PORT", "8400"))

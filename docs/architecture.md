@@ -26,6 +26,7 @@
 | 存储层 | backend/app/db.py + SQLite | 建表、索引、WAL、确定性种子数据；20 张表覆盖账户、流水、卡交易、预约、审批、checkpoint、事件、审计、会话锁 |
 | 能力注册层 | backend/app/plugins.py | 七个内置插件的注册表（core / mcp / model / skill / channel）、状态探测、启停与持久化；只决定能力是否可用，不参与资金判定 |
 | 渠道接入层 | backend/channels/server.py、wecom.py、wecom_crypto.py、backend/app/push.py | IM webhook 与企微回调的协议转换、验签解密、幂等与去重；主动触达的文案生成与投递。只搬运文本与确认状态，不解析意图、不判定风险 |
+| MCP 接入层 | backend/app/mcp_registry.py、mcp_client.py、backend/external/bank_mcp_server.py | 通用 MCP 服务注册表（MCP_SERVERS）、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE、只读四道闸与降级；永远只读，不参与资金判定 |
 
 依赖方向单向向下：编排层可以调用安全层与领域层，领域层不感知 HTTP 与自然语言，安全层只依赖存储层。
 

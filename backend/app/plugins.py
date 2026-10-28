@@ -119,10 +119,68 @@ REGISTRY: List[Dict[str, Any]] = [
     },
 ]
 
+# 说明：v0.6.0 起注册表 = 内置 7 个 + MCP_SERVERS 动态声明的 mcp-<name>，
+# 统一走 _registry() / _by_id()，不再直接读下面这两个常量。
 _IDS = tuple(item["id"] for item in REGISTRY)
 _BY_ID: Dict[str, Dict[str, Any]] = {item["id"]: item for item in REGISTRY}
 _LOCK = threading.RLock()
 _CONN_GETTER = None
+
+
+def _extra_mcp_specs() -> List[Dict[str, Any]]:
+    """把 MCP_SERVERS 里声明的额外外部服务挂成 mcp-<name> 插件（fx/risk 已内置，跳过）。
+
+    注册表解析失败（坏 JSON）时返回空表，不影响内置 7 个能力；/api/mcp/status 会给出原因。
+    """
+    try:
+        from . import mcp_registry
+        loaded = mcp_registry.load()
+    except Exception:  # noqa: BLE001 - 插件页不能因为外部服务配置坏掉而 500
+        return []
+    extras: List[Dict[str, Any]] = []
+    for spec in loaded.get("servers") or []:
+        name = str(spec.get("name") or "")
+        if not name or name in ("fx", "risk"):
+            continue
+        label = str(spec.get("label") or name)
+        tools = [str(tool) for tool in (spec.get("tools") or [])]
+        extras.append({
+            "id": "mcp-" + name,
+            "name": label,
+            "kind": "mcp",
+            "toggleable": True,
+            "description": "%s：通过 MCP 接入的外部只读服务（传输 %s），只提供查询能力，写操作一律拒绝。"
+                           % (label, spec.get("transport") or "http"),
+            "how": "启用时按需调用 %s 的只读工具；停用后不发起任何外部请求；服务不可用时仅该能力降级，资金主流程不受影响。"
+                   % name,
+            "provides": {"tools": tools, "skills": [], "routes": ["/api/mcp/status"]},
+            "requires": [],
+            "env": ["MCP_SERVERS", "MCP_ENABLED", "MCP_TIMEOUT_MS"],
+            "probe": name,
+            "transport": str(spec.get("transport") or "http"),
+            "auth_type": str((spec.get("auth") or {}).get("type") or "none"),
+            "read_only": bool(spec.get("read_only", True)),
+        })
+    return extras
+
+
+def _registry() -> List[Dict[str, Any]]:
+    """内置 7 个能力 + MCP_SERVERS 声明的额外服务（按配置顺序插在 mcp-risk 之后）。"""
+    extras = _extra_mcp_specs()
+    if not extras:
+        return list(REGISTRY)
+    merged: List[Dict[str, Any]] = []
+    for item in REGISTRY:
+        merged.append(item)
+        if item["id"] == "mcp-risk":
+            merged.extend(extras)
+    if len(merged) == len(REGISTRY):  # 理论上不会发生，兜底追加
+        merged.extend(extras)
+    return merged
+
+
+def _by_id() -> Dict[str, Dict[str, Any]]:
+    return {item["id"]: item for item in _registry()}
 
 
 class PluginNotFound(Exception):
@@ -165,9 +223,10 @@ def _load_state() -> Dict[str, bool]:
         return {}
     if not isinstance(raw, dict):
         return {}
+    by_id = _by_id()
     state: Dict[str, bool] = {}
     for plugin_id, value in raw.items():
-        if plugin_id in _BY_ID and isinstance(value, bool):
+        if plugin_id in by_id and isinstance(value, bool):
             state[str(plugin_id)] = value
     return state
 
@@ -188,7 +247,7 @@ def _save_state(state: Dict[str, bool]) -> bool:
 
 # ---------------- 查询 ----------------
 def _spec(plugin_id: str) -> Optional[Dict[str, Any]]:
-    return _BY_ID.get(str(plugin_id or "").strip())
+    return _by_id().get(str(plugin_id or "").strip())
 
 
 def is_enabled(plugin_id: str) -> bool:
@@ -230,6 +289,15 @@ def _status_of(spec: Dict[str, Any], enabled: bool, mcp_rows: Dict[str, Dict[str
 def _item(spec: Dict[str, Any], enabled: bool, mcp_rows: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:
     provides = spec.get("provides") or {}
     routes = [str(route) for route in (provides.get("routes") or [])]
+    detail = {"how": spec["how"], "env": [str(name) for name in (spec.get("env") or [])],
+              "endpoints": routes}
+    # 外部 MCP 服务额外暴露传输方式与鉴权类型（只有类型，没有密钥），便于评审核对
+    if spec.get("transport"):
+        detail["transport"] = str(spec["transport"])
+    if spec.get("auth_type"):
+        detail["auth"] = str(spec["auth_type"])
+    if spec.get("read_only") is not None:
+        detail["read_only"] = bool(spec["read_only"])
     return {
         "id": spec["id"],
         "name": spec["name"],
@@ -245,8 +313,7 @@ def _item(spec: Dict[str, Any], enabled: bool, mcp_rows: Dict[str, Dict[str, Any
             "routes": routes,
         },
         "requires": [str(req) for req in (spec.get("requires") or [])],
-        "detail": {"how": spec["how"], "env": [str(name) for name in (spec.get("env") or [])],
-                   "endpoints": routes},
+        "detail": detail,
         "locked_reason": "" if spec["toggleable"] else "核心能力不可停用",
     }
 
@@ -255,8 +322,11 @@ def all() -> List[Dict[str, Any]]:
     """返回全部插件（含运行态 status）；只做一次 mcp 探测。"""
     state = _load_state()
     mcp_rows = _mcp_probe()
+    registry = _registry()
+    current_ids = {item["id"] for item in registry}
     return [_item(spec, bool(state.get(spec["id"], True)) if spec["toggleable"] else True, mcp_rows)
-            for spec in REGISTRY]
+            for spec in registry
+            if spec["id"] in current_ids]
 
 
 def get(plugin_id: str) -> Optional[Dict[str, Any]]:
@@ -270,11 +340,12 @@ def get(plugin_id: str) -> Optional[Dict[str, Any]]:
 def counts() -> Dict[str, int]:
     """启用/停用计数（不含 mcp 探测，供 toggle 响应使用）。"""
     state = _load_state()
+    registry = _registry()
     enabled = 0
-    for spec in REGISTRY:
+    for spec in registry:
         if not spec["toggleable"] or state.get(spec["id"], True):
             enabled += 1
-    return {"total": len(REGISTRY), "enabled": enabled, "disabled": len(REGISTRY) - enabled}
+    return {"total": len(registry), "enabled": enabled, "disabled": len(registry) - enabled}
 
 
 def status() -> Dict[str, Any]:

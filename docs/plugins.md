@@ -1,6 +1,6 @@
 # 插件注册表（Plugins）
 
-v0.3.0 引入插件注册表：把零步银行的能力拆成七个可观测、可启停的插件，统一由 GET /api/plugins 展示，并允许在设置页停用非核心能力。核心原则只有一条——**停用插件只能减少功能，不能放宽任何资金安全边界**。
+v0.3.0 引入插件注册表：把零步银行的能力拆成七个可观测、可启停的插件，统一由 GET /api/plugins 展示，并允许在设置页停用非核心能力。v0.6.0 起注册表可扩展：MCP_SERVERS 声明的每个外部 MCP 服务会额外挂一个 mcp-<name> 插件（默认仍是七个）。核心原则只有一条——**停用插件只能减少功能，不能放宽任何资金安全边界**。
 
 实现：backend/app/plugins.py（335 行，标准库，无第三方依赖）；路由：backend/server.py（GET /api/plugins、POST /api/plugins/<id>/toggle）。
 
@@ -15,7 +15,7 @@ v0.3.0 引入插件注册表：把零步银行的能力拆成七个可观测、�
 
 ## 2. 七个插件
 
-注册表顺序固定为 policy、audit、mcp-fx、mcp-risk、intent-llm、skill-pack、channel-im；供前端设置页按此顺序展示。
+注册表顺序固定为 policy、audit、mcp-fx、mcp-risk、intent-llm、skill-pack、channel-im；供前端设置页按此顺序展示。未配置 MCP_SERVERS 时注册表就是这七个；配置后每个外部服务按 name 生成 mcp-<name> 插件，插在 mcp-risk 之后、按配置顺序排列（受 MCP_MAX_SERVERS=8 限制），kind=mcp、toggleable=true，字段结构与内置插件一致，停用只影响该服务。
 
 | id | 名称 | kind | 可停用 | 提供的工具 / 技能 / 路由 | 依赖环境变量 |
 | --- | --- | --- | --- | --- | --- |
@@ -42,6 +42,7 @@ kind 共五类：core（核心能力）、mcp（外部服务）、model（模型
 - 探测只针对 mcp 类插件（probe 字段为 fx 或 risk），一次状态接口调用只探测一次，结果复用给两项，不重复请求。
 - core 插件的 enabled 恒为 true，状态接口里仍带 toggleable=false 与 locked_reason，供前端置灰按钮。
 - degraded 是运行态、不落盘：重启后按当次探测重新计算；disabled 来自状态文件，跨重启保留。
+- mcp-<name> 插件（v0.6.0）：探测对应该外部服务；停用后 /api/mcp/status 该项 status=disabled、last_error=插件已停用、不发起外部调用；不影响 mcp-fx / mcp-risk 与其它服务。
 
 ## 4. HTTP API
 

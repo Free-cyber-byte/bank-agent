@@ -556,6 +556,14 @@ def _mask_token(token: str) -> str:
 _MCP_PLUGIN_IDS = {"fx": "mcp-fx", "risk": "mcp-risk"}
 
 
+def _mcp_plugin_id(name: str) -> str:
+    """服务名 -> 插件 id：内置 fx/risk 用固定映射，其余 MCP_SERVERS 服务统一 mcp-<name>。"""
+    name = str(name or "")
+    if name in _MCP_PLUGIN_IDS:
+        return _MCP_PLUGIN_IDS[name]
+    return "mcp-" + name if name else ""
+
+
 def _mcp_status() -> dict:
     """MCP 状态超集：保留 mcp_client.status() 既有字段，只增不改。
 
@@ -563,12 +571,14 @@ def _mcp_status() -> dict:
     - 对应插件被停用时 status="disabled"、ok=false、degraded=true、last_error="插件已停用"
       （插件停用优先于运行态展示；MCP_ENABLED=0 的「整体关闭」语义保持不变）；
     - 顶层补 ok=true（接口本身可用）。前端已按这些字段渲染，故既有字段一个不少。
+    - v0.6.0 起服务列表可来自 MCP_SERVERS（银行开放平台等），插件 id 统一 mcp-<name>；
+      label/transport/auth 由 mcp_client.status() 提供，前端按缺省回退，不影响旧渲染。
     """
     body = mcp_client.status()
     servers = []
     for item in body.get("servers") or []:
         row = dict(item)
-        plugin_id = _MCP_PLUGIN_IDS.get(str(row.get("name") or ""))
+        plugin_id = _mcp_plugin_id(row.get("name"))
         if plugin_id and not plugins.is_enabled(plugin_id):
             row["status"] = "disabled"
             row["ok"] = False

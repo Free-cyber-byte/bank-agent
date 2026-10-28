@@ -4,7 +4,7 @@
 
 ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的可运行参考实现：用户用一句自然语言说出需求，Agent 走完「理解 → 规划 → 策略校验 → 执行 → 回读 → 回复」六阶段流水线，把查询、转账、理财、卡片、订阅、跨场景分账真正做完。它同时是一份可被审计、可被评测的工程样本：资金动作全部由确定性工具执行，模型只负责产出意图与槽位，任何高风险动作都必须经过用户确认或强验证因子（TOTP 动态码 / 短信码 / 人脸令牌），连续可疑操作还会临时锁定会话；整条事件链用 SHA-256 哈希链固化。
 
-本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.5.1：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56。
+本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.6.0：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56；v0.6.0 把 MCP 客户端升级为通用网关（MCP_SERVERS 多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE），并提供银行开放平台演示服务，MCP 仍严格只读。
 
 ---
 
@@ -26,6 +26,36 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 14. **洞察只读、建议不代做（v0.5.0）**：洞察计划只有 LOW 只读工具（spending_insights / detect_subscriptions），savings 只是建议（取消订阅、查看账单），任何资金动作仍需用户点按并重新走三级授权；停止输出只作用于文本，不撤销已执行的工具。
 
 15. **操作后总览即刻对齐（v0.5.1）**：账户类型统一按 kind 判断（acctKind），资产构成与账户列表计入理财持仓并单列「理财 · 持仓」一行，回合结束、审批通过与撤销后自动 GET /api/session/{id} 刷新快照；实测 56/56、e2e_stream 33/33、前端自检 247 项全过。
+16. **通用 MCP 接入、银行可插拔（v0.6.0）**：MCP_SERVERS 多服务注册表 + Bearer / Headers / OAuth2 鉴权 + streamable-http 会话与 SSE，附带银行开放平台演示服务（8310）验证全链路；只读四道闸把写操作挡在客户端，全局写开关也放不进显式 write_tools——能接更多外部服务，能动钱的边界不变。
+
+---
+
+## v0.6.0 新能力（通用 MCP 接入 · 银行开放平台）
+
+v0.6.0 把 MCP 从「两个内置演示服务」升级为通用接入：任何符合 MCP 语义的外部服务（含银行开放平台）都能用一段 MCP_SERVERS 配置接入，而资金边界与既有接口语义不变——MCP 仍然只读，审批、TOTP、撤销窗口与审计哈希链照旧。
+
+| 能力 | 内容 | 文档 |
+| --- | --- | --- |
+| 通用注册表 | MCP_SERVERS（JSON 数组）声明任意多个服务：name / url / transport / tools / write_tools / read_only / timeout / auth；坏配置回退 fx/risk，主流程不受影响 | [docs/mcp.md](docs/mcp.md) |
+| 鉴权 | Bearer / 自定义 headers / OAuth2 client_credentials；密钥只写 env:VAR 引用，/api/mcp/status 只回 auth.type 与 configured / token_cached | [docs/mcp.md](docs/mcp.md) |
+| streamable-http 会话 | initialize 取 Mcp-Session-Id，后续请求带会话头；text/event-stream 响应按 SSE 解析；会话失效自动重建 | [docs/mcp.md](docs/mcp.md) |
+| 银行开放平台演示 | backend/external/bank_mcp_server.py（8310）：Bearer + 会话 + SSE + OAuth2，bank_account_summary / bank_quote 只读，bank_transfer 被主服务与服务端双重拒绝 | [docs/mcp.md](docs/mcp.md) |
+| 只读四道闸 | 写操作黑名单先于白名单 → tools 白名单 → tools/list 声明校验；未声明服务/工具在客户端拒绝、零转发，全局写开关也放不进显式 write_tools | [docs/security.md](docs/security.md) |
+| 插件与状态 | 每个外部服务自动挂 mcp-<name> 插件（设置页可启停）；/api/mcp/status 增 label / transport / auth / session / read_only | [docs/plugins.md](docs/plugins.md)、[docs/api.md](docs/api.md) |
+
+同时升级：
+
+- 版本号 0.6.0；MCP_SERVERS 为空时行为与 v0.5.1 完全一致（servers 仍是 fx / risk 两项、transport=http），既有接口只加字段、不改语义。
+- 演示命令（终端 1 起银行服务，终端 2 起主服务并指向它）：
+
+    python backend/external/bank_mcp_server.py --port 8310 --oauth
+    set MCP_SERVERS=[{"name":"bank","label":"演示银行","url":"http://127.0.0.1:8310/mcp","transport":"streamable-http","tools":["bank_account_summary","bank_quote"],"write_tools":["bank_transfer"],"auth":{"type":"bearer","token":"env:BANK_MCP_TOKEN"}}]
+    set BANK_MCP_TOKEN=demo-bank-token
+    python backend/server.py
+    python scripts/mcp_probe.py bank            # 接入真实银行前自检：只读列出 tools/list 并标出写风险工具
+    python scripts/mcp_gateway_e2e.py
+
+- 实测（2026-10-28）：scripts/mcp_gateway_e2e.py 17/17；scripts/mcp_probe.py 对演示银行服务 1/1（3 工具，bank_transfer 标写风险）；回归全部 exit 0（run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、skill_check 6/6、smoke_normalize 10/10、channel_e2e 9/9、wecom --selftest 9/9、channel_wecom_e2e 13/13、push_e2e 13/13、前端 247/0）。
 
 ---
 
@@ -177,14 +207,14 @@ v0.3.0 不新增业务动作，也不改 v0.2.0 的接口语义；它把已有�
 
 同时升级：
 
-- 版本号 0.3.0（当时 VERSION 值），/api/health 与插件 version 字段读取仓库根 VERSION（改后需重启新进程生效）；当前为 0.5.1。
+- 版本号 0.3.0（当时 VERSION 值），/api/health 与插件 version 字段读取仓库根 VERSION（改后需重启新进程生效）；当前为 0.6.0。
 - 测试（2026-10-27 QA 回归，全部 exit 0）：run_tasks 36/36、plugin_e2e 17/17、smoke18 18/18（审计链 valid，checked=81）、smoke_normalize 10/10、skill_check 6/6、mcp_e2e 7/7、channel_e2e 9/9、verify_audit valid 13 条、前端 selftest PASS=100 FAIL=0。明细见工作区根 audit/qa-report-v0.3.0.md（2026-10-27，212 行，0 FAIL）。
 
 插件状态落盘与演示前检查：
 
 - 状态文件 backend/data/plugins.json，可用环境变量 PLUGINS_FILE 指定路径；POST /api/admin/reset 会把它一并复位，该文件已被 .gitignore 忽略，不进仓库。
 - 演示前先看 GET /api/plugins 的 enabled_count 是否为 7（七项均启用）；不是的话在设置页点「全部恢复」或调用 POST /api/admin/reset，再刷新界面。
-- 版本号在进程启动时从仓库根 VERSION 读取（v0.3.0 当时为 0.3.0，当前为 0.5.1），改完要重启才生效（已知限制）。
+- 版本号在进程启动时从仓库根 VERSION 读取（v0.3.0 当时为 0.3.0，当前为 0.6.0），改完要重启才生效（已知限制）。
 
 ---
 
@@ -206,7 +236,7 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 - **新意图 query_fx**：汇率/换汇/兑换类问题规划为单步 fx_convert。
 - **评测扩到 36 条**：新增 t31–t36，覆盖外部汇率、外部关闭降级、技能命中、policy hits、注入绕过、账单+提醒跨场景；2026-10-27 全量实测 36/36 通过（规则模式）。
 
-版本号见 VERSION（0.5.1），后端 config.py 从该文件读取且为唯一来源，/api/health 的 version 字段与之一致；变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+版本号见 VERSION（0.6.0），后端 config.py 从该文件读取且为唯一来源，/api/health 的 version 字段与之一致；变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -278,7 +308,7 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
     curl.exe -s http://127.0.0.1:8000/api/health
     curl.exe -s http://127.0.0.1:8000/api/plugins
 
-/api/health 返回 version=0.5.1；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（56 条任务按每批 6 条分 10 批）。
+/api/health 返回 version=0.6.0；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（56 条任务按每批 6 条分 10 批）。
 
 不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，56 条评测全部通过（规则模式）。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / 模型」之间切换（「模型」即调用大模型解析，悬停可看到当前厂商与模型名）。
 
@@ -337,7 +367,7 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 
 ### 四进程启动（v0.3.2）：每个进程都可选
 
-v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、推送接收端），另可选两个外部只读服务；但只有主服务是必需的：单进程 python backend/server.py 就能看到完整界面并办理全部业务。外部 fx/risk 可选，不起时外部服务页显示降级、汇率回落内置参考价、反欺诈评分跳过；IM 渠道可选，不起不影响页面、评测与 CI；企微回调可选，不起只影响企业微信侧；主动推送未配置接收端时只生成文案（not_configured），不阻断任何业务。
+v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、推送接收端），另可选两个外部只读服务（v0.6.0 起还可通过 MCP_SERVERS 接入任意 MCP 服务，内置演示为 8310 的银行服务）；但只有主服务是必需的：单进程 python backend/server.py 就能看到完整界面并办理全部业务。外部 fx/risk 可选，不起时外部服务页显示降级、汇率回落内置参考价、反欺诈评分跳过；IM 渠道可选，不起不影响页面、评测与 CI；企微回调可选，不起只影响企业微信侧；主动推送未配置接收端时只生成文案（not_configured），不阻断任何业务。
 
 | 进程 | 端口 | 是否必需 | 不起时的降级 |
 | --- | --- | --- | --- |
@@ -346,6 +376,7 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
 | 企微回调 backend/channels/wecom.py | 8401 | 否 | 企业微信不可达；Web 与主服务不受影响 |
 | 外部 fx / risk | 8300 / 8301 | 否 | 汇率回落内置参考价、反欺诈评分跳过，回复标注降级 |
 | 推送接收端（CHANNEL_PUSH_URL） | 任意 | 否 | /api/push 返回 not_configured，仅生成文案并写审计 |
+| 银行 MCP 演示服务（v0.6.0，可选） | 8310 | 否 | 不配 MCP_SERVERS 即不涉及；配了但服务没起时该服务 status=degraded，其它服务与业务照常 |
 
     # 终端 1：汇率服务（8300）
     python backend/external/fx_server.py
@@ -362,9 +393,11 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
     # 可选：企业微信回调（8401）；Token/AESKey/CorpID 见 .env.example
     python backend/channels/wecom.py
 
-    # 自检：两服务进程内起停 + JSON-RPC 握手
+    # 自检：两服务进程内起停 + JSON-RPC 握手；通用 MCP 接入 17 项；接入前探测
     python backend/external/selftest.py
     python scripts/mcp_e2e.py
+    python scripts/mcp_gateway_e2e.py
+    python scripts/mcp_probe.py bank
     python scripts/channel_e2e.py
 
     # 可选：企微回调自检 9/9、端到端 13/13、主动触达 13/13
@@ -380,7 +413,7 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
 
 停止服务（演示结束、换端口、清理残留）：
 
-    # 一键停止 8000 / 8300 / 8301（Windows 双击 stop.bat 同理）
+    # 一键停止 8000 / 8300 / 8301 / 8310（Windows 双击 stop.bat 同理）
     python scripts/stop_services.py
 
     # 只停指定端口；只看占用了谁，不动手
@@ -407,7 +440,7 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
     curl.exe -s http://127.0.0.1:8401/health
     curl.exe -s http://127.0.0.1:8000/api/channel/status
 
-后端已冻结：v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件，字段见 docs/api.md §2 / §4 / §7。
+后端口径（逐版本累积）：v0.6.0 实跑 scripts/mcp_gateway_e2e.py 17/17，回归 run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、前端 247/0（2026-10-28）；v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件，字段见 docs/api.md §2 / §4 / §7。
 
 ---
 
@@ -658,7 +691,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     bank-agent/
     ├── README.md                 项目说明与快速开始
     ├── CHANGELOG.md              版本变更与兼容性记录
-    ├── VERSION                   版本号（0.5.1）
+    ├── VERSION                   版本号（0.6.0）
     ├── backend/
     │   ├── server.py              HTTP/SSE 服务入口（零依赖，698 行，含插件、分页、推送、预约/调度、多因子演示与逐字流式/取消路由）
     │   ├── app/
@@ -675,7 +708,8 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   │   ├── insight.py         消费洞察与订阅识别（spending_insights / detect_subscriptions，只读、纯标准库）
     │   │   ├── audit.py           canonical JSON + SHA-256 哈希链
     │   │   ├── mock_core.py       银行领域模拟（转账/理财申赎/卡限额与刷卡/预约，金额整数分、幂等、冲正）
-    │   │   ├── mcp_client.py      MCP 客户端：JSON-RPC、白名单、超时与降级
+    │   │   ├── mcp_client.py      MCP 通用网关：http / streamable-http、会话与 SSE、鉴权、只读四道闸与降级
+    │   │   ├── mcp_registry.py    MCP 服务注册表：MCP_SERVERS 解析、鉴权归一、密钥 env 引用
     │   │   ├── skills.py          技能卡加载、匹配、摘要与命中统计
     │   │   ├── plugins.py         七插件注册表、状态探测、启停与持久化
     │   │   ├── scheduler.py       预约转账调度器（到期检查、幂等执行、审计）
@@ -683,6 +717,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   ├── external/
     │   │   ├── fx_server.py       汇率 MCP 服务（独立进程，8300）
     │   │   ├── risk_server.py     反欺诈 MCP 服务（独立进程，8301）
+    │   │   ├── bank_mcp_server.py 银行开放平台 MCP 演示服务（独立进程，8310：Bearer / OAuth2 / 会话 / SSE）
     │   │   └── selftest.py        外部服务自检（5 场景）
     │   ├── channels/
     │   │   ├── server.py          IM 渠道服务（8400，token 鉴权 + 两步确认）
@@ -715,6 +750,8 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   ├── smoke_llm_fallback.py  模型不可用时回退规则链路的冒烟测试
     │   ├── smoke18.py             18 轮端到端演示流 + 审计链自证
     │   ├── mcp_e2e.py             MCP 端到端：服务起停、降级与审计链
+    │   ├── mcp_gateway_e2e.py     通用 MCP 接入端到端（17 项：注册表、鉴权、会话、SSE、写拒绝、脱敏、降级）
+    │   ├── mcp_probe.py           MCP 服务自检：只读探测 tools/list，列出工具并标出写风险
     │   ├── channel_e2e.py         IM 渠道端到端：鉴权、幂等、两步确认
     │   ├── channel_wecom_e2e.py   企微回调端到端：验签、解密、去重、超时
     │   ├── push_e2e.py            主动触达端到端：三类文案、三态与审计
@@ -724,11 +761,11 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   ├── skill_check.py         技能卡自检（6 项，含 18 条示例）
     │   └── smoke18_result.json    上述运行器的完整实测输出（供复核）
     ├── docs/
-    │   ├── api.md                 HTTP 接口契约（v1.7：LLM、插件、分页、推送、企微、预约与调度、多因子与会话锁定、洞察与流式取消）
+    │   ├── api.md                 HTTP 接口契约（v1.9：MCP 通用接入字段，以及 LLM、插件、分页、推送、企微、预约与调度、多因子与会话锁定、洞察与流式取消）
     │   ├── architecture.md        架构与流水线详解（三模式解析）
     │   ├── security.md            安全设计与攻击测试（含模型不可信组件）
     │   ├── design-system.md       界面设计规范 v0.3.0（延续 v4：Win11 Fluent、视觉令牌、插件页）
-    │   ├── mcp.md                 MCP 外部只读服务（接口、降级、演示）
+    │   ├── mcp.md                 MCP 只读服务与通用接入（注册表、鉴权、会话/SSE、只读四道闸、银行开放平台演示）
     │   ├── skills.md              Skill 技能包（六张卡、接口、接入位置）
     │   ├── channel.md             渠道接入与主动触达（IM / 企微 / 推送 / 手机端）
     │   ├── plugins.md             插件注册表：七插件、状态机、启停接口与审计
@@ -749,9 +786,9 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
 | [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化、插件注册表与渠道接入 |
 | [docs/security.md](docs/security.md) | 三级权限矩阵、阈值理由、TOTP 与哈希链实现、注入四层防御、攻击测试、已知限制 |
 | [docs/evaluation.md](docs/evaluation.md) | 56 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、流式 e2e 33/33、v0.4.0/v0.4.1/v0.5.0 增量自检、新增任务方法 |
-| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.8：v0.5.1 会话 wealth 与 accounts.kind 口径、v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
+| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.9：v0.6.0 MCP 通用接入字段 label/transport/auth/session/read_only 与动态 mcp-<name> 插件、v0.5.1 会话 wealth 与 accounts.kind 口径、v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
 | [docs/design-system.md](docs/design-system.md) | 前端设计规范（v0.3.2，延续 v4 视觉）：Win11 Fluent、7 档字号、264/1fr/296 三栏、审批卡规则行、技能页/外部服务页/设置页、插件页与开关/徽章/手风琴/换一批、移动端与 PWA（tabbar、推送卡、安装态） |
-| [docs/mcp.md](docs/mcp.md) | MCP 外部只读服务：协议、接口、两个工具、降级行为、启动与演示 |
+| [docs/mcp.md](docs/mcp.md) | MCP 只读服务与通用接入：协议、接口、两个内置工具、降级行为、启动与演示；v0.6.0 注册表、鉴权、streamable-http/SSE 四道闸与银行开放平台演示 |
 | [docs/skills.md](docs/skills.md) | Skill 技能包：六张卡、front-matter 字段、match/summary/status、接入位置与新增方法 |
 | [docs/channel.md](docs/channel.md) | 渠道接入与主动触达：三种渠道形态、IM token 鉴权与两步确认、企微回调验签/AES/去重、POST /api/push 三态、手机端与 PWA、降级与边界 |
 | [docs/plugins.md](docs/plugins.md) | 插件注册表：七个内置插件、enabled/degraded/disabled 状态机、GET /api/plugins 与 toggle、停用效果、持久化与审计 |

@@ -269,6 +269,9 @@ Key 与日志：
 | 回调体积与异常 | 请求体上限 1MB（413）；坏 XML / 缺 Encrypt / 解密失败 400；内部异常只回可读文案 | 避免超大报文与错误信息泄露 |
 | 主动推送地址掩码 | push.mask_url 只保留 scheme://host/*** | 状态与审计不泄露完整 webhook URL 与路径 |
 | 渠道密钥不落日志 | WECOM_TOKEN / WECOM_AES_KEY / CHANNEL_PUSH_URL 只从环境变量读取；/health 只返回 *_set，状态接口只返回掩码 | 日志、接口、审计都不出现明文密钥 |
+| MCP 鉴权密钥不落日志 | MCP_SERVERS 的 auth 只支持 env:VAR / ${VAR} 间接引用；/api/mcp/status 只返回 auth.type 与 configured / token_cached | 状态接口、日志与截图都不出现银行 token / client_secret |
+| MCP 只读四道闸 | mcp_client 先拒写操作（write_tools + 写前缀）再验白名单与 tools/list；未声明服务与未声明工具在客户端拒绝、零转发 | 白名单配错也放不出转账，写请求到不了银行 |
+| 银行 MCP 双重拦截 | bank_mcp_server 对 bank_transfer 永远返回 -32000；主服务即便配置错误也不会转发该工具 | 演示环境不存在任何真实资金动作 |
 | 渠道回包白名单 | 三类渠道回包只允许 reply，或 needs_confirmation + preview + hint | 审批凭据不经 IM 或企微泄露 |
 | 预约一次审批 + 执行幂等 | 创建时 confirm / TOTP；到期由 scheduler 调 create_transfer，幂等键 sched_<sched_id>；成功/失败分别写 scheduled_transfer_executed（medium）/ failed（high） | 到点自动执行不再打扰，但重复 tick、进程重启都不会重复扣款，且每次执行都可审计 |
 | 参数级拦截前移 | LIMIT_INVALID（限额≤0 或单笔>日累计）、CARD_SINGLE_LIMIT / CARD_DAILY_LIMIT（刷卡超限）在 mock_core 与 policy 两层拦截 | 非法参数不会进入执行，也不产生资金变动 |

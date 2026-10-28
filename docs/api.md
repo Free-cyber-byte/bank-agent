@@ -1,6 +1,6 @@
-# ZeroStep API 契约（v1.8）
+# ZeroStep API 契约（v1.9）
 
-v1.8（2026-10-28）新增 v0.5.1 的 /api/session wealth 字段与 accounts.kind 字段口径（§1，纯增量，无破坏性变更）；v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 spending_insights 与 detect_subscriptions 的结果结构（§4）、insight 意图与 insight_card 事件、/api/chat 的 answer_start / answer_delta / answer_end 事件序（含 stream_text=false 降级）、POST /api/turn/cancel 与 answer_cancelled 审计（§2、§5、§7）；v1.6 的 v0.4.1 多因子强验证与会话锁定（审批 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 与 security_lock 事件）、v1.5 的预约与调度、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页均保持不变。
+v1.9（2026-10-28）新增 v0.6.0 的 MCP 通用接入字段：/api/mcp/status 每个服务新增 label / transport / auth{type,configured,token_cached} / session / read_only，顶层可选 config_error；配了 MCP_SERVERS 时 /api/plugins 额外出现 mcp-<name>（纯增量，无破坏性变更）；v1.8（2026-10-28）新增 v0.5.1 的 /api/session wealth 字段与 accounts.kind 字段口径（§1，纯增量，无破坏性变更）；v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 spending_insights 与 detect_subscriptions 的结果结构（§4）、insight 意图与 insight_card 事件、/api/chat 的 answer_start / answer_delta / answer_end 事件序（含 stream_text=false 降级）、POST /api/turn/cancel 与 answer_cancelled 审计（§2、§5、§7）；v1.6 的 v0.4.1 多因子强验证与会话锁定（审批 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 与 security_lock 事件）、v1.5 的预约与调度、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页均保持不变。
 
 零依赖 Python 标准库实现。所有接口返回 JSON（UTF-8），金额单位一律为「分」（整数），前端负责格式化。
 
@@ -374,7 +374,7 @@ Key 无效（HTTP 401）：
 - GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "chain": { "valid": true, "checked": 21, "broken_at": null, "reason": null } }
   entry 字段：seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash, hash
 - GET /api/events?session_id=...&after=0 → { "events": [ { "seq": 1, "type": "message", "payload": {...} } ] }  // 会话回放
-- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.5.1", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.5.1；改 VERSION 后需重启进程生效
+- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.6.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.6.0；改 VERSION 后需重启进程生效
 - GET /api/tasks[?limit=N&offset=M] → 任务列表，前端快捷按钮；user_input 即 turns[0]。
   无参数时与旧版完全一致，只返回 tasks（全部 56 条）：
 
@@ -437,6 +437,22 @@ Key 无效（HTTP 401）：
 - enabled=false（MCP_ENABLED=0）：enabled=false、ok=true，servers 仍返回两项但 ok=false、degraded=true、status="degraded"、last_error="MCP 未启用（MCP_ENABLED=0）"。
 - 服务连不上或超时：对应项 ok=false、degraded=true、status="degraded"、last_error 为失败摘要；主服务与对话不受影响。
 - 探测内部异常时返回 500 { "ok": false, "error": "服务不可用" }。
+
+v0.6.0 增量（2026-10-28）：每个 servers 项新增以下字段，既有字段与语义不变（MCP_SERVERS 为空时 servers 仍是 fx / risk 两项、transport=http，响应可直接对比 v0.5.1）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| label | str | 展示名；MCP_SERVERS 未写时同 name |
+| transport | str | "http"（旧形态）或 "streamable-http"（会话 + SSE） |
+| auth | object | {"type": "none"\|"headers"\|"bearer"\|"oauth2", "configured": bool, "token_cached": bool}；只回类型与状态，不含任何密钥明文 |
+| session | bool | 是否已建立 Mcp-Session-Id（http 传输恒为 false） |
+| read_only | bool | 该服务是否只读；默认 true |
+
+另有两条补充规则：
+
+- 服务名与插件 id：配了 MCP_SERVERS 时 servers[].name 取配置里的 name，对应插件 id 为 mcp-<name>（出现在 /api/plugins 中，紧跟在 mcp-risk 之后，按配置顺序）。
+- 顶层 config_error：仅在 MCP_SERVERS 解析失败（坏 JSON）或部分配置非法时出现，值为中文原因；此时解析失败回退 fx/risk，部分非法则保留合法项。成功且全部合法时不出现该字段。
+- 鉴权失败（401/403/invalid token/OAuth 失败）时该项 status="degraded"、last_error 以「鉴权失败」开头，不重试、不阻断对话。
 
 #### GET /api/skills
 
@@ -518,7 +534,7 @@ IM 渠道配置与最近 5 条投递记录（不返回令牌明文）。实测�
 
 ### v0.3.0 新增接口：插件注册表
 
-两项接口由 backend/app/plugins.py 提供，完整设计见 docs/plugins.md；此处只列 HTTP 契约。下面的示例按七个插件全部可用时展示（MCP_ENABLED=0 时两个 mcp 项为 degraded，字段相同）。
+两项接口由 backend/app/plugins.py 提供，完整设计见 docs/plugins.md；此处只列 HTTP 契约。下面的示例按未配置 MCP_SERVERS 的默认注册表（七个插件）展示（MCP_ENABLED=0 时两个 mcp 项为 degraded，字段相同）。配置 MCP_SERVERS 后注册表多出 mcp-<name> 项，字段结构相同。
 
 #### GET /api/plugins
 
@@ -540,7 +556,7 @@ IM 渠道配置与最近 5 条投递记录（不返回令牌明文）。实测�
           "id": "mcp-fx",
           "name": "汇率服务",
           "kind": "mcp",
-          "version": "0.5.1",
+          "version": "0.6.0",
           "description": "通过 MCP 调用外部汇率服务，只用于查询与展示；不可用时回退内置参考价，绝不影响资金动作。",
           "status": "enabled",
           "enabled": true,
@@ -557,7 +573,7 @@ IM 渠道配置与最近 5 条投递记录（不返回令牌明文）。实测�
       ]
     }
 
-- 顺序固定 policy、audit、mcp-fx、mcp-risk、intent-llm、skill-pack、channel-im；version 为进程启动时读取的 VERSION。
+- 默认（未配置 MCP_SERVERS）顺序固定 policy、audit、mcp-fx、mcp-risk、intent-llm、skill-pack、channel-im，count=7；配置了 MCP_SERVERS 时，每个外部服务额外挂一个 mcp-<name> 插件，插在 mcp-risk 之后、按配置顺序排列，count = 7 + 服务数（受 MCP_MAX_SERVERS 限制）。version 为进程启动时读取的 VERSION。
 - status 三态：enabled（正常）、degraded（已启用但外部服务不可用）、disabled（被停用）。core 插件 enabled 恒 true、toggleable=false、locked_reason=「核心能力不可停用」。
 - enabled_count 统计 enabled=true 的项（含 core）；mcp 类两项的探测在一次请求内只做一次。
 

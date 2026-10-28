@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""停止 ZeroStep 本地服务：按端口找到监听进程并结束（默认 8000/8300/8301）。
+"""停止 ZeroStep 本地服务：按端口找到监听进程并结束（默认 8000/8300/8301/8310）。
 
 用法：
-    python scripts/stop_services.py              # 停 8000/8300/8301
+    python scripts/stop_services.py              # 停 8000/8300/8301/8310
     python scripts/stop_services.py --ports 8010 # 只停指定端口
     python scripts/stop_services.py --dry-run    # 只打印，不真的杀
 
@@ -17,7 +17,7 @@ import subprocess
 import sys
 import time
 
-DEFAULT_PORTS = (8000, 8300, 8301)
+DEFAULT_PORTS = (8000, 8300, 8301, 8310)
 
 
 def _listening_pids_windows():
@@ -121,7 +121,7 @@ def _kill(pid, port):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="停止 ZeroStep 本地服务")
     parser.add_argument("--ports", nargs="+", type=int, default=list(DEFAULT_PORTS),
-                        help="要停止的端口，默认 8000 8300 8301")
+                        help="要停止的端口，默认 8000 8300 8301 8310")
     parser.add_argument("--dry-run", action="store_true", help="只检查，不结束进程")
     args = parser.parse_args(argv)
 

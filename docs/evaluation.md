@@ -23,6 +23,7 @@ ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条�
 | v0.4.1 增量自检 | scripts/run_tasks.py 46/46（0 失败，含 t44–t46）、node frontend/_selftest.js PASS=206 FAIL=0（v0.4.0 为 190，新增多因子 13 + 锁定 3）、scripts/security_factor_e2e.py 53/53（均 2026-10-28 实测）；全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md：审计 valid checked=105、smoke18 审计 52 条/事件 84 条、llm_e2e 9/9 场景 79/79、冻结 85 文件 SHA 一致） |
 | v0.5.0 增量自检 | scripts/run_tasks.py 56/56（0 失败，新增 t47–t56）、scripts/e2e_stream.py 33/33（流式事件序 / stream_text=false 降级 / 中途取消 / 审计 / 端口清理，2026-10-28 实测 2.25 秒）、node frontend/_selftest.js PASS=238 FAIL=0（v0.4.1 为 206，新增流式与洞察 32 项）；全量 17 步 QA 全 exit 0 |
 | v0.5.1 增量自检 | scripts/run_tasks.py 56/56（0 失败，用例未增）、scripts/e2e_stream.py 33/33（不变）、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，新增 9 条「资金流向与余额刷新」：kind 字段口径、信用卡待还脚注、理财持仓行、资产构成理财段放宽、回合结束自动刷新余额与持仓）；均为 2026-10-28 实测 |
+| v0.6.0 增量自检 | scripts/mcp_gateway_e2e.py 17/17（注册表、Bearer/OAuth2 鉴权、streamable-http 会话、SSE、写拒绝零转发、白名单、密钥脱敏、动态插件、MCP_ENABLED=0、坏配置、未知服务/工具，2026-10-28 实测）；任务集未变（仍 56/56），regression 全绿 |
 
 ---
 

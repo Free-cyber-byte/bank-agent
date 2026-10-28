@@ -4,6 +4,41 @@
 
 v0.2.0 为 2026-10-27 启动的能力批次，代码合并与验收由 Lead 统一复核；尚未通过验收的接口与命令在对应位置单独注明。
 
+## [0.6.0] - 2026-10-28（进行中，未打 tag）
+
+v0.6.0 是「MCP 通用接入」批次：把 v0.2.0 只服务 fx/risk 的 MCP 客户端升级为通用网关，支持多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE 响应，并提供银行开放平台演示服务验证链路。MCP 依然只读：资金边界、审批、TOTP、撤销窗口、审计哈希链与既有接口字段都不变。
+
+### Added
+
+- backend/app/mcp_registry.py：MCP_SERVERS 注册表（JSON 数组），字段 name / label / url / transport / tools / write_tools / read_only / timeout_ms / auth；解析永不抛异常，坏配置回退 fx/risk 并把原因写进 config_error。
+- 鉴权三种：bearer（token）、headers（自定义头）、oauth2（client_credentials，按 expires_in 缓存 token）；密钥支持 env:VAR 与 ${VAR} 间接引用。
+- mcp_client 升级为通用网关：http 与 streamable-http 两种 transport；streamable-http 维护 Mcp-Session-Id 会话，401/403 识别为鉴权失败，SSE（text/event-stream）响应解析 data: 行。
+- 只读四道闸：写操作硬拦（write_tools + 名字前缀）先于白名单 → tools 白名单 → tools/list 声明校验；MCP_ALLOW_WRITE_TOOLS 只对 read_only=false 服务的非 write_tools 生效，显式 write_tools 永远拒绝。
+- backend/external/bank_mcp_server.py（默认 8310）：银行开放平台演示服务，Bearer / OAuth2、会话、SSE；工具 bank_account_summary / bank_quote 只读，bank_transfer 永远拒绝。
+- scripts/mcp_gateway_e2e.py：17 项端到端（注册表、鉴权、会话、SSE、服务端计数、写拒绝零转发、白名单、错误 token、OAuth2、密钥脱敏、动态插件、MCP_ENABLED=0、坏配置、未知服务/工具）。
+- mcp_client.discover(server) 与 scripts/mcp_probe.py：接入真实银行开放平台前的只读自检，探测 tools/list 并列出工具、标出写风险工具（不调用任何工具），支持 --json；实测对演示银行服务 1/1 成功。
+- docs/mcp.md 新增 11.6「接入真实银行开放平台（落地步骤）」：三种鉴权配置样例、自检命令、上线检查清单与限制说明（不做签名/mTLS，需扩展 _rpc_headers / _post）。
+- /api/mcp/status 每个服务新增 label / transport / auth{type,configured,token_cached} / session / read_only；顶层可选 config_error；插件页动态出现 mcp-<name>。
+- 环境变量 MCP_SERVERS / MCP_MAX_SERVERS / MCP_ALLOW_WRITE_TOOLS（默认空 / 8 / 0）。
+
+### Changed
+
+- 版本 0.5.1 → 0.6.0。
+- plugins 注册表由固定 7 个改为 7 + MCP_SERVERS 额外项（插在 mcp-risk 之后，按配置顺序）；不配 MCP_SERVERS 时仍是 7 个，plugin_e2e 的「7 插件全复原」语义不变。
+- call_tool 新增主写法 call_tool(server, tool, args)，两参老写法 call_tool("fx_convert", args) 继续可用。
+
+### Security
+
+- MCP 只读边界加固：写操作判断提前到白名单之前，避免白名单配置错误把转账类工具放进来；银行演示服务对 bank_transfer 也返回错误，双重拦截。
+- 鉴权密钥只以 env:VAR / ${VAR} 引用，/api/mcp/status 仅返回 type / configured / token_cached；e2e 断言 status JSON 不含 token / client_secret 明文。
+- 未知服务、未知工具、白名单外工具一律本地拒绝，不发起请求。
+
+### 兼容性与验证状态
+
+- 契约增量：/api/mcp/status 只加字段不改语义；MCP_SERVERS 为空时行为与 v0.5.1 完全一致（servers 仍是 fx/risk 两项、transport=http）。
+- 本机实测（2026-10-28）：scripts/mcp_gateway_e2e.py 17/17；scripts/run_tasks.py 56/56；scripts/e2e_stream.py 33/33；scripts/capability_e2e.py 63/63；scripts/security_factor_e2e.py 53/53；scripts/mcp_e2e.py 7/7；backend/external/selftest.py 5/5；scripts/plugin_e2e.py 17/17；smoke18 18 轮且审计链 valid；scripts/skill_check.py 6/6；scripts/smoke_normalize.py 10/10；scripts/channel_e2e.py 9/9；backend/channels/wecom.py --selftest 9/9；scripts/channel_wecom_e2e.py 13/13；scripts/push_e2e.py 13/13；node frontend/_selftest.js PASS=247 FAIL=0。
+- 环境说明：本机 msys python 在 CREATE_NO_WINDOW 下启动子进程会返回 0xC0000142（与本次改动无关），capability_e2e 与 security_factor_e2e 本次通过把 subprocess.CREATE_NO_WINDOW 置 0 的包装器运行，脚本本身未改。
+
 ## [0.5.1] - 2026-10-28（进行中，未打 tag）
 
 v0.5.1 是「操作后界面不刷新」的修复批次：统一账户类型字段口径、把理财持仓计入资产构成、在回合结束 / 审批通过 / 撤销后自动刷新账户总览。接口只做增量（/api/session 响应新增 wealth），资金边界、1000 元阈值、审批 TTL 300 秒、撤销窗口 60 秒与审计哈希链均不变。
