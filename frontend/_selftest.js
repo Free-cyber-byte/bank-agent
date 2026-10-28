@@ -1,0 +1,1134 @@
+/* frontend/_selftest.js —— 无浏览器 DOM 桩自测（零依赖，node _selftest.js）
+ * 用法：node frontend/_selftest.js
+ * 说明：手写最小 DOM + fetch 桩，加载真实 app.js，覆盖视图切换/对话/审批/审计/技能/外部服务/设置/窄屏。
+ */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
+
+let PASS = 0, FAIL = 0;
+const FAILS = [];
+const SCROLLS = [];
+function ok(name, cond, extra) {
+  if (cond) { PASS++; console.log('  PASS  ' + name); }
+  else { FAIL++; FAILS.push(name + (extra ? ' -> ' + extra : '')); console.log('  FAIL  ' + name + (extra ? ' -> ' + extra : '')); }
+}
+function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+function enc(s) { return new Uint8Array(Buffer.from(s, 'utf8')); }
+
+// ===================== 最小 DOM =====================
+const VOID_TAGS = { meta: 1, link: 1, br: 1, input: 1, img: 1, hr: 1, source: 1, area: 1, base: 1, col: 1, embed: 1, param: 1, track: 1, wbr: 1 };
+
+class ClassList {
+  constructor(el) { this.el = el; }
+  _list() { return (this.el.getAttribute('class') || '').split(/\s+/).filter(Boolean); }
+  _set(a) { this.el.setAttribute('class', a.join(' ')); }
+  add(...names) { const a = this._list(); names.forEach(function (n) { if (a.indexOf(n) === -1) a.push(n); }); this._set(a); }
+  remove(...names) { const a = this._list().filter(function (n) { return names.indexOf(n) === -1; }); this._set(a); }
+  contains(n) { return this._list().indexOf(n) !== -1; }
+  toggle(n, force) {
+    const has = this.contains(n);
+    const want = force === undefined ? !has : !!force;
+    if (want) this.add(n); else this.remove(n);
+    return want;
+  }
+}
+
+class Style {
+  constructor() { this._p = {}; }
+  setProperty(k, v) { this._p[k] = v; }
+  removeProperty(k) { delete this._p[k]; }
+  get cssText() { return Object.keys(this._p).map(k => k + ':' + this._p[k]).join(';'); }
+  set cssText(v) { this._p = {}; }
+}
+
+class Node {
+  constructor(tag, doc) {
+    this.tagName = String(tag || 'div').toUpperCase();
+    this.nodeType = 1;
+    this.nodeName = this.tagName;
+    this.ownerDocument = doc || null;
+    this.childNodes = [];
+    this.parentNode = null;
+    this._attrs = {};
+    this._text = '';
+    this._listeners = {};
+    this.classList = new ClassList(this);
+    this.style = new Style();
+    this.offsetWidth = 0;
+    this.offsetHeight = 0;
+    this.scrollHeight = 0;
+    this.scrollTop = 0;
+  }
+  get classList() { return this._classList || (this._classList = new ClassList(this)); }
+  set classList(v) { this._classList = v; }
+  get children() { return this.childNodes.filter(function (n) { return n.nodeType === 1; }); }
+  get firstChild() { return this.childNodes[0] || null; }
+  get isConnected() { return !!this.parentNode; }
+  get parentElement() { return this.parentNode; }
+  getAttribute(n) { return Object.prototype.hasOwnProperty.call(this._attrs, n) ? this._attrs[n] : null; }
+  setAttribute(n, v) { this._attrs[n] = String(v); }
+  removeAttribute(n) { delete this._attrs[n]; }
+  hasAttribute(n) { return Object.prototype.hasOwnProperty.call(this._attrs, n); }
+  get id() { return this.getAttribute('id') || ''; }
+  set id(v) { this.setAttribute('id', v); }
+  get className() { return this.getAttribute('class') || ''; }
+  set className(v) { this.setAttribute('class', v); }
+  get hidden() { return this.hasAttribute('hidden'); }
+  set hidden(v) { if (v) this.setAttribute('hidden', ''); else this.removeAttribute('hidden'); }
+  get disabled() { return this.hasAttribute('disabled'); }
+  set disabled(v) { if (v) this.setAttribute('disabled', ''); else this.removeAttribute('disabled'); }
+  get value() { return this._value === undefined ? (this.getAttribute('value') || '') : this._value; }
+  set value(v) { this._value = String(v); }
+  get title() { return this.getAttribute('title') || ''; }
+  set title(v) { this.setAttribute('title', v); }
+  get type() { return this.getAttribute('type') || ''; }
+  set type(v) { this.setAttribute('type', v); }
+  get textContent() {
+    if (this.nodeType === 3) return this._text;
+    return this.childNodes.map(function (n) { return n.nodeType === 3 ? n._text : n.textContent; }).join('');
+  }
+  set textContent(v) {
+    if (this.nodeType === 3) { this._text = String(v); return; }
+    this.childNodes = [];
+    const t = new Node('#text', this.ownerDocument);
+    t.nodeType = 3;
+    t._text = String(v);
+    t.parentNode = this;
+    this.childNodes.push(t);
+  }
+  get innerHTML() { return serialize(this); }
+  set innerHTML(html) {
+    this.childNodes = [];
+    const nodes = parseFragment(String(html), this.ownerDocument);
+    const self = this;
+    nodes.forEach(function (n) { n.parentNode = self; self.childNodes.push(n); });
+  }
+  appendChild(n) {
+    if (n.parentNode) n.parentNode.removeChild(n);
+    n.parentNode = this;
+    this.childNodes.push(n);
+    return n;
+  }
+  insertBefore(n, ref) {
+    const i = this.childNodes.indexOf(ref);
+    if (i === -1) return this.appendChild(n);
+    if (n.parentNode) n.parentNode.removeChild(n);
+    n.parentNode = this;
+    this.childNodes.splice(i, 0, n);
+    return n;
+  }
+  removeChild(n) {
+    const i = this.childNodes.indexOf(n);
+    if (i !== -1) this.childNodes.splice(i, 1);
+    n.parentNode = null;
+    return n;
+  }
+  remove() { if (this.parentNode) this.parentNode.removeChild(this); }
+  insertAdjacentHTML(pos, html) {
+    const nodes = parseFragment(String(html), this.ownerDocument);
+    const self = this;
+    nodes.forEach(function (n) { n.parentNode = self; });
+    if (pos === 'beforeend') nodes.forEach(function (n) { self.childNodes.push(n); });
+  }
+  contains(n) {
+    let p = n;
+    while (p) { if (p === this) return true; p = p.parentNode; }
+    return false;
+  }
+  matches(sel) { return matchesSelector(this, sel); }
+  closest(sel) {
+    let p = this;
+    while (p && p.nodeType === 1) {
+      if (matchesSelector(p, sel)) return p;
+      p = p.parentNode;
+    }
+    return null;
+  }
+  querySelector(sel) { return this.querySelectorAll(sel)[0] || null; }
+  querySelectorAll(sel) {
+    const out = [];
+    const root = this;
+    const sels = String(sel).split(',').map(function (s) { return s.trim(); }).filter(Boolean);
+    walk(root, function (el) {
+      if (el === root || el.nodeType !== 1) return;
+      if (sels.some(function (s) { return matchComplex(el, s); })) out.push(el);
+    });
+    return out;
+  }
+  addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); }
+  removeEventListener(type, fn) {
+    const l = this._listeners[type];
+    if (l) this._listeners[type] = l.filter(function (f) { return f !== fn; });
+  }
+  dispatchEvent(ev) {
+    ev.target = ev.target || this;
+    let node = this;
+    while (node) {
+      const list = node._listeners[ev.type];
+      if (list) {
+        ev.currentTarget = node;
+        list.slice().forEach(function (fn) { fn.call(node, ev); });
+      }
+      if (ev._stop) break;
+      node = node.parentNode;
+    }
+    return !ev._prevented;
+  }
+  click() { this.dispatchEvent(makeEvent('click')); }
+  focus() { this.ownerDocument && (this.ownerDocument.activeElement = this); }
+  blur() {}
+  select() {}
+  setSelectionRange() {}
+}
+
+function walk(node, fn) {
+  fn.call(node, node);
+  node.childNodes.forEach(function (c) { if (c.nodeType === 1) walk(c, fn); });
+}
+
+function makeEvent(type, extra) {
+  const ev = {
+    type: type, target: null, currentTarget: null, _prevented: false, _stop: false,
+    preventDefault: function () { ev._prevented = true; }, stopPropagation: function () { ev._stop = true; }
+  };
+  Object.keys(extra || {}).forEach(function (k) { ev[k] = extra[k]; });
+  return ev;
+}
+
+function matchComplex(el, sel) {
+  const parts = String(sel).trim().split(/\s+/).filter(Boolean);
+  if (!parts.length) return false;
+  if (!matchesSelector(el, parts[parts.length - 1])) return false;
+  let idx = parts.length - 2;
+  let p = el.parentNode;
+  while (idx >= 0 && p && p.nodeType === 1) {
+    if (matchesSelector(p, parts[idx])) idx -= 1;
+    p = p.parentNode;
+  }
+  return idx < 0;
+}
+
+function matchesSelector(el, sel) {
+  if (!el || el.nodeType !== 1) return false;
+  let s = String(sel).trim();
+  let m = s.match(/^([a-zA-Z][\w-]*)?((?:[.#][\w-]+|\[[\w-]+(?:=["'][^"']*["'])?\])*)$/);
+  if (!m) return false;
+  const tag = m[1];
+  const rest = m[2] || '';
+  if (tag && el.tagName !== tag.toUpperCase()) return false;
+  const parts = rest.match(/[.#][\w-]+|\[[\w-]+(?:=["'][^"']*["'])?\]/g) || [];
+  return parts.every(function (p) {
+    if (p[0] === '.') return el.classList.contains(p.slice(1));
+    if (p[0] === '#') return el.getAttribute('id') === p.slice(1);
+    const am = p.match(/^\[([\w-]+)(?:=["']([^"']*)["'])?\]$/);
+    if (!am) return false;
+    if (am[2] === undefined) return el.hasAttribute(am[1]);
+    return el.getAttribute(am[1]) === am[2];
+  });
+}
+
+function serialize(node) {
+  if (node.nodeType === 3) return node._text;
+  const attrs = Object.keys(node._attrs).map(function (k) { return node._attrs[k] === '' ? ' ' + k : ' ' + k + '="' + node._attrs[k] + '"'; }).join('');
+  const inner = node.childNodes.map(serialize).join('');
+  return '<' + node.tagName.toLowerCase() + attrs + '>' + inner + '</' + node.tagName.toLowerCase() + '>';
+}
+
+function parseFragment(html, doc) {
+  const nodes = [];
+  const stack = [];
+  let i = 0;
+  const top = function () { return stack.length ? stack[stack.length - 1] : null; };
+  while (i < html.length) {
+    if (html.charAt(i) === '<') {
+      if (html.startsWith('<!--', i)) { i = html.indexOf('-->', i) + 3; continue; }
+      const end = html.indexOf('>', i);
+      if (end === -1) break;
+      let raw = html.slice(i + 1, end);
+      if (raw.charAt(0) === '/') {
+        const tagName = raw.slice(1).trim().toUpperCase();
+        for (let k = stack.length - 1; k >= 0; k--) {
+          if (stack[k].tagName === tagName) { stack.length = k; break; }
+        }
+        i = end + 1;
+        continue;
+      }
+      const selfClose = raw.endsWith('/');
+      if (selfClose) raw = raw.slice(0, -1);
+      const tm = raw.match(/^([a-zA-Z][\w-]*)/);
+      if (!tm) { i = end + 1; continue; }
+      const el = new Node(tm[1], doc);
+      const attrRe = /([\w:-]+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+)))?/g;
+      const rest = raw.slice(tm[1].length);
+      let am;
+      while ((am = attrRe.exec(rest))) {
+        const val = am[2] !== undefined ? am[2] : (am[3] !== undefined ? am[3] : (am[4] !== undefined ? am[4] : ''));
+        el.setAttribute(am[1], val);
+      }
+      const parent = top();
+      if (parent) { el.parentNode = parent; parent.childNodes.push(el); }
+      else nodes.push(el);
+      i = end + 1;
+      if (!VOID_TAGS[el.tagName.toLowerCase()] && !selfClose) stack.push(el);
+      if (el.tagName === 'SCRIPT' || el.tagName === 'STYLE') {
+        const closeTag = '</' + el.tagName.toLowerCase() + '>';
+        const closeIdx = html.toLowerCase().indexOf(closeTag, i);
+        if (closeIdx !== -1) {
+          el.textContent = html.slice(i, closeIdx);
+          i = closeIdx + closeTag.length;
+          stack.pop();
+        }
+      }
+      continue;
+    }
+    let next = html.indexOf('<', i);
+    if (next === -1) next = html.length;
+    const text = html.slice(i, next);
+    if (text.trim()) {
+      const parent = top();
+      const t = new Node('#text', doc);
+      t.nodeType = 3;
+      t._text = text;
+      if (parent) { t.parentNode = parent; parent.childNodes.push(t); }
+      else nodes.push(t);
+    }
+    i = next;
+  }
+  return nodes;
+}
+
+const htmlPath = path.join(__dirname, 'index.html');
+const appPath = path.join(__dirname, 'app.js');
+const html = fs.readFileSync(htmlPath, 'utf8');
+const appCode = fs.readFileSync(appPath, 'utf8');
+
+const doc = {
+  nodeType: 9, readyState: 'complete', activeElement: null,
+  _listeners: {},
+  createElement: function (t) { return new Node(t, doc); },
+  createTextNode: function (t) { const n = new Node('#text', doc); n.nodeType = 3; n._text = String(t); return n; },
+  getElementById: function (id) { let found = null; walk(doc.body, function (el) { if (!found && el.getAttribute && el.getAttribute('id') === id) found = el; }); return found; },
+  querySelector: function (s) { return doc.querySelectorAll(s)[0] || null; },
+  querySelectorAll: function (s) {
+    const out = [];
+    const sels = String(s).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+    walk(doc.body, function (el) { if (el.nodeType !== 1) return; if (sels.some(function (x) { return matchComplex(el, x); })) out.push(el); });
+    return out;
+  },
+  addEventListener: function (t, fn) { (doc._listeners[t] = doc._listeners[t] || []).push(fn); },
+  execCommand: function () { return true; }
+};
+const body = new Node('body', doc);
+doc.documentElement = new Node('html', doc);
+doc.documentElement.parentNode = doc;
+doc.documentElement.appendChild(body);
+doc.body = body;
+parseFragment(html, doc).forEach(function (n) { n.parentNode = body; body.childNodes.push(n); });
+
+// ===================== fetch 桩 =====================
+const FIX = {
+  demoSms: { ok: true, user_id: 'u001', code: '654321', seconds_left: 120, ttl: 120 },
+  demoFace: { ok: true, user_id: 'u001', token: 'fc_abc123def456', seconds_left: 60, ttl: 60 },
+  session: {
+    session_id: 'sess_test_001',
+    user: { user_id: 'u001', name: '张伟', risk_level: '稳健型' },
+    accounts: [
+      { account_id: 'a1', type: 'checking', name: '工资卡', number_masked: '**** 8821', balance_cents: 1284450, currency: 'CNY' },
+      { account_id: 'a2', type: 'credit', name: '信用卡', number_masked: '**** 6712', balance_cents: -843200, currency: 'CNY' },
+      { account_id: 'a3', type: 'savings', name: '储蓄', number_masked: '**** 3390', balance_cents: 4500000, currency: 'CNY' }
+    ],
+    llm_mode: 'auto', demo_mode: true
+  },
+  tasksAll: [
+    { id: 't01', title: '查本月支出前三类', category: '账单', user_input: '查一下这个月支出最多的三类' },
+    { id: 't02', title: '本月账单汇总', category: '账单', user_input: '看看我这个月的账单' },
+    { id: 't03', title: '餐饮支出分类', category: '账单', user_input: '这个月餐饮花了多少' },
+    { id: 't04', title: '近三个月账单汇总', category: '账单', user_input: '近三个月的账单汇总' },
+    { id: 't05', title: '预算超支分析', category: '账单', user_input: '帮我看看预算超了没有' },
+    { id: 't06', title: '查工资卡余额', category: '账户', user_input: '我工资卡还有多少钱' },
+    { id: 't07', title: '转账 800 元给妈妈', category: '转账', user_input: '给妈妈转 800 元' },
+    { id: 't08', title: '大额转账 2000 元给李明', category: '转账', user_input: '给李明转 2000 元' },
+    { id: 't09', title: '申购 1000 元稳利宝', category: '理财', user_input: '帮我申购 1000 元稳利宝' },
+    { id: 't10', title: '查理财持仓收益', category: '理财', user_input: '我的理财收益怎么样' },
+    { id: 't11', title: '查询银行卡列表', category: '卡片', user_input: '我有哪些银行卡' },
+    { id: 't12', title: '冻结信用卡', category: '卡片', user_input: '把我的信用卡冻结' },
+    { id: 't13', title: '申请虚拟卡', category: '卡片', user_input: '帮我申请一张虚拟卡' },
+    { id: 't14', title: '查询订阅', category: '订阅', user_input: '我订了哪些会员' },
+    { id: 't15', title: '取消爱奇艺会员', category: '订阅', user_input: '取消爱奇艺会员' },
+    { id: 't16', title: '订阅月支出统计', category: '订阅', user_input: '我每月订阅一共花多少钱' },
+    { id: 't17', title: '工资到账分账', category: '组合', user_input: '发工资了，3000 存到储蓄卡，2000 买稳利宝，1000 还信用卡' },
+    { id: 't18', title: '旅行预算测算', category: '组合', user_input: '去日本旅行要花多少钱，帮我做个预算' }
+  ],
+  llm: { mode: 'auto', effective: 'rule', enabled: true, provider: 'deepseek', model: 'deepseek-chat', base_host: 'api.deepseek.com', key_masked: 'sk-****', last_error: null, last_error_code: null, last_error_hint: null, degraded: false, breaker: { open: false, failures: 0, threshold: 3, cooldown_s: 60, retry_after_s: 0 }, stats: { calls: 4, ok: 3, fail: 1, retries: 1, timeouts: 1, circuit_skipped: 0, last_latency_ms: 412, last_usage: { prompt_tokens: 9, completion_tokens: 6, total_tokens: 15 }, last_cost_yuan: 0.0009, total_cost_yuan: 0.0031, total_tokens: 530 } },
+  llmTest: { ok: true, latency_ms: 412, model: 'deepseek-chat', provider: 'deepseek', usage: { prompt_tokens: 9, completion_tokens: 6, total_tokens: 15 }, cost_yuan: 0.0009 },
+  llmTestReject: false, llmTestManual: false, llmTestResolve: null,
+  skills: { ok: true, skills: [
+    { id: 'transfer', name: '转账', tool: 'create_transfer', risk: 'high', description: '向收款人转账，需动态验证码' },
+    { id: 'bills', name: '账单分析', tool: 'get_bill_summary', risk: 'low', description: '汇总支出分类' },
+    { id: 'wealth', name: '理财', tool: 'buy_wealth', risk: 'high', description: '购买理财产品' },
+    { id: 'cards', name: '卡片', tool: 'card_ops', risk: 'medium', description: '挂失与限额' },
+    { id: 'subscriptions', name: '订阅', tool: 'list_subscriptions', risk: 'low', description: '列出自动续费' },
+    { id: 'cross', name: '跨境', tool: 'fx_quote', risk: 'high', description: '汇率换算' }
+  ] },
+  services: { ok: true, enabled: true, servers: [
+    { name: 'fx', url: 'http://127.0.0.1:9101/mcp', status: 'ok', latency_ms: 12, last_error: null },
+    { name: 'risk', url: 'http://127.0.0.1:9102/mcp', status: 'down', latency_ms: null, last_error: 'connection refused' }
+  ] },
+  channel: { ok: true, enabled: true, port: 9100, token_configured: true, sessions: 3 },
+  health: { status: 'ok', app: 'zerostep-bank', version: '0.2.0', llm_mode: 'auto', demo_mode: true, seed_version: 3 },
+  audit: { entries: [], chain: { valid: true, checked: 3, broken_at: null, reason: null } }
+};
+const AUDIT_ROWS = [
+  { seq: 1, ts: '2026-10-26T12:41:58+08:00', actor: 'system', event_type: 'tool_result', tool: 'get_bill_summary', args_hash: 'a3', result_hash: 'b3', risk_level: 'low', approval_id: null, prev_hash: '0000', hash: 'da1c9edc5e6f7081' },
+  { seq: 2, ts: '2026-10-26T12:41:59+08:00', actor: 'system', event_type: 'response', tool: 'respond', args_hash: 'a2', result_hash: 'b2', risk_level: 'low', approval_id: null, prev_hash: '1111', hash: 'b759efeb1a2b3c4d' },
+  { seq: 3, ts: '2026-10-26T12:42:00+08:00', actor: 'system', event_type: 'approval_request', tool: 'policy_gate', args_hash: 'a1', result_hash: 'b1', risk_level: 'high', approval_id: 'ap_1', prev_hash: '0000', hash: '3f8a1b2c9d4e5f60' }
+];
+FIX.audit.entries = AUDIT_ROWS;
+
+FIX.plugins = [
+  { id: 'policy', name: '权限分级与审批', kind: 'core', version: '0.2.0', enabled: true, status: 'enabled', toggleable: false,
+    locked_reason: '核心能力不可停用',
+    description: '对转账、还款等敏感动作做风险分级、二次确认与 TOTP 强验证，是资金安全的第一道闸门。',
+    provides: { tools: [], skills: [], routes: ['/api/approval', '/api/demo/totp'] },
+    requires: [], detail: { how: '按 policy 规则给出风险等级与审批单，敏感动作必须二次确认；不允许停用。', env: [], endpoints: ['/api/approval', '/api/demo/totp'] } },
+  { id: 'audit', name: '哈希链审计', kind: 'core', version: '0.2.0', enabled: true, status: 'enabled', toggleable: false,
+    locked_reason: '核心能力不可停用',
+    description: '每次工具调用、审批与回复都写入 SHA-256 哈希链，可校验、可回放、可导出。',
+    provides: { tools: [], skills: [], routes: ['/api/audit', '/api/events'] },
+    requires: [], detail: { how: '所有决策与工具调用写审计链，verify 可发现任何篡改；不允许停用。', env: [], endpoints: ['/api/audit', '/api/events'] } },
+  { id: 'mcp-fx', name: '汇率服务', kind: 'mcp', version: '0.2.0', enabled: true, status: 'enabled', toggleable: true,
+    locked_reason: null,
+    description: '通过 MCP 调用外部汇率服务，只用于查询与展示；不可用时回退内置参考价，绝不影响资金动作。',
+    provides: { tools: ['fx_convert'], skills: [], routes: ['/api/mcp/status'] },
+    requires: [], detail: { how: '启用时优先调用外部 fx_convert 拿实时参考汇率；停用后按内置参考价估算。', env: ['MCP_ENABLED', 'MCP_FX_URL', 'MCP_TIMEOUT_MS', 'MCP_FX_FALLBACK_RATE'], endpoints: ['/api/mcp/status'] } },
+  { id: 'mcp-risk', name: '反欺诈风控', kind: 'mcp', version: '0.2.0', enabled: true, status: 'degraded', toggleable: true,
+    locked_reason: null,
+    description: '转账前调用外部风险名单与评分，只加严不放松；探测失败自动降级。',
+    provides: { tools: ['risk_screen'], skills: [], routes: [] },
+    requires: [], detail: { how: '启用时对 create_transfer 做外部风险筛查；探测失败降级为本地规则。', env: ['MCP_ENABLED', 'MCP_RISK_URL', 'MCP_RISK_BLOCK_SCORE'], endpoints: [] } },
+  { id: 'intent-llm', name: '模型意图通道', kind: 'model', version: '0.2.0', enabled: true, status: 'enabled', toggleable: true,
+    locked_reason: null,
+    description: '用大模型解析自然语言意图；未配置 API Key 或停用时自动回退到规则解析。',
+    provides: { tools: ['llm.parse'], skills: [], routes: ['/api/llm/mode', '/api/llm/status'] },
+    requires: [], detail: { how: '启用且配置 Key 时由模型解析意图；停用后强制走规则解析。', env: ['DEEPSEEK_API_KEY', 'DEEPSEEK_MODEL', 'DEEPSEEK_BASE_URL'], endpoints: ['/api/llm/mode', '/api/llm/status'] } },
+  { id: 'skill-pack', name: '技能卡包', kind: 'skill', version: '0.2.0', enabled: true, status: 'enabled', toggleable: true,
+    locked_reason: null,
+    description: '六张领域技能卡，作为模型提示与前端能力目录。',
+    provides: { tools: [], skills: ['bills', 'cards', 'cross', 'subscriptions', 'transfer', 'wealth'], routes: ['/api/skills'] },
+    requires: [], detail: { how: '启用时在 /api/skills 展示六张技能卡；停用后技能列表返回空。', env: [], endpoints: ['/api/skills'] } },
+  { id: 'channel-im', name: 'IM 渠道', kind: 'channel', version: '0.2.0', enabled: false, status: 'disabled', toggleable: true,
+    locked_reason: null,
+    description: '把 IM / 短信网关 webhook 适配成 /api/chat 调用，两步确认，且绝不向渠道回传内部凭据。',
+    provides: { tools: [], skills: [], routes: ['/api/channel/status'] },
+    requires: [], detail: { how: '启用时渠道服务可转发消息并做幂等；停用后 webhook 返回 503。', env: ['CHANNEL_TOKEN', 'CHANNEL_PORT', 'CHANNEL_ENABLED'], endpoints: ['/api/channel/status'] } }
+];
+FIX.pluginsResponse = function () {
+  return {
+    ok: true, count: 7, enabled_count: 6, version: '0.2.0',
+    kinds: [
+      { id: 'core', name: '核心能力' }, { id: 'mcp', name: '外部服务' },
+      { id: 'model', name: '模型通道' }, { id: 'skill', name: '技能包' },
+      { id: 'channel', name: '渠道' }
+    ],
+    plugins: FIX.plugins
+  };
+};
+
+const CALLS = [];
+const PUSH_CALLS = [];
+let pushMode = 'delivered';
+let tasksMode = 'paged';
+let chatScript = null;
+function sseChunks(events) {
+  const parts = events.map(function (e) { return 'event: ' + e.event + '\ndata: ' + JSON.stringify(e.data) + '\n\n'; });
+  return parts;
+}
+function makeFetch() {
+  return function (url, init) {
+    CALLS.push({ url: String(url), method: (init && init.method) || 'GET', body: init && init.body });
+    const u = String(url);
+    const json = function (data, status) {
+      return Promise.resolve({
+        ok: (status || 200) < 400, status: status || 200,
+        headers: { get: function () { return 'application/json'; } },
+        json: function () { return Promise.resolve(data); },
+        text: function () { return Promise.resolve(JSON.stringify(data)); }
+      });
+    };
+    const sse = function (chunks) {
+      let idx = 0;
+      return Promise.resolve({
+        ok: true, status: 200,
+        headers: { get: function () { return 'text/event-stream'; } },
+        body: {
+          getReader: function () {
+            return {
+              read: function () {
+                if (idx >= chunks.length) return Promise.resolve({ done: true });
+                return Promise.resolve({ done: false, value: enc(chunks[idx++]) });
+              }
+            };
+          }
+        },
+        json: function () { return Promise.resolve({}); }
+      });
+    };
+    if (u.indexOf('/api/session') === 0 && u === '/api/session') return json(FIX.session);
+    if (u.indexOf('/api/session/') === 0) return json(Object.assign({ pending_approval: null }, FIX.session));
+    if (u.indexOf('/api/tasks') === 0) {
+      const qi = u.indexOf('?');
+      const q = {};
+      if (qi >= 0) {
+        u.slice(qi + 1).split('&').forEach(function (pair) {
+          const kv = pair.split('=');
+          if (kv[0]) q[kv[0]] = kv[1];
+        });
+      }
+      const all = tasksMode === 'single' ? FIX.tasksAll.slice(0, 3) : FIX.tasksAll;
+      const lim = Number(q.limit || 6) || 6;
+      const off = Number(q.offset || 0) || 0;
+      const page = all.slice(off, off + lim);
+      return json({ tasks: page, total: all.length, offset: off, limit: lim, has_more: off + lim < all.length });
+    }
+    if (u.indexOf('/api/llm/test') === 0) {
+      if (FIX.llmTestReject) return Promise.reject(new Error('network down'));
+      if (FIX.llmTestManual) return new Promise(function (resolve) { FIX.llmTestResolve = function () { resolve(json(FIX.llmTest)); }; });
+      return json(FIX.llmTest);
+    }
+    if (u.indexOf('/api/llm/status') === 0) return json(FIX.llm);
+    if (u.indexOf('/api/llm/mode') === 0) {
+      let m = 'auto';
+      try { m = JSON.parse(init.body).mode; } catch (e) {}
+      return json(Object.assign({}, FIX.llm, { mode: m, effective: m === 'rule' ? 'rule' : 'rule', switched: true }));
+    }
+    if (u.indexOf('/api/skills') === 0) return json(FIX.skills);
+    if (u === '/api/plugins') return json(FIX.pluginsResponse());
+    if (u.indexOf('/api/plugins/') === 0 && u.indexOf('/toggle') > 0) {
+      let body = {};
+      try { body = JSON.parse(init && init.body); } catch (e) {}
+      const pid = decodeURIComponent(u.replace('/api/plugins/', '').replace(/\/toggle$/, ''));
+      const plug = FIX.plugins.filter(function (x) { return x.id === pid; })[0];
+      if (!plug) return json({ error: { code: 'PLUGIN_NOT_FOUND', message: '没有这个插件' } }, 404);
+      plug.enabled = !!body.enabled;
+      plug.status = plug.enabled ? (plug.id === 'mcp-risk' ? 'degraded' : 'enabled') : 'disabled';
+      return json({ ok: true, plugin: plug, counts: { total: FIX.plugins.length, enabled: FIX.plugins.filter(function (x) { return x.enabled; }).length, disabled: FIX.plugins.filter(function (x) { return !x.enabled; }).length } });
+    }
+    if (u.indexOf('/api/mcp/status') === 0) return json(FIX.services);
+    if (u.indexOf('/api/channel/status') === 0) return json(FIX.channel);
+    if (u.indexOf('/api/health') === 0) return json(FIX.health);
+    if (u.indexOf('/api/audit') === 0) return json(FIX.audit);
+    if (u.indexOf('/api/chat') === 0) return sse(sseChunks(chatScript || []));
+    if (u.indexOf('/api/approval') === 0) return json(FIX.approvalResult || { status: 'ok', reply: '已完成。' });
+    if (u.indexOf('/api/demo/totp') === 0) return json({ code: '123456', expires_in: 30 });
+    if (u.indexOf('/api/demo/sms') === 0) return json(FIX.demoSms);
+    if (u.indexOf('/api/demo/face') === 0) return json(FIX.demoFace);
+    if (u.indexOf('/api/undo') === 0) return json({ undone: true, status: 'ok', action_id: 'act_1', message: '已撤销' });
+    if (u.indexOf('/api/admin/reset') === 0) return json({ reset: true, seed_version: 4 });
+    if (u.indexOf('/api/push') === 0) {
+      let body = {};
+      try { body = JSON.parse(init && init.body); } catch (e) {}
+      PUSH_CALLS.push(body);
+      if (pushMode === 'reject') return Promise.reject(new Error('network down'));
+      if (pushMode === 'fail') return json({ error: { code: 'PUSH_FAILED', message: '渠道返回 502' } }, 502);
+      const delivered = pushMode === 'delivered';
+      const pushed = pushMode !== 'nopush';
+      return json({
+        ok: true, kind: body.kind,
+        title: body.kind === 'large_txn' ? '大额支出提醒' : body.kind === 'repayment' ? '还款到期提醒' : '订阅扣费提醒',
+        text: '演示推送正文：' + (body.kind || 'subscription'),
+        pushed: pushed, delivered: delivered,
+        channel: {
+          configured: delivered,
+          url_masked: 'https://hooks.example.com/…/abc123',
+          status: delivered ? 'ok' : 'unconfigured',
+          latency_ms: 42,
+          error: null
+        },
+        ts: '2026-10-27T22:40:00+08:00'
+      });
+    }
+    return json({ error: 'NOT_FOUND' }, 404);
+  };
+}
+
+const sandbox = {
+  console: console, document: doc, navigator: { clipboard: undefined },
+  fetch: makeFetch(),
+  setTimeout: setTimeout, clearTimeout: clearTimeout, setInterval: setInterval, clearInterval: clearInterval,
+  TextDecoder: TextDecoder, TextEncoder: TextEncoder,
+  Blob: function () {}, URL: { createObjectURL: function () { return 'blob:x'; }, revokeObjectURL: function () {} },
+  matchMedia: function () { return { matches: false, addEventListener: function () {} }; },
+  SpeechRecognition: undefined, webkitSpeechRecognition: undefined,
+  requestAnimationFrame: function (fn) { return setTimeout(fn, 16); },
+  location: { href: 'http://127.0.0.1:8011/' },
+  innerWidth: 1600, innerHeight: 1000,
+  scrollTo: function (x, y) { SCROLLS.push([x, y]); },
+  addEventListener: function () {}
+};
+sandbox.window = sandbox;
+sandbox.self = sandbox;
+sandbox.globalThis = sandbox;
+vm.createContext(sandbox);
+
+function getEls(sel) { return doc.querySelectorAll(sel); }
+function one(sel) { return doc.querySelector(sel); }
+
+(async function main() {
+  console.log('== 加载 app.js ==');
+  try { vm.runInContext(appCode, sandbox, { filename: 'app.js' }); }
+  catch (e) { console.log('  FAIL  app.js 执行异常: ' + e.message); FAIL++; }
+  await sleep(80);
+  const ZS = sandbox.window.__ZS;
+  ok('app.js 暴露测试钩子 __ZS', !!ZS);
+  if (!ZS) { report(); return; }
+
+  console.log('== 启动 / 会话 ==');
+  ok('会话已建立', ZS.state.sessionId === 'sess_test_001', String(ZS.state.sessionId));
+  ok('余额拆成 9 个数字位', getEls('.digits .dg').length >= 8, String(getEls('.digits .dg').length));
+  ok('账户行 = 3', getEls('#acctList .acct__row').length === 3, String(getEls('#acctList .acct__row').length));
+  ok('资产构成三段', getEls('#acctMix i').length === 3, String(getEls('#acctMix i').length));
+  ok('快捷指令首批 6 个', getEls('#chips .chip').length === 6, String(getEls('#chips .chip').length));
+  ok('换一批按钮文案 1/3', /换一批 · 1\/3/.test(one('#btnTasksRefresh').textContent), one('#btnTasksRefresh').textContent);
+  ok('首页为空态视图', ZS.state.view === 'home' && one('#view-home').classList.contains('is-on'));
+  ok('模式徽章写实际模式', /实际：/.test(one('#modeBadge .effective__text').textContent), one('#modeBadge .effective__text').textContent);
+  ok('模式按钮 title 含 provider', /deepseek/.test(one('#modeBadge').title), one('#modeBadge').title);
+
+  console.log('== 视图切换 ==');
+  ZS.showView('skills'); await sleep(30);
+  ok('技能页 6 张卡', getEls('#skillsGrid .scard').length === 6, String(getEls('#skillsGrid .scard').length));
+  ZS.showView('services'); await sleep(30);
+  ok('外部服务 2 张卡', getEls('#servicesGrid .scard').length === 2, String(getEls('#servicesGrid .scard').length));
+  ok('外部服务降级条出现', one('#servicesInfoBar').hidden === false);
+  ZS.showView('settings'); await sleep(40);
+  ok('渠道端口写入', one('#channelPort').textContent === '9100', one('#channelPort').textContent);
+  ok('令牌打码', /已配置/.test(one('#channelToken').textContent), one('#channelToken').textContent);
+  ok('健康版本写入', /0\.2\.0/.test(one('#healthVersion').textContent), one('#healthVersion').textContent);
+  ZS.showView('home');
+  ok('顶栏导航高亮回到工作台', one('[data-nav="home"]').classList.contains('is-on'));
+
+  console.log('== 快捷指令：换一批 ==');
+  const chipsBefore = getEls('#chips .chip').map(function (c) { return c.textContent; }).join('|');
+  const callsBeforeSwap = CALLS.length;
+  const swapP = ZS.nextTaskPage();
+  await sleep(30);
+  ok('换一批时 chips 淡出', one('#chips').classList.contains('chips--swap'));
+  ok('换一批时按钮禁用', one('#btnTasksRefresh').disabled === true);
+  await swapP;
+  await sleep(40);
+  const chipsAfter = getEls('#chips .chip').map(function (c) { return c.textContent; }).join('|');
+  ok('换一批后 chips 内容变化', chipsBefore !== chipsAfter, chipsAfter.slice(0, 40));
+  ok('换一批后按钮文案 2/3', /换一批 · 2\/3/.test(one('#btnTasksRefresh').textContent), one('#btnTasksRefresh').textContent);
+  ok('换一批后淡出类移除', one('#chips').classList.contains('chips--swap') === false);
+  ok('换一批请求带分页参数', CALLS.slice(callsBeforeSwap).some(function (c) { return c.url.indexOf('/api/tasks?limit=6&offset=6') === 0; }), JSON.stringify(CALLS.slice(callsBeforeSwap).map(function (c) { return c.url; })));
+  await ZS.loadTasksPage(2);
+  ok('第三批 6 个且文案 3/3', getEls('#chips .chip').length === 6 && /换一批 · 3\/3/.test(one('#btnTasksRefresh').textContent), one('#btnTasksRefresh').textContent);
+  await ZS.nextTaskPage();
+  await sleep(40);
+  ok('末批再换一批回绕到首批', /换一批 · 1\/3/.test(one('#btnTasksRefresh').textContent), one('#btnTasksRefresh').textContent);
+
+  tasksMode = 'single';
+  await ZS.loadTasks();
+  const singleChipCount = getEls('#chips .chip').length;
+  ok('只有一批时文案 1/1', /换一批 · 1\/1/.test(one('#btnTasksRefresh').textContent), one('#btnTasksRefresh').textContent);
+  await ZS.nextTaskPage();
+  const singleToast = getEls('.toast .toast__text').map(function (e) { return e.textContent; }).join('|');
+  ok('只有一批时提示已是最新一批', /已经是这一批了/.test(singleToast), singleToast);
+  ok('只有一批时 chips 不变', getEls('#chips .chip').length === singleChipCount);
+  tasksMode = 'paged';
+  await ZS.loadTasks();
+
+  console.log('== 插件页 ==');
+  ZS.showView('plugins');
+  await sleep(90);
+  ok('插件页 7 张卡', getEls('#pluginsGrid .plug').length === 7, String(getEls('#pluginsGrid .plug').length));
+  ok('插件汇总计数', /共 7 个插件/.test(one('#pluginsSummary').textContent) && /已启用 6/.test(one('#pluginsSummary').textContent) && /已停用 1/.test(one('#pluginsSummary').textContent) && /降级 1/.test(one('#pluginsSummary').textContent), one('#pluginsSummary').textContent);
+  ok('三种状态徽章齐全', getEls('#pluginsGrid .plug__status--on').length === 5 && getEls('#pluginsGrid .plug__status--off').length === 1 && getEls('#pluginsGrid .plug__status--degraded').length === 1,
+    'on=' + getEls('#pluginsGrid .plug__status--on').length + ' off=' + getEls('#pluginsGrid .plug__status--off').length + ' degraded=' + getEls('#pluginsGrid .plug__status--degraded').length);
+  ok('核心插件（policy/audit）开关锁定', one('#pluginsGrid .plug[data-plugin="policy"] [data-toggle]').disabled === true && one('#pluginsGrid .plug[data-plugin="audit"] [data-toggle]').disabled === true);
+  ok('锁定卡使用后端 locked_reason 文案', /核心能力不可停用/.test(one('#pluginsGrid .plug[data-plugin="policy"] .plug__note').textContent), one('#pluginsGrid .plug[data-plugin="policy"] .plug__note').textContent);
+  ok('停用插件卡 is-off', one('#pluginsGrid .plug[data-plugin="channel-im"]').classList.contains('is-off'));
+  ok('provides 对象渲染成能力 chip', /fx_convert/.test(one('#pluginsGrid .plug[data-plugin="mcp-fx"] .plug__provides').textContent), one('#pluginsGrid .plug[data-plugin="mcp-fx"] .plug__provides').textContent);
+  ok('能力 chip 超过 4 个折叠计数', getEls('#pluginsGrid .plug[data-plugin="skill-pack"] .plug__provides .plug__chip').length === 4 && /\+3/.test(one('#pluginsGrid .plug[data-plugin="skill-pack"] .plug__more').textContent),
+    one('#pluginsGrid .plug[data-plugin="skill-pack"] .plug__provides').textContent);
+  one('#pluginsGrid .plug[data-plugin="intent-llm"] .plug__head').click();
+  ok('点击卡头展开详情', one('#pluginsGrid .plug[data-plugin="intent-llm"]').classList.contains('is-open') && one('#pluginsGrid .plug[data-plugin="intent-llm"] .plug__detail').hidden === false);
+  one('#pluginsGrid .plug[data-plugin="skill-pack"] .plug__head').click();
+  ok('手风琴互斥（前一张收起）', one('#pluginsGrid .plug[data-plugin="intent-llm"]').classList.contains('is-open') === false && one('#pluginsGrid .plug[data-plugin="skill-pack"]').classList.contains('is-open'));
+  one('#pluginsGrid .plug[data-plugin="skill-pack"] .plug__head').click();
+  ok('再次点击收起详情', one('#pluginsGrid .plug[data-plugin="skill-pack"] .plug__detail').hidden === true);
+  const callsBeforeCore = CALLS.length;
+  await ZS.togglePlugin('policy');
+  ok('锁定插件不发切换请求', CALLS.slice(callsBeforeCore).every(function (c) { return c.url.indexOf('/toggle') === -1; }));
+  ok('锁定插件给出提示文案', /核心能力不可停用/.test(getEls('.toast .toast__text').map(function (e) { return e.textContent; }).join('|')));
+  const callsBeforeToggle = CALLS.length;
+  await ZS.togglePlugin('channel-im');
+  await sleep(90);
+  ok('切换成功写回卡片（渠道启用）', one('#pluginsGrid .plug[data-plugin="channel-im"]').classList.contains('is-off') === false && one('#pluginsGrid .plug[data-plugin="channel-im"]').getAttribute('data-status') === 'enabled',
+    one('#pluginsGrid .plug[data-plugin="channel-im"]').getAttribute('data-status'));
+  ok('切换成功更新计数', /已启用 7/.test(one('#pluginsSummary').textContent) && /已停用 0/.test(one('#pluginsSummary').textContent), one('#pluginsSummary').textContent);
+  ok('切换走后端 toggle（POST）', CALLS.slice(callsBeforeToggle).some(function (c) { return c.url === '/api/plugins/channel-im/toggle' && c.method === 'POST'; }),
+    JSON.stringify(CALLS.slice(callsBeforeToggle).map(function (c) { return c.method + ' ' + c.url; })));
+  ok('切换后联动刷新渠道状态', CALLS.slice(callsBeforeToggle).some(function (c) { return c.url.indexOf('/api/channel/status') === 0; }));
+  ok('切换后刷新健康检查', CALLS.slice(callsBeforeToggle).some(function (c) { return c.url.indexOf('/api/health') === 0; }));
+  const callsBeforeMcp = CALLS.length;
+  await ZS.togglePlugin('mcp-fx');
+  await sleep(90);
+  ok('停用外部服务插件后卡片 is-off', one('#pluginsGrid .plug[data-plugin="mcp-fx"]').classList.contains('is-off') && one('#pluginsGrid .plug[data-plugin="mcp-fx"]').getAttribute('data-status') === 'disabled',
+    one('#pluginsGrid .plug[data-plugin="mcp-fx"]').getAttribute('data-status'));
+  ok('停用 MCP 插件联动刷新外部服务', CALLS.slice(callsBeforeMcp).some(function (c) { return c.url.indexOf('/api/mcp/status') === 0; }));
+  const realFetch2 = sandbox.fetch;
+  sandbox.fetch = function (url, init) {
+    if (String(url).indexOf('/api/plugins/') === 0) return Promise.reject(new Error('boom'));
+    return realFetch2(url, init);
+  };
+  await ZS.togglePlugin('skill-pack');
+  sandbox.fetch = realFetch2;
+  ok('切换失败保持原状态', (function () { const pl = ZS.state.plugins.filter(function (x) { return x.id === 'skill-pack'; })[0]; return !!pl && pl.enabled === true; })());
+  ok('切换失败显示错误条', one('#pluginsError').hidden === false && /切换失败/.test(one('#pluginsErrorText').textContent), one('#pluginsErrorText').textContent);
+  ok('切换失败按钮恢复可用', one('#pluginsGrid .plug[data-plugin="skill-pack"] [data-toggle]').disabled === false);
+  one('#pluginsErrorClose').click();
+  ok('错误条可关闭', one('#pluginsError').hidden === true);
+  ZS.showView('home');
+  await sleep(30);
+
+  console.log('== 视图切换回归：插件页不再叠在工作台下方 ==');
+  const cssText = fs.readFileSync(path.join(__dirname, 'styles.css'), 'utf8');
+  const hideRules = cssText.match(/[^{}]*\{[^}]*display:\s*none[^}]*\}/g) || [];
+  ok('CSS 存在 body[data-view="plugins"] .shell 隐藏规则', hideRules.some(function (r) { return /body\[data-view="plugins"\]\s*\.shell/.test(r); }),
+    JSON.stringify(hideRules.filter(function (r) { return r.indexOf('data-view') >= 0; })));
+  const scrollRules = cssText.match(/[^{}]*\{[^}]*overflow-y:\s*auto[^}]*\}/g) || [];
+  ok('CSS 让 plugins 视图可整页滚动', scrollRules.some(function (r) { return /body\[data-view="plugins"\]/.test(r); }));
+  ok('切换 home 时 .shell 不被隐藏（无 home/chat 隐藏规则）', !/body\[data-view="(home|chat)"\]\s*\.shell/.test(cssText));
+  const scrollBefore = SCROLLS.length;
+  ZS.showView('plugins');
+  await sleep(60);
+  ok('showView("plugins") 后 body[data-view]=plugins', doc.body.getAttribute('data-view') === 'plugins', String(doc.body.getAttribute('data-view')));
+  ok('#scr-plugins 处于 is-on', one('#scr-plugins').classList.contains('is-on'));
+  ok('scr-skills/scr-services/scr-settings 均无 is-on', ['scr-skills', 'scr-services', 'scr-settings'].every(function (id) { return !one('#' + id).classList.contains('is-on'); }));
+  ok('工作台视图已让位（#view-home 无 is-on）', !one('#view-home').classList.contains('is-on'));
+  ok('切到整页视图会 window.scrollTo(0,0)', SCROLLS.length > scrollBefore && SCROLLS[SCROLLS.length - 1][0] === 0 && SCROLLS[SCROLLS.length - 1][1] === 0, JSON.stringify(SCROLLS.slice(-3)));
+  ZS.showView('skills');
+  await sleep(40);
+  ok('切到技能页 data-view=skills', doc.body.getAttribute('data-view') === 'skills');
+  const scrollHome = SCROLLS.length;
+  ZS.showView('home');
+  await sleep(40);
+  ok('切回 home 后 data-view=home 且 #view-home 恢复', doc.body.getAttribute('data-view') === 'home' && one('#view-home').classList.contains('is-on'));
+  ok('切回 home 不额外滚到顶部（工作台自身滚动容器负责）', SCROLLS.length === scrollHome, JSON.stringify(SCROLLS.slice(-3)));
+  ok('切回 home 后技能页已关闭', !one('#scr-skills').classList.contains('is-on'));
+
+  console.log('== 设置页：模型接入 ==');
+  ZS.showView('settings');
+  await sleep(90);
+  ok('模型接入：厂商', one('#llmProvider').textContent === 'deepseek', one('#llmProvider').textContent);
+  ok('模型接入：模型名', one('#llmModel').textContent === 'deepseek-chat', one('#llmModel').textContent);
+  ok('模型接入：接口域名', one('#llmHost').textContent === 'api.deepseek.com', one('#llmHost').textContent);
+  ok('模型接入：Key 已配置且打码', /已配置/.test(one('#llmKey').textContent) && /sk-\*\*\*\*/.test(one('#llmKey').textContent), one('#llmKey').textContent);
+  ok('模型接入：实际解析方式', /规则解析/.test(one('#llmEffective').textContent), one('#llmEffective').textContent);
+  ok('模型接入：熔断状态正常', one('#llmBreaker').textContent === '正常', one('#llmBreaker').textContent);
+  ok('模型接入：卡片状态徽章', /已配置/.test(one('#llmTag').textContent) && one('#llmTag').className.indexOf('tag--ok') >= 0, one('#llmTag').className + '|' + one('#llmTag').textContent);
+  ok('用量统计行显示且有 stats', one('#llmStats').hidden === false && /调用 4 次/.test(one('#llmStatsText').textContent), one('#llmStatsText').textContent);
+  ok('用量统计含成功/失败/重试/最近耗时/累计成本',
+    /成功 3/.test(one('#llmStatsText').textContent) && /失败 1/.test(one('#llmStatsText').textContent) && /重试 1/.test(one('#llmStatsText').textContent) && /最近 412 ms/.test(one('#llmStatsText').textContent) && /累计约 ¥0\.0031/.test(one('#llmStatsText').textContent),
+    one('#llmStatsText').textContent);
+  const LLM_STATS = JSON.parse(JSON.stringify(FIX.llm.stats));
+  delete FIX.llm.stats;
+  await ZS.loadLlmStatus();
+  await sleep(40);
+  ok('无 stats 时整行隐藏且不报错', one('#llmStats').hidden === true, String(one('#llmStats').hidden));
+  FIX.llm.stats = LLM_STATS;
+  FIX.llm.degraded = true;
+  FIX.llm.breaker = { open: true, failures: 3, threshold: 3, cooldown_s: 60, retry_after_s: 23 };
+  await ZS.loadLlmStatus();
+  await sleep(40);
+  ok('degraded：熔断状态展示剩余秒数', /已熔断/.test(one('#llmBreaker').textContent) && /剩余 23s/.test(one('#llmBreaker').textContent), one('#llmBreaker').textContent);
+  ok('degraded：顶栏徽章追加熔断', /实际：规则 · 熔断/.test(one('#modeBadge .effective__text').textContent), one('#modeBadge .effective__text').textContent);
+  ok('degraded：卡片徽章转熔断回退', /熔断回退/.test(one('#llmTag').textContent), one('#llmTag').textContent);
+  FIX.llm.degraded = false;
+  FIX.llm.breaker = { open: false, failures: 0, threshold: 3, cooldown_s: 60, retry_after_s: 0 };
+  await ZS.loadLlmStatus();
+  await sleep(40);
+  ok('恢复正常后徽章去掉熔断', !/熔断/.test(one('#modeBadge .effective__text').textContent), one('#modeBadge .effective__text').textContent);
+  FIX.llmTest = { ok: true, latency_ms: 412, model: 'deepseek-chat', provider: 'deepseek', usage: { prompt_tokens: 9, completion_tokens: 6, total_tokens: 15 }, cost_yuan: 0.0009 };
+  one('#btnLlmTest').click();
+  await sleep(120);
+  ok('测试连接成功文案含耗时与 token 与费用',
+    /连接正常/.test(one('#llmTestResult').textContent) && /耗时 412 ms/.test(one('#llmTestResult').textContent) && /输入 9/.test(one('#llmTestResult').textContent) && /输出 6/.test(one('#llmTestResult').textContent) && /¥0\.0009/.test(one('#llmTestResult').textContent),
+    one('#llmTestResult').textContent);
+  ok('测试成功后按钮复原', one('#btnLlmTest').disabled === false && one('#btnLlmTest').textContent === '测试连接', one('#btnLlmTest').textContent);
+  FIX.llmTest = { ok: false, error: '鉴权失败（401）', hint: '请检查 DEEPSEEK_API_KEY 是否正确', code: 'LLM_AUTH' };
+  one('#btnLlmTest').click();
+  await sleep(120);
+  ok('测试失败显示中文 error + hint',
+    /鉴权失败/.test(one('#llmTestResult').textContent) && /DEEPSEEK_API_KEY/.test(one('#llmTestResult').textContent),
+    one('#llmTestResult').textContent);
+  ok('测试失败用 inline 错误样式（非红色大块）', one('#llmTestResult').className.indexOf('llmtest__result--err') >= 0, one('#llmTestResult').className);
+  ok('测试失败后按钮仍可用', one('#btnLlmTest').disabled === false);
+  FIX.llmTestReject = true;
+  one('#btnLlmTest').click();
+  await sleep(120);
+  ok('测试网络异常提示确认服务', /请求失败，请确认服务在运行/.test(one('#llmTestResult').textContent), one('#llmTestResult').textContent);
+  FIX.llmTestReject = false;
+  FIX.llmTest = { ok: true, latency_ms: 100, usage: { prompt_tokens: 1, completion_tokens: 1 }, cost_yuan: 0.00001 };
+  FIX.llmTestManual = true;
+  one('#btnLlmTest').click();
+  await sleep(40);
+  ok('测试中按钮禁用并显示测试中', one('#btnLlmTest').disabled === true && one('#btnLlmTest').textContent === '测试中…', one('#btnLlmTest').textContent);
+  FIX.llmTestResolve();
+  await sleep(80);
+  FIX.llmTestManual = false;
+  ok('请求返回后按钮 loading 复原', one('#btnLlmTest').disabled === false && one('#btnLlmTest').textContent === '测试连接', one('#btnLlmTest').textContent);
+  ZS.showView('home');
+  await sleep(30);
+
+  console.log('== 对话：查询类（low，自动执行）==');
+  chatScript = [
+    { event: 'session', data: { session_id: 'sess_test_001', thread_id: 'th_1' } },
+    { event: 'intent', data: { name: 'query_bills', confidence: 0.9, source: 'rule', slots: { months: 1 } } },
+    { event: 'plan', data: { steps: [{ step_id: 's1', title: '汇总近 1 个月账单', tool: 'get_bill_summary', risk: 'low' }], edges: [] } },
+    { event: 'tool_start', data: { step_id: 's1', tool: 'get_bill_summary', args_preview: { months: 1 } } },
+    { event: 'tool_end', data: { step_id: 's1', tool: 'get_bill_summary', ok: true, latency_ms: 8, result: { total_cents: 1671231 } } },
+    { event: 'message', data: { delta: '近 1 个月你一共支出 **¥16,712.31**，' } },
+    { event: 'message', data: { delta: '最多的是「居住」。' } },
+    { event: 'audit', data: { seq: 4, event_type: 'tool_result', tool: 'get_bill_summary', risk_level: 'low', hash: 'abcd1234' } },
+    { event: 'done', data: { status: 'ok', thread_id: 'th_1' } }
+  ];
+  await ZS.sendText('查一下这个月支出最多的三类');
+  await sleep(120);
+  ok('切到对话视图', ZS.state.view === 'chat' && one('#view-chat').classList.contains('is-on'));
+  ok('用户消息右对齐气泡', getEls('.chat__me').length === 1, String(getEls('.chat__me').length));
+  ok('意图卡存在', getEls('.card--intent').length === 1, String(getEls('.card--intent').length));
+  ok('计划卡 1 步', getEls('.card--plan .plan__step').length === 1);
+  ok('计划步已标完成', getEls('.card--plan .plan__step.is-ok').length === 1);
+  ok('轨迹 1 行已完成', getEls('#traceList .tl__row').length === 1 && getEls('#traceList .tl__row.is-ok').length === 1);
+  ok('轨迹头部同步为已完成', /已完成/.test(one('#traceMeta').textContent), one('#traceMeta').textContent);
+  const resultHtml = one('.result') ? one('.result').innerHTML : '';
+  ok('回复中 markdown 加粗被解析（无字面 **）', resultHtml.indexOf('<strong>') !== -1 && resultHtml.indexOf('**') === -1, resultHtml.slice(0, 120));
+  ok('回复含金额', /16,712\.31/.test(one('.result').textContent), one('.result').textContent.slice(0, 60));
+  ok('审计小条出现', getEls('.turn__audit').length === 1);
+  ok('查询类无撤销按钮', getEls('.toast__action').length === 0);
+
+  console.log('== 对话：转账（medium，需确认）==');
+  chatScript = [
+    { event: 'intent', data: { name: 'transfer', confidence: 0.86, source: 'llm', model: 'deepseek-chat', slots: { amount_cents: 800, payee: '妈妈' } } },
+    { event: 'plan', data: { steps: [{ step_id: 's1', title: '校验收款人', tool: 'get_payees', risk: 'low' }, { step_id: 's2', title: '向「妈妈」转账', tool: 'create_transfer', risk: 'medium' }], edges: [] } },
+    { event: 'tool_start', data: { step_id: 's1', tool: 'get_payees', args_preview: {} } },
+    { event: 'tool_end', data: { step_id: 's1', tool: 'get_payees', ok: true, latency_ms: 3, result: { payees: [] } } },
+    { event: 'message', data: { delta: '已生成待授权操作。' } },
+    { event: 'approval_required', data: {
+      approval_id: 'ap_test_1', nonce: 'n1', expires_at: new Date(Date.now() + 300000).toISOString(),
+      risk_level: 'medium', challenge: { type: 'confirm' },
+      reasons: ['按银行权限分级，该操作需要用户确认后执行'],
+      hits: [
+        { rule: 'amount_single_limit', dimension: 'amount', level: 'medium', detail: '单笔 ¥8.00 超过自动执行阈值 ¥0.00，需要确认', value: 800, threshold: 0 },
+        { rule: 'payee_new', dimension: 'payee', level: 'low', detail: '收款人「妈妈」近 30 天无转账记录', value: 0, threshold: 30 },
+        { rule: 'daily_cumulative', dimension: 'amount', level: 'low', detail: '当日累计 ¥8.00，未超过 ¥20,000.00', value: 800, threshold: 2000000 },
+        { rule: 'channel_risk', dimension: 'channel', level: 'low', detail: '渠道为 App 直连', value: 0, threshold: 0 }
+      ],
+      title: '向「妈妈」转账 ¥8.00', preview: '执行后「工资卡」余额将从 ¥12,844.50 变为 ¥12,836.50',
+      amount_cents: 800, currency: 'CNY', counterparty: '妈妈', counterparty_account_masked: '6214 **** 6621',
+      payer_account_masked: '**** 8821', source: 'llm', source_detail: '模型抽取金额与收款人', conflicts: []
+    } },
+    { event: 'done', data: { status: 'awaiting_approval', thread_id: 'th_2' } }
+  ];
+  await ZS.sendText('给妈妈转 8 元');
+  await sleep(120);
+  ok('审批弹层打开', one('#approvalSheet').hidden === false);
+  ok('风险徽章=中风险', /中风险/.test(one('#apRisk').textContent), one('#apRisk').textContent);
+  ok('金额大字 ¥8.00', /¥/.test(one('#apAmount').innerHTML) && /8\.00/.test(one('#apAmount').textContent), one('#apAmount').textContent);
+  ok('倒计时为 mm:ss', /^\d\d:\d\d$/.test(one('#apCountdown').textContent), one('#apCountdown').textContent);
+  ok('规则行最多 3 行', getEls('#apReasons .rule').length === 3, String(getEls('#apReasons .rule').length));
+  ok('规则名 mono（amount_single_limit 在首位）', /amount_single_limit/.test(one('#apReasons .rule__name').textContent), one('#apReasons .rule__name').textContent);
+  ok('剩余折叠为 +1 条', /\+1 条/.test(one('#apReasons .rule__more').textContent), one('#apReasons .rule__more') ? one('#apReasons .rule__more').textContent : 'none');
+  ok('confirm 型不显示验证码块', one('#apOtp').hidden === true);
+  ok('预览后果写入', /12,844\.50/.test(one('#apPreview').textContent));
+  ok('来源显示模型', /模型/.test(one('#apSource').textContent), one('#apSource').textContent);
+  ok('待授权胶囊在弹层下隐藏', one('#pendingPill').hidden === true);
+
+  FIX.approvalResult = {
+    status: 'ok',
+    reply: '已完成：向「妈妈」转账 **¥8.00**，可在 60 秒内撤销。',
+    executed: [{ step_id: 's2', tool: 'create_transfer', ok: true, result: { action_id: 'act_123', transfer: { action_id: 'act_123' } } }],
+    audit: [{ seq: 6, event_type: 'approval_granted', tool: 'policy_gate', risk_level: 'medium', hash: 'ff00' }]
+  };
+  ZS.submitApproval('approve');
+  await sleep(60);
+  ok('确认后进入盖章态', one('#approvalPanel').classList.contains('is-stamping') || one('#approvalPanel').classList.contains('is-stamped'));
+  await sleep(900);
+  ok('盖章后弹层关闭', one('#approvalSheet').hidden === true);
+  ok('执行后出现撤销按钮', getEls('.toast__action').length >= 1, String(getEls('.toast__action').length));
+  ok('执行结果写入对话', /12,836\.50|已完成/.test(one('#chat').textContent));
+  ok('计划第二步标完成', getEls('.card--plan .plan__step.is-ok').length >= 1);
+
+  console.log('== 审批：高风险 TOTP ==');
+  chatScript = [
+    { event: 'intent', data: { name: 'transfer', confidence: 0.9, source: 'rule', slots: { amount_cents: 800000 } } },
+    { event: 'approval_required', data: { approval_id: 'ap_high', nonce: 'n2', expires_at: new Date(Date.now() + 300000).toISOString(), risk_level: 'high', challenge: { type: 'totp' }, reasons: ['大额转账需动态验证码'], hits: [{ rule: 'amount_large', dimension: 'amount', level: 'high', detail: '单笔 ¥8,000.00 超过 ¥5,000.00 上限', value: 800000, threshold: 500000 }], title: '向「妈妈」转账 ¥8,000.00', preview: '执行后余额减少 ¥8,000.00', amount_cents: 800000, counterparty: '妈妈', source: 'rule' } },
+    { event: 'done', data: { status: 'awaiting_approval' } }
+  ];
+  await ZS.sendText('给妈妈转 8000 元');
+  await sleep(100);
+  ok('高风险弹层打开', one('#approvalSheet').hidden === false);
+  ok('风险徽章=高风险', /高风险/.test(one('#apRisk').textContent), one('#apRisk').textContent);
+  ok('显示 6 位验证码块', one('#apOtp').hidden === false);
+  ok('确认按钮文案含验证', /验证/.test(one('#btnApprove').textContent), one('#btnApprove').textContent);
+  ok('空码提交被本地拦截', (function () { ZS.submitApproval('approve'); return /6 位/.test(one('#apError').textContent); })(), one('#apError').textContent);
+  one('#btnDemoTotp').click();
+  await sleep(60);
+  const otpVals = getEls('#otpCells .otp__cell').map(function (c) { return c.value; }).join('');
+  ok('演示验证码自动填入 6 位', otpVals === '123456', otpVals);
+  FIX.approvalResult = { status: 'ok', reply: '大额转账已完成。', executed: [{ step_id: 's1', tool: 'create_transfer', ok: true, result: { action_id: 'act_456' } }] };
+  ZS.submitApproval('approve');
+  await sleep(900);
+  ok('TOTP 确认后弹层关闭', one('#approvalSheet').hidden === true);
+
+  console.log('== 审计抽屉 ==');
+  ZS.openAudit();
+  await sleep(80);
+  ok('审计抽屉打开', one('#auditSheet').hidden === false);
+  ok('审计行 = 3', getEls('#auditList .arow').length === 3, String(getEls('#auditList .arow').length));
+  ok('倒序最新在首', /#3/.test(one('#auditList .arow .arow__seq').textContent));
+  await sleep(800);
+  ok('全部行逐位锁定完成', getEls('#auditList .arow.is-verified').length === 3, String(getEls('#auditList .arow.is-verified').length));
+  ok('链校验徽章通过', /链校验通过/.test(one('#auditValid').textContent), one('#auditValid').textContent);
+  ok('哈希显示前 8 位', one('#auditList .arow__hash').textContent.length === 8, one('#auditList .arow__hash').textContent);
+  one('#auditList .arow').click();
+  ok('点击行展开完整哈希', one('#auditList .arow').classList.contains('is-open') && one('#auditList .arow .arow__detail').hidden === false);
+  ZS.closeAudit();
+  ok('关闭审计抽屉', one('#auditSheet').hidden === true);
+
+  console.log('== 更多菜单 / 窄屏 ==');
+  one('#btnMore').click();
+  ok('更多菜单打开', one('#moreMenu').hidden === false);
+  one('#moreMenu .menu__item--nav').click();
+  await sleep(30);
+  ok('菜单项可切视图', getEls('.screen.is-on').length === 1, String(getEls('.screen.is-on').length));
+  ZS.showView('home');
+  sandbox.innerWidth = 390;
+  ZS.showView('chat');
+  await sleep(30);
+  ok('390 宽下仍可渲染对话（无异常）', one('#view-chat').classList.contains('is-on') && getEls('.chat__me').length >= 1);
+  ZS.showView('skills'); await sleep(30);
+  ok('390 宽下技能页可渲染', getEls('#skillsGrid .scard').length === 6);
+  ZS.showView('home');
+  sandbox.innerWidth = 1600;
+
+  console.log('== 错误降级 ==');
+  const origFetch = sandbox.fetch;
+  sandbox.fetch = function () { return Promise.reject(new Error('network down')); };
+  ZS.state.pages.services = false;
+  ZS.showView('services');
+  await sleep(60);
+  ok('外部服务失败降级为「服务暂时不可用」', /服务暂时不可用/.test(one('#servicesGrid').textContent), one('#servicesGrid').textContent.slice(0, 40));
+  ok('失败不白屏（页面仍在）', one('#scr-services').classList.contains('is-on'));
+  sandbox.fetch = origFetch;
+  ZS.showView('home');
+
+  console.log('== v0.3.2 PWA ==');
+  const flat = cssText.replace(/\s+/g, ' ');
+  ok('index.html 含 manifest 链接', /<link rel="manifest" href="\/manifest.webmanifest">/.test(html));
+  ok('index.html 含 theme-color', /<meta name="theme-color" content="#0B5FD0">/.test(html));
+  ok('index.html 含 apple-touch-icon', /rel="apple-touch-icon" href="\/assets\/icons\/apple-touch-icon.png"/.test(html));
+  ok('index.html 末尾加载 app.js（defer）', /<script src="app.js" defer><\/script>/.test(html));
+  const maniRaw = fs.readFileSync(path.join(__dirname, 'manifest.webmanifest'), 'utf8');
+  let mani = null;
+  try { mani = JSON.parse(maniRaw); } catch (e) { mani = null; }
+  ok('manifest 可解析', !!mani);
+  ok('manifest name / short_name', !!mani && mani.name === 'ZeroStep 零步银行' && mani.short_name === 'ZeroStep', mani && mani.name);
+  ok('manifest start_url 与 scope 均为 /', !!mani && mani.start_url === '/' && mani.scope === '/');
+  ok('manifest display standalone', !!mani && mani.display === 'standalone', mani && mani.display);
+  ok('manifest 4 个图标（2 个 maskable）', !!mani && mani.icons.length === 4 && mani.icons.filter(function (i) { return i.purpose === 'maskable'; }).length === 2);
+  ok('manifest 配色 #F3F5F8 / #0B5FD0', !!mani && mani.background_color === '#F3F5F8' && mani.theme_color === '#0B5FD0');
+  const swCode = fs.readFileSync(path.join(__dirname, 'sw.js'), 'utf8');
+  ok('sw.js 预缓存外壳四件', ['/index.html', '/styles.css', '/app.js', '/manifest.webmanifest'].every(function (u) { return swCode.indexOf(u) >= 0; }));
+  ok('sw.js /api/ 走网络不缓存', /isApi/.test(swCode) && swCode.indexOf('/api/') >= 0 && !/caches\.match\(request\)[\s\S]{0,40}api/.test(swCode));
+  ok('sw.js 有版本常量与旧缓存清理', /VERSION/.test(swCode) && /caches\.delete/.test(swCode));
+  const swCalls = [];
+  sandbox.navigator.serviceWorker = { register: function (u) { swCalls.push(u); return Promise.resolve({ scope: '/' }); } };
+  ZS.registerServiceWorker();
+  ok('注册 Service Worker 指向 /sw.js', swCalls.length === 1 && swCalls[0] === '/sw.js', String(swCalls));
+  sandbox.navigator.serviceWorker = { register: function () { return Promise.reject(new Error('sw blocked')); } };
+  let swThrew = false;
+  try { ZS.registerServiceWorker(); } catch (e) { swThrew = true; }
+  await sleep(30);
+  ok('SW 注册失败静默降级（不抛异常）', swThrew === false);
+  sandbox.navigator.serviceWorker = undefined;
+
+  console.log('== v0.3.2 手机收口 ==');
+  ok('底部 tab 四个入口', getEls('#tabbar .tabbar__btn').length === 4, String(getEls('#tabbar .tabbar__btn').length));
+  const tabNavs = getEls('#tabbar .tabbar__btn').map(function (b) { return b.getAttribute('data-nav'); }).join(',');
+  ok('tab 顺序 = 工作台/技能/插件/设置', tabNavs === 'home,skills,plugins,settings', tabNavs);
+  sandbox.innerWidth = 390;
+  one('#tabbar .tabbar__btn[data-nav="plugins"]').click();
+  await sleep(60);
+  ok('点 tab 切到插件页', ZS.state.view === 'plugins' && one('#scr-plugins').classList.contains('is-on'), ZS.state.view);
+  ok('插件 tab 高亮', one('#tabbar .tabbar__btn[data-nav="plugins"]').classList.contains('is-on'));
+  ok('顶栏当前页名 = 插件', one('#pageTitle').textContent === '插件', one('#pageTitle').textContent);
+  one('#tabbar .tabbar__btn[data-nav="settings"]').click();
+  await sleep(60);
+  ok('点 tab 切到设置页', ZS.state.view === 'settings' && one('#scr-settings').classList.contains('is-on'));
+  ok('设置 tab 高亮且其它不亮', one('#tabbar .tabbar__btn[data-nav="settings"]').classList.contains('is-on') && !one('#tabbar .tabbar__btn[data-nav="home"]').classList.contains('is-on'));
+  ok('顶栏当前页名 = 设置', one('#pageTitle').textContent === '设置', one('#pageTitle').textContent);
+  ok('CSS：tabbar 固定底部并留安全区', /\.tabbar\{ position:fixed;left:0;right:0;bottom:0/.test(flat));
+  ok('CSS：主内容为 tabbar 预留底部空间', /body\{\s*padding-bottom:calc\(56px \+ env\(safe-area-inset-bottom\)\)/.test(flat));
+  ok('CSS：桌面隐藏 tabbar / 页名 / 菜单模式段', /\.tabbar\{display:none\}/.test(flat) && /\.topbar__page\{ display:none/.test(flat) && /\.menu__modewrap\{display:none\}/.test(flat));
+  ok('CSS：手机隐藏审计与头像按钮', /\.topbar__right \.btn-text\{display:none\}/.test(flat) && /\.topbar__right \.avatar\{display:none\}/.test(flat));
+  ok('CSS：手机隐藏顶栏三段、菜单内展开', /\.topbar__mid\{display:none\}/.test(flat) && /\.menu__modewrap\{display:block\}/.test(flat));
+  ok('CSS：审批弹层手机全屏宽且限高', /\.dlg\{width:100%;max-height:calc\(100vh - 32px\)/.test(flat) && /\.dlg\{max-height:calc\(100dvh - 24px\)/.test(flat));
+  ok('CSS：手机验证码格加高', /\.otp__cell\{height:44px\}/.test(flat));
+  one('#btnMore').click();
+  ok('更多抽屉含模式三段（手机可切模式）', getEls('#menuModeWrap [data-mode]').length === 3, String(getEls('#menuModeWrap [data-mode]').length));
+  one('#menuModeWrap [data-mode="rule"]').click();
+  await sleep(80);
+  ok('手机抽屉里切到规则模式', ZS.state.llmMode === 'rule', ZS.state.llmMode);
+  ok('切模式后抽屉收起', one('#moreMenu').hidden === true);
+  one('#btnMore').click();
+  one('#menuModeWrap [data-mode="auto"]').click();
+  await sleep(80);
+  ok('切回自动模式', ZS.state.llmMode === 'auto', ZS.state.llmMode);
+  ok('视口高度接口可调用（键盘场景）', (function () { try { ZS.applyViewportHeight(); return ZS.isMobileViewport() === true; } catch (e) { return false; } })());
+
+  console.log('== v0.3.2 模拟推送 ==');
+  ZS.showView('settings');
+  await sleep(60);
+  ok('推送卡三个类型按钮', getEls('#pushKinds [data-push]').length === 3, String(getEls('#pushKinds [data-push]').length));
+  ok('默认选中订阅扣费', one('#pushKinds [data-push="subscription"]').classList.contains('is-on'));
+  ok('结果区初始隐藏', one('#pushResult').hidden === true);
+  const pushBefore = PUSH_CALLS.length;
+  one('#btnPushPreview').click();
+  await sleep(120);
+  const lastPush = PUSH_CALLS[PUSH_CALLS.length - 1] || {};
+  ok('POST /api/push 带 kind 与 session_id', PUSH_CALLS.length === pushBefore + 1 && lastPush.kind === 'subscription' && lastPush.session_id === 'sess_test_001', JSON.stringify(lastPush));
+  ok('结果区展示标题与正文', one('#pushResult').hidden === false && one('#pushTitle').textContent.length > 0 && one('#pushText').textContent.length > 0, one('#pushTitle').textContent);
+  ok('已推送到渠道状态', /已推送/.test(one('#pushTag').textContent) && /已推送/.test(one('#pushStatus').textContent), one('#pushTag').textContent);
+  ok('推送后按钮复原', one('#btnPushPreview').disabled === false && one('#btnPushPreview').textContent === '模拟推送');
+  pushMode = 'nopush';
+  one('#pushKinds [data-push="large_txn"]').click();
+  ok('切换类型高亮', one('#pushKinds [data-push="large_txn"]').classList.contains('is-on') && !one('#pushKinds [data-push="subscription"]').classList.contains('is-on'));
+  one('#btnPushPreview').click();
+  await sleep(120);
+  ok('大额支出 kind 正确', (PUSH_CALLS[PUSH_CALLS.length - 1] || {}).kind === 'large_txn', JSON.stringify(PUSH_CALLS[PUSH_CALLS.length - 1]));
+  ok('未配置地址时提示已生成未配置', /未配置/.test(one('#pushTag').textContent) && /未配置/.test(one('#pushStatus').textContent), one('#pushTag').textContent);
+  pushMode = 'fail';
+  one('#pushKinds [data-push="repayment"]').click();
+  one('#btnPushPreview').click();
+  await sleep(120);
+  ok('渠道失败显示错误', /失败/.test(one('#pushTag').textContent) && /502|失败/.test(one('#pushStatus').textContent), one('#pushTag').textContent + ' / ' + one('#pushStatus').textContent);
+  ok('失败后按钮复原', one('#btnPushPreview').disabled === false);
+  pushMode = 'reject';
+  one('#btnPushPreview').click();
+  await sleep(120);
+  ok('网络失败降级为服务暂时不可用', /服务暂时不可用/.test(one('#pushStatus').textContent + one('#pushText').textContent), one('#pushStatus').textContent);
+  pushMode = 'delivered';
+  sandbox.innerWidth = 1600;
+
+  console.log('== v0.4.0 新工具中文名与能力入口 ==');
+  var NEW_TOOL_MAP = { redeem_wealth: '赎回理财', set_card_limit: '调整卡片限额', card_spend: '卡片消费', scan_anomalies: '异常交易扫描', annual_report: '年度账单报告', create_scheduled_transfer: '创建预约转账', list_scheduled_transfers: '查看预约转账', cancel_scheduled_transfer: '取消预约转账' };
+  var mapBad = Object.keys(NEW_TOOL_MAP).filter(function (k) { return ZS.toolLabel(k) !== NEW_TOOL_MAP[k]; });
+  ok('8 个新工具映射为中文', mapBad.length === 0, mapBad.join(','));
+  ok('未知工具回落原名', ZS.toolLabel('unknown_tool_xyz') === 'unknown_tool_xyz', ZS.toolLabel('unknown_tool_xyz'));
+  ok('空工具名回落 tool', ZS.toolLabel('') === 'tool', ZS.toolLabel(''));
+  ok('旧工具同样中文化（账单汇总）', ZS.toolLabel('get_bill_summary') === '账单汇总', ZS.toolLabel('get_bill_summary'));
+  ZS.showView('home');
+  await sleep(30);
+  var sampleTexts = getEls('#samples .sample').map(function (el) { return el.textContent; });
+  ok('首页示例 6 条', sampleTexts.length === 6, String(sampleTexts.length));
+  ok('示例含赎回 / 年度账单 / 预约转账', ['赎回 500 元稳利宝', '看一下今年的年度账单', '3 天后给妈妈转 800 元'].every(function (t) { return sampleTexts.indexOf(t) >= 0; }), sampleTexts.join(' | '));
+  ZS.state.currentTurn = null;
+  ZS.handleEvent({ event: 'plan', data: { steps: [
+    { step_id: 's1', title: '赎回「稳利宝」500 元', tool: 'redeem_wealth', risk: 'high' },
+    { step_id: 's2', title: '创建 3 天后的预约转账', tool: 'create_scheduled_transfer', risk: 'high' }
+  ] } });
+  await sleep(30);
+  var planTurn = ZS.state.currentTurn;
+  var planTools = [];
+  if (planTurn && planTurn.planEl) {
+    Array.prototype.forEach.call(planTurn.planEl.querySelectorAll('.plan__step .plan__tool'), function (el) { planTools.push(el.textContent); });
+  }
+  ok('计划卡工具名已中文化', planTools.indexOf('赎回理财') >= 0 && planTools.indexOf('创建预约转账') >= 0, planTools.join(','));
+  ok('计划卡不再出现英文工具名', !/[a-z]_[a-z]/.test(planTools.join(' ')), planTools.join(','));
+
+  console.log('== v0.4.1 审批多因子 ==');
+  var highAp = {
+    approval_id: 'ap_mf_1', nonce: 'n3', expires_at: new Date(Date.now() + 300000).toISOString(),
+    risk_level: 'high', challenge: { type: 'totp' }, factors: ['totp', 'sms', 'face'],
+    reasons: ['大额转账需动态验证码'],
+    hits: [{ rule: 'amount_large', dimension: 'amount', level: 'high', detail: '单笔 ¥8,000.00 超过 ¥5,000.00 上限', value: 800000, threshold: 500000 }],
+    title: '向「妈妈」转账 ¥8,000.00', preview: '执行后余额减少 ¥8,000.00',
+    amount_cents: 800000, counterparty: '妈妈', source: 'rule'
+  };
+  ZS.openApproval(highAp);
+  await sleep(80);
+  ok('高风险显示三种校验方式', one('#dlgFactors').hidden === false && getEls('#dlgFactors .factor').length === 3, String(getEls('#dlgFactors .factor').length));
+  ok('默认选中动态验证码且显示验证码块', one('#dlgFactorTotp').classList.contains('is-on') && one('#apOtp').hidden === false);
+  ok('校验方式区块有标题', /本次校验方式/.test(one('#dlgFactors').textContent), one('#dlgFactors').textContent.slice(0, 40));
+  one('#dlgFactorSms').click();
+  await sleep(60);
+  ok('切短信后隐藏 TOTP 演示链接', one('#btnDemoTotp').hidden === true && one('#dlgSmsSend').hidden === false);
+  one('#dlgSmsSend').click();
+  await sleep(90);
+  ok('短信演示码展示并计时', /654321/.test(one('#dlgSmsCode').textContent) && /秒/.test(one('#dlgSmsCode').textContent), one('#dlgSmsCode').textContent);
+  ok('验证码标题变为短信验证码', /短信/.test(one('#apOtpLabel').textContent), one('#apOtpLabel').textContent);
+  one('#dlgSmsCode').click();
+  await sleep(20);
+  var smsVals = getEls('#otpCells .otp__cell').map(function (c) { return c.value; }).join('');
+  ok('点击演示码自动填入 6 格', smsVals === '654321', smsVals);
+  FIX.approvalResult = { status: 'ok', reply: '短信校验通过，转账已完成。', executed: [] };
+  var smsCall = (function () { ZS.submitApproval('approve'); return CALLS[CALLS.length - 1] || {}; })();
+  var smsBody = {};
+  try { smsBody = JSON.parse(smsCall.body); } catch (e) {}
+  ok('短信提交带 method=sms 与验证码', /\/api\/approval/.test(smsCall.url || '') && smsBody.method === 'sms' && smsBody.code === '654321', JSON.stringify(smsBody));
+  await sleep(900);
+  ZS.openApproval(highAp);
+  await sleep(60);
+  one('#dlgFactorFace').click();
+  await sleep(50);
+  ok('人脸方式隐藏验证码键盘', one('#apOtp').hidden === true && one('#dlgFace').hidden === false);
+  one('#dlgFaceScan').click();
+  await sleep(90);
+  ok('人脸确认后显示已完成扫描', /已完成扫描/.test(one('#dlgFaceState').textContent) && one('#dlgFaceToken').hidden === false, one('#dlgFaceState').textContent);
+  FIX.approvalResult = { status: 'ok', reply: '人脸校验通过，转账已完成。', executed: [] };
+  var faceCall = (function () { ZS.submitApproval('approve'); return CALLS[CALLS.length - 1] || {}; })();
+  var faceBody = {};
+  try { faceBody = JSON.parse(faceCall.body); } catch (e) {}
+  ok('人脸提交带 method=face 与 token', /\/api\/approval/.test(faceCall.url || '') && faceBody.method === 'face' && faceBody.code === 'fc_abc123def456', JSON.stringify(faceBody));
+  await sleep(900);
+  ZS.openApproval({ approval_id: 'ap_mf_2', nonce: 'n4', expires_at: new Date(Date.now() + 300000).toISOString(), risk_level: 'medium', challenge: { type: 'confirm' }, reasons: ['该操作需要用户确认后执行'], title: '向「妈妈」转账 ¥8.00', amount_cents: 800, counterparty: '妈妈', source: 'rule' });
+  await sleep(50);
+  ok('中风险不显示因子选择', one('#dlgFactors').hidden === true && one('#apOtp').hidden === true);
+  ZS.submitApproval('reject');
+  await sleep(120);
+  ok('拒绝后弹层关闭', one('#approvalSheet').hidden === true);
+
+  console.log('== v0.4.1 会话锁定 ==');
+  FIX.approvalResult = { status: 'ok', reply: '已完成。', executed: [] };
+  chatScript = [{ event: 'done', data: { status: 'locked', code: 'SESSION_LOCKED', locked_until: new Date(Date.now() + 1200).toISOString() } }];
+  await ZS.sendText('给妈妈转 100000 元');
+  await sleep(150);
+  ok('锁定 InfoBar 显示并给出剩余秒', one('#lockBar').hidden === false && /会话已临时锁定/.test(one('#lockBarText').textContent) && /剩余/.test(one('#lockBarText').textContent), one('#lockBarText').textContent);
+  ok('锁定期间输入与发送禁用', one('#input').disabled === true && one('#btnSend').disabled === true && ZS.lockedNow() === true);
+  await sleep(1700);
+  ok('倒计时结束自动恢复', one('#lockBar').hidden === true && one('#input').disabled === false && one('#btnSend').disabled === false && ZS.lockedNow() === false, one('#lockBarText').textContent);
+  if (process.env.ZS_DUMP_CLASSES) {
+    const seen = {};
+    walk(doc.body, function (el) {
+      const cls = el.getAttribute ? el.getAttribute('class') : null;
+      if (cls) cls.split(/\s+/).forEach(function (c) { if (c) seen[c] = 1; });
+    });
+    require('fs').writeFileSync(process.env.ZS_DUMP_CLASSES, Object.keys(seen).sort().join('\n'));
+  }
+  console.log('== 汇总 ==');
+  report();
+})();
+
+function report() {
+  console.log('');
+  console.log('PASS = ' + PASS + '   FAIL = ' + FAIL);
+  if (FAILS.length) {
+    console.log('失败项：');
+    FAILS.forEach(function (f) { console.log('  - ' + f); });
+  }
+  process.exitCode = FAIL ? 1 : 0;
+}

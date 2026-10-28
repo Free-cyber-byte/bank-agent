@@ -1,0 +1,40 @@
+{
+  "id": "t38",
+  "title": "信用卡日累计限额调整",
+  "category": "card",
+  "user_id": "u001",
+  "turns": [
+    "把信用卡日累计限额调到 5000 元"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "card_limit",
+    "plan_tools": [
+      "set_card_limit"
+    ],
+    "expected_skill": "cards",
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "expected_rules": [
+      {
+        "rule": "card_limit_change",
+        "contains": "日累计",
+        "digit": true
+      }
+    ],
+    "reply_contains": [
+      "日累计",
+      "¥5,000.00"
+    ],
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "set_card_limit"
+      ]
+    }
+  },
+  "judge_rubric": "卡额度按自然语言调整：只改被点名的维度，审批单带新额度数字"
+}

@@ -4,6 +4,7 @@
 金额单位：分。
 """
 import json
+import re
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -145,11 +146,15 @@ def find_payee(conn, user_id: str, text: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def add_payee(conn, user_id: str, name: str, bank: str, account_no: str) -> Dict[str, Any]:
+def add_payee(conn, user_id: str, name: str, bank: str, account_no: str, phone: str = "") -> Dict[str, Any]:
     payee_id = "p_" + secrets.token_hex(4)
-    conn.execute("INSERT INTO payees VALUES (?,?,?,?,?,?,?)", (payee_id, user_id, name, bank, account_no, db.now_iso(), 1))
+    conn.execute(
+        "INSERT INTO payees (payee_id,user_id,name,bank,account_no,created_at,is_new,phone) VALUES (?,?,?,?,?,?,?,?)",
+        (payee_id, user_id, name, bank, account_no, db.now_iso(), 1, str(phone or "")),
+    )
     conn.commit()
-    return {"payee_id": payee_id, "name": name, "bank": bank, "account_no": account_no, "is_new": 1}
+    return {"payee_id": payee_id, "name": name, "bank": bank, "account_no": account_no,
+            "phone": str(phone or ""), "is_new": 1}
 
 
 # ---------------- 转账 ----------------
@@ -376,3 +381,468 @@ def repay_credit(conn, user_id: str, amount_cents: int) -> Dict[str, Any]:
 def verify_balance(conn, account_id: str, expected_cents: int) -> Dict[str, Any]:
     actual = _balance(conn, account_id)
     return {"ok": actual == expected_cents, "expected_cents": expected_cents, "actual_cents": actual}
+
+
+# ==================== v0.4.0 数据层新增能力 ====================
+# 理财赎回、卡额度/卡消费、异常交易扫描、年度账单、手机号找收款人、预约转账。
+
+def _p99(values: List[int]) -> int:
+    """最近秩法 P99（无样本返回 0），用于异常交易金额阈值。"""
+    if not values:
+        return 0
+    ordered = sorted(int(v) for v in values)
+    k = max(1, (99 * len(ordered) + 99) // 100)
+    return int(ordered[k - 1])
+
+
+def _hours_between(left, right) -> float:
+    """两条 ISO 时间相差的小时数；解析失败返回 -1。"""
+    try:
+        a = datetime.fromisoformat(str(left))
+        b = datetime.fromisoformat(str(right))
+        return abs((b - a).total_seconds()) / 3600.0
+    except (TypeError, ValueError):
+        return -1.0
+
+
+def _parse_run_at(value: str) -> datetime:
+    """解析预约时间：支持 YYYY-MM-DD / YYYY-MM-DD HH:MM / 带时区 ISO；失败抛 SCHEDULE_INVALID。"""
+    text = str(value or "").strip()
+    if not text:
+        raise DomainError("SCHEDULE_INVALID", "预约时间不能为空，请提供 YYYY-MM-DD HH:MM")
+    candidate = text.replace(" ", "T", 1) if " " in text else text
+    try:
+        parsed = datetime.fromisoformat(candidate)
+    except ValueError:
+        raise DomainError("SCHEDULE_INVALID", "无法识别的时间 %s，请提供 YYYY-MM-DD HH:MM" % text)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.now().astimezone().tzinfo)
+    return parsed
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
+
+
+def _first_account(conn, user_id: str, kind: str = "checking"):
+    """优先取指定 kind 的第一个账户，没有则回退该用户第一个账户。"""
+    row = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind=? ORDER BY account_id LIMIT 1", (user_id, kind)).fetchone()
+    if row:
+        return row
+    return conn.execute("SELECT * FROM accounts WHERE user_id=? ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
+
+
+CARD_KIND_ORDER = "CASE kind WHEN 'virtual' THEN 0 WHEN 'credit' THEN 1 ELSE 2 END"
+
+
+def _active_card(conn, user_id: str, card_id: str = ""):
+    if card_id:
+        return conn.execute("SELECT * FROM cards WHERE card_id=? AND user_id=?", (card_id, user_id)).fetchone()
+    return conn.execute(
+        "SELECT * FROM cards WHERE user_id=? AND status='active' ORDER BY " + CARD_KIND_ORDER + ", card_id LIMIT 1",
+        (user_id,),
+    ).fetchone()
+
+
+def _any_card(conn, user_id: str, card_id: str = ""):
+    """消费用取卡：显式 card_id 优先；否则先取 active 卡，再退到任意卡（便于报出冻结状态）。"""
+    if card_id:
+        return conn.execute("SELECT * FROM cards WHERE card_id=? AND user_id=?", (card_id, user_id)).fetchone()
+    row = _active_card(conn, user_id)
+    if row:
+        return row
+    return conn.execute("SELECT * FROM cards WHERE user_id=? ORDER BY " + CARD_KIND_ORDER + ", card_id LIMIT 1", (user_id,)).fetchone()
+
+
+def redeem_wealth(conn, user_id: str, session_id: str, thread_id: str, product_id: str = "",
+                  amount_cents: int = 0, holding_id: str = "") -> Dict[str, Any]:
+    """理财赎回：按买入时间先进先出扣减持仓，本金回到工资卡（无工资卡回第一个账户）。"""
+    amount_cents = int(amount_cents or 0)
+    if amount_cents <= 0:
+        raise DomainError("AMOUNT_INVALID", "赎回金额必须大于 0")
+    sql = "SELECT * FROM wealth_holdings WHERE user_id=? AND status='holding'"
+    args: List[Any] = [user_id]
+    if holding_id:
+        sql += " AND holding_id=?"
+        args.append(holding_id)
+    if product_id:
+        sql += " AND product_id=?"
+        args.append(product_id)
+    rows = [dict(r) for r in conn.execute(sql + " ORDER BY bought_at, holding_id", args).fetchall()]
+    total_holding = sum(int(r["amount_cents"]) for r in rows)
+    if total_holding < amount_cents:
+        raise DomainError("INSUFFICIENT_HOLDING", "可赎回持仓不足，当前持仓 %s" % yuan(total_holding),
+                          {"holding_cents": total_holding})
+    deducted: List[Dict[str, Any]] = []
+    remaining = amount_cents
+    for row in rows:
+        if remaining <= 0:
+            break
+        take = min(int(row["amount_cents"]), remaining)
+        left = int(row["amount_cents"]) - take
+        conn.execute("UPDATE wealth_holdings SET amount_cents=?, status=? WHERE holding_id=?",
+                     (left, "holding" if left > 0 else "redeemed", row["holding_id"]))
+        deducted.append({"holding_id": row["holding_id"], "product_id": row["product_id"], "amount_cents": take})
+        remaining -= take
+    first = deducted[0]
+    prod = conn.execute("SELECT name FROM wealth_products WHERE product_id=?", (first["product_id"],)).fetchone()
+    product_name = str(prod["name"]) if prod else ""
+    acc = _first_account(conn, user_id, "checking")
+    if not acc:
+        raise DomainError("ACCOUNT_NOT_FOUND", "没有可入账的账户")
+    after = int(acc["balance_cents"]) + amount_cents
+    conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (after, acc["account_id"]))
+    redeemed_at = db.now_iso()
+    _record_txn(conn, acc["account_id"], user_id, "in", amount_cents, "赎回", product_name or "理财", "理财赎回",
+                after, source="redeem")
+    conn.commit()
+    return {
+        "holding_id": first["holding_id"], "product_id": first["product_id"], "product_name": product_name,
+        "amount_cents": amount_cents, "amount_display": yuan(amount_cents),
+        "balance_after_cents": after, "balance_after_display": yuan(after),
+        "status": "redeemed", "redeemed_at": redeemed_at, "action_id": "rd_" + secrets.token_hex(6),
+    }
+
+
+def set_card_limit(conn, user_id: str, card_id: str = "", daily_limit_cents: Optional[int] = None,
+                   single_limit_cents: Optional[int] = None) -> Dict[str, Any]:
+    """调整卡额度：只更新传入的非 None 字段；单笔不能大于单日。"""
+    card = _active_card(conn, user_id, card_id)
+    if not card:
+        raise DomainError("CARD_NOT_FOUND", "没有找到该银行卡")
+    before = {"daily_limit_cents": int(card["daily_limit_cents"]), "single_limit_cents": int(card["single_limit_cents"])}
+    daily = before["daily_limit_cents"] if daily_limit_cents is None else int(daily_limit_cents)
+    single = before["single_limit_cents"] if single_limit_cents is None else int(single_limit_cents)
+    if daily_limit_cents is not None and daily <= 0:
+        raise DomainError("LIMIT_INVALID", "单日限额必须大于 0，当前传入 %s" % yuan(daily))
+    if single_limit_cents is not None and single <= 0:
+        raise DomainError("LIMIT_INVALID", "单笔限额必须大于 0，当前传入 %s" % yuan(single))
+    # 只有本次明确同时给出单笔额度时才校验「单笔 <= 单日」：仅调日限额时允许旧单笔值暂时高于日限额
+    if single_limit_cents is not None and daily > 0 and single > daily:
+        raise DomainError("LIMIT_INVALID", "单笔限额 %s 不能超过单日限额 %s" % (yuan(single), yuan(daily)))
+    conn.execute("UPDATE cards SET daily_limit_cents=?, single_limit_cents=? WHERE card_id=?", (daily, single, card["card_id"]))
+    conn.commit()
+    after = {"daily_limit_cents": daily, "single_limit_cents": single}
+    return {
+        "card_id": card["card_id"], "number_masked": card["number_masked"], "kind": card["kind"],
+        "daily_limit_cents": daily, "daily_limit_display": yuan(daily),
+        "single_limit_cents": single, "single_limit_display": yuan(single),
+        "before": before, "after": after,
+    }
+
+
+def card_spend(conn, user_id: str, session_id: str, thread_id: str, card_id: str = "",
+               amount_cents: int = 0, merchant: str = "") -> Dict[str, Any]:
+    """卡消费：校验卡状态与单笔/单日限额，通过后写入 card_txns 流水。"""
+    amount_cents = int(amount_cents or 0)
+    card = _any_card(conn, user_id, card_id)
+    if not card:
+        raise DomainError("CARD_NOT_FOUND", "没有找到该银行卡")
+    if str(card["status"]) != "active":
+        raise DomainError("CARD_FROZEN", "卡片当前状态为冻结，无法消费")
+    if amount_cents <= 0:
+        raise DomainError("AMOUNT_INVALID", "消费金额必须大于 0")
+    single = int(card["single_limit_cents"] or 0)
+    daily = int(card["daily_limit_cents"] or 0)
+    if single > 0 and amount_cents > single:
+        raise DomainError("CARD_SINGLE_LIMIT", "超出单笔限额 %s，本笔 %s" % (yuan(single), yuan(amount_cents)))
+    today = datetime.now().astimezone().date().isoformat()
+    used = int(conn.execute(
+        "SELECT COALESCE(SUM(amount_cents),0) AS s FROM card_txns WHERE card_id=? AND user_id=? AND ts LIKE ?",
+        (card["card_id"], user_id, today + "%"),
+    ).fetchone()["s"])
+    if daily > 0 and used + amount_cents > daily:
+        raise DomainError("CARD_DAILY_LIMIT", "超出单日限额 %s，今日已用 %s，本笔 %s"
+                          % (yuan(daily), yuan(used), yuan(amount_cents)))
+    txn_id = "ct_" + secrets.token_hex(6)
+    ts = db.now_iso()
+    conn.execute("INSERT INTO card_txns VALUES (?,?,?,?,?,?,?)",
+                 (txn_id, card["card_id"], user_id, ts, amount_cents, str(merchant or ""), "success"))
+    conn.commit()
+    new_used = used + amount_cents
+    remaining = max(0, daily - new_used) if daily > 0 else 0
+    return {
+        "txn_id": txn_id, "card_id": card["card_id"], "number_masked": card["number_masked"],
+        "amount_cents": amount_cents, "amount_display": yuan(amount_cents), "merchant": str(merchant or ""),
+        "status": "success", "ts": ts,
+        "daily_used_cents": new_used, "daily_used_display": yuan(new_used),
+        "daily_limit_cents": daily, "daily_limit_display": yuan(daily),
+        "remaining_cents": remaining, "remaining_display": yuan(remaining),
+    }
+
+
+def scan_anomalies(conn, user_id: str, days: int = 30) -> Dict[str, Any]:
+    """异常交易识别：金额离群 / 重复扣款 / 深夜大额。无异常返回空 list，不抛异常。"""
+    days = max(1, int(days or 30))
+    now = datetime.now().astimezone()
+    cutoff = (now - timedelta(days=days)).isoformat(timespec="seconds")
+    outs = [dict(r) for r in conn.execute(
+        "SELECT txn_id, ts, amount_cents, category, counterparty FROM transactions "
+        "WHERE user_id=? AND direction='out' ORDER BY ts", (user_id,)).fetchall()]
+    all_amounts = [int(r["amount_cents"]) for r in outs]
+    p99 = _p99(all_amounts)
+    threshold = max(1000 * config.YUAN, p99)
+    window = [r for r in outs if str(r["ts"]) >= cutoff]
+    anomalies: List[Dict[str, Any]] = []
+    for r in window:
+        amount = int(r["amount_cents"])
+        if amount > threshold:
+            anomalies.append({
+                "txn_id": r["txn_id"], "ts": r["ts"], "amount_cents": amount, "amount_display": yuan(amount),
+                "counterparty": str(r["counterparty"] or ""), "category": str(r["category"] or ""),
+                "rule": "amount_outlier", "level": "high",
+                "detail": "单笔 %s > 阈值 %s（历史 P99 %s）" % (yuan(amount), yuan(threshold), yuan(p99)),
+            })
+    grouped: Dict[Any, List[Dict[str, Any]]] = {}
+    for r in window:
+        grouped.setdefault((str(r["counterparty"] or ""), int(r["amount_cents"])), []).append(r)
+    for (counterparty, amount), rows in grouped.items():
+        if len(rows) < 2:
+            continue
+        ordered = sorted(rows, key=lambda x: str(x["ts"]))
+        for i in range(1, len(ordered)):
+            gap = _hours_between(ordered[i - 1]["ts"], ordered[i]["ts"])
+            if 0 <= gap <= 24:
+                anomalies.append({
+                    "txn_id": ordered[i]["txn_id"], "ts": ordered[i]["ts"], "amount_cents": amount,
+                    "amount_display": yuan(amount), "counterparty": counterparty,
+                    "category": str(ordered[i]["category"] or ""),
+                    "rule": "duplicate_charge", "level": "medium",
+                    "detail": "%.1f 小时内同一收款方「%s」同额 %s 重复出现（第 %d 笔）"
+                              % (gap, counterparty, yuan(amount), i + 1),
+                })
+    for r in window:
+        amount = int(r["amount_cents"])
+        if amount <= 500 * config.YUAN:
+            continue
+        try:
+            hour = datetime.fromisoformat(str(r["ts"])).hour
+        except (TypeError, ValueError):
+            continue
+        if 0 <= hour <= 5:
+            anomalies.append({
+                "txn_id": r["txn_id"], "ts": r["ts"], "amount_cents": amount, "amount_display": yuan(amount),
+                "counterparty": str(r["counterparty"] or ""), "category": str(r["category"] or ""),
+                "rule": "late_night_large", "level": "medium",
+                "detail": "%02d 点深夜大额支出 %s（> %s）" % (hour, yuan(amount), yuan(500 * config.YUAN)),
+            })
+    rule_counts: Dict[str, int] = {}
+    for item in anomalies:
+        rule_counts[item["rule"]] = rule_counts.get(item["rule"], 0) + 1
+    anomalies.sort(key=lambda x: str(x["ts"]), reverse=True)
+    return {
+        "days": days, "scanned_count": len(window), "anomalies": anomalies[:10],
+        "rule_counts": rule_counts, "p99_cents": p99, "threshold_cents": threshold,
+    }
+
+
+def annual_report(conn, user_id: str, year: int = 0) -> Dict[str, Any]:
+    """年度账单：只统计该自然年的收支，按月份/分类/商户聚合。"""
+    try:
+        year = int(year or 0)
+    except (TypeError, ValueError):
+        year = 0
+    if not year:
+        year = datetime.now().astimezone().year
+    prefix = "%04d-" % year
+    rows = [dict(r) for r in conn.execute(
+        "SELECT ts, direction, amount_cents, category, counterparty FROM transactions WHERE user_id=? AND ts LIKE ?",
+        (user_id, prefix + "%")).fetchall()]
+    total_out = 0
+    total_in = 0
+    months_map: Dict[str, Dict[str, Any]] = {}
+    cats: Dict[str, int] = {}
+    merchants: Dict[str, int] = {}
+    for r in rows:
+        amount = int(r["amount_cents"])
+        month_key = str(r["ts"])[:7]
+        bucket = months_map.setdefault(month_key, {"month": month_key, "out_cents": 0, "in_cents": 0})
+        if str(r["direction"]) == "out":
+            total_out += amount
+            bucket["out_cents"] += amount
+            category = str(r["category"] or "其他")
+            cats[category] = cats.get(category, 0) + amount
+            merchant = str(r["counterparty"] or "")
+            merchants[merchant] = merchants.get(merchant, 0) + amount
+        else:
+            total_in += amount
+            bucket["in_cents"] += amount
+    months = [months_map[k] for k in sorted(months_map)]
+    by_category = sorted(
+        [{"category": k, "amount_cents": v, "ratio": round(v / total_out, 4) if total_out else 0}
+         for k, v in cats.items()],
+        key=lambda x: -x["amount_cents"],
+    )
+    top_merchants = [{"merchant": k, "amount_cents": v}
+                     for k, v in sorted(merchants.items(), key=lambda kv: -kv[1])[:5]]
+    peak = max(months, key=lambda m: m["out_cents"]) if months else {"month": "", "out_cents": 0}
+    avg_monthly = int(round(total_out / len(months))) if months else 0
+    return {
+        "year": year, "total_out_cents": total_out, "total_in_cents": total_in,
+        "net_cents": total_in - total_out,
+        "savings_rate": round((total_in - total_out) / total_in, 4) if total_in else 0,
+        "txn_count": len(rows), "months": months, "by_category": by_category,
+        "top_merchants": top_merchants,
+        "peak_month": {"month": peak["month"], "out_cents": peak["out_cents"]},
+        "avg_monthly_out_cents": avg_monthly,
+    }
+
+
+def find_payee_by_phone(conn, user_id: str, phone: str) -> Optional[Dict[str, Any]]:
+    """按手机号精确匹配收款人（忽略空格/横线）；找不到返回 None，不抛异常。"""
+    try:
+        target = re.sub(r"[\s\-]", "", str(phone or ""))
+        if not target:
+            return None
+        rows = conn.execute("SELECT * FROM payees WHERE user_id=?", (user_id,)).fetchall()
+        for r in rows:
+            item = dict(r)
+            stored = re.sub(r"[\s\-]", "", str(item.get("phone") or ""))
+            if stored and stored == target:
+                return item
+        return None
+    except Exception:
+        return None
+
+
+# ---------------- 预约转账 ----------------
+
+def create_scheduled_transfer(conn, user_id: str, session_id: str, thread_id: str, from_account_id: str,
+                              payee_name: str, payee_account: str, amount_cents: int, run_at: str,
+                              memo: str = "", approval_id: str = "") -> Dict[str, Any]:
+    """创建预约转账（只登记，不扣款；到期由 scheduler.tick 执行）。"""
+    amount_cents = int(amount_cents or 0)
+    if amount_cents <= 0:
+        raise DomainError("AMOUNT_INVALID", "预约转账金额必须大于 0")
+    parsed = _parse_run_at(run_at)
+    sched_id = "sch_" + secrets.token_hex(6)
+    created_at = db.now_iso()
+    run_iso = _iso(parsed)
+    seconds_until = int((parsed - datetime.now().astimezone()).total_seconds())
+    conn.execute(
+        "INSERT INTO scheduled_transfers (sched_id,user_id,session_id,thread_id,from_account_id,payee_name,"
+        "payee_account,amount_cents,memo,run_at,status,transfer_id,approval_id,created_at,executed_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,'pending','',?,?,?)",
+        (sched_id, user_id, str(session_id or ""), str(thread_id or ""), from_account_id, payee_name,
+         str(payee_account or ""), amount_cents, str(memo or ""), run_iso, str(approval_id or ""), created_at, ""),
+    )
+    conn.commit()
+    return {
+        "sched_id": sched_id, "run_at": run_iso, "status": "pending", "amount_cents": amount_cents,
+        "amount_display": yuan(amount_cents), "payee_name": payee_name,
+        "payee_account": str(payee_account or ""), "created_at": created_at,
+        "seconds_until": seconds_until,
+    }
+
+
+def list_scheduled_transfers(conn, user_id: str, status: str = "") -> Dict[str, Any]:
+    """列出预约转账（按 run_at 升序），附带 pending/总数。"""
+    where = "WHERE user_id=?"
+    args: List[Any] = [user_id]
+    if status:
+        where += " AND status=?"
+        args.append(str(status))
+    rows = [dict(r) for r in conn.execute(
+        "SELECT * FROM scheduled_transfers " + where + " ORDER BY run_at, created_at", args).fetchall()]
+    items = [{
+        "sched_id": r["sched_id"], "run_at": r["run_at"], "status": r["status"],
+        "amount_cents": int(r["amount_cents"]), "amount_display": yuan(int(r["amount_cents"])),
+        "payee_name": r["payee_name"], "payee_account": r["payee_account"],
+        "created_at": r["created_at"], "executed_at": r["executed_at"], "transfer_id": r["transfer_id"],
+    } for r in rows]
+    pending = conn.execute("SELECT COUNT(*) AS n FROM scheduled_transfers WHERE user_id=? AND status='pending'",
+                           (user_id,)).fetchone()["n"]
+    total = conn.execute("SELECT COUNT(*) AS n FROM scheduled_transfers WHERE user_id=?", (user_id,)).fetchone()["n"]
+    return {"items": items, "pending_count": int(pending), "total_count": int(total)}
+
+
+def cancel_scheduled_transfer(conn, user_id: str, sched_id: str = "") -> Dict[str, Any]:
+    """取消预约转账；sched_id 为空时取消最近创建的一条 pending。"""
+    row = None
+    if sched_id:
+        row = conn.execute("SELECT * FROM scheduled_transfers WHERE sched_id=? AND user_id=?",
+                           (sched_id, user_id)).fetchone()
+        if not row:
+            raise DomainError("SCHEDULE_NOT_FOUND", "没有找到该预约转账")
+    else:
+        row = conn.execute(
+            "SELECT * FROM scheduled_transfers WHERE user_id=? AND status='pending' "
+            "ORDER BY created_at DESC, run_at DESC LIMIT 1", (user_id,)).fetchone()
+        if not row:
+            raise DomainError("SCHEDULE_NOT_FOUND", "当前没有可取消的预约转账")
+    item = dict(row)
+    if item["status"] != "pending":
+        raise DomainError("SCHEDULE_NOT_CANCELLABLE", "该预约转账已%s，无法取消"
+                          % ("执行" if item["status"] == "executed" else "结束"))
+    conn.execute("UPDATE scheduled_transfers SET status='cancelled' WHERE sched_id=?", (item["sched_id"],))
+    conn.commit()
+    return {
+        "sched_id": item["sched_id"], "status": "cancelled", "run_at": item["run_at"],
+        "amount_display": yuan(int(item["amount_cents"])), "payee_name": item["payee_name"],
+    }
+
+
+def due_scheduled_transfers(conn, now_iso: str = "") -> List[Dict[str, Any]]:
+    """取出已到期（run_at <= now）且仍 pending 的预约转账。"""
+    moment = str(now_iso or db.now_iso())
+    rows = conn.execute(
+        "SELECT * FROM scheduled_transfers WHERE status='pending' AND run_at<=? ORDER BY run_at, sched_id",
+        (moment,)).fetchall()
+    return [dict(r) for r in rows]
+
+
+def mark_scheduled(conn, sched_id: str, status: str, transfer_id: str = "", executed_at: str = "") -> Dict[str, Any]:
+    """更新预约转账状态并返回最新记录。"""
+    row = conn.execute("SELECT * FROM scheduled_transfers WHERE sched_id=?", (sched_id,)).fetchone()
+    if not row:
+        raise DomainError("SCHEDULE_NOT_FOUND", "没有找到该预约转账")
+    item = dict(row)
+    exec_at = str(executed_at or "")
+    if not exec_at:
+        exec_at = db.now_iso() if status in ("executed", "failed") else str(item["executed_at"] or "")
+    conn.execute("UPDATE scheduled_transfers SET status=?, transfer_id=?, executed_at=? WHERE sched_id=?",
+                 (status, str(transfer_id or item["transfer_id"] or ""), exec_at, sched_id))
+    conn.commit()
+    return dict(conn.execute("SELECT * FROM scheduled_transfers WHERE sched_id=?", (sched_id,)).fetchone())
+
+
+def execute_due_transfers(conn, now_iso: str = "") -> Dict[str, Any]:
+    """执行所有到期预约：逐条调 create_transfer，成功/失败都落状态；永不抛异常。"""
+    result: Dict[str, Any] = {"checked": 0, "executed": [], "failed": [], "ts": db.now_iso()}
+    try:
+        due = due_scheduled_transfers(conn, now_iso)
+    except Exception:
+        return result
+    for row in due:
+        sched_id = str(row["sched_id"])
+        amount = int(row["amount_cents"])
+        result["checked"] += 1
+        try:
+            tr = create_transfer(conn, str(row["user_id"]), str(row["session_id"]), str(row["thread_id"]),
+                                 str(row["from_account_id"]), str(row["payee_name"]), str(row["payee_account"]),
+                                 amount, memo=str(row["memo"] or ""), idempotency_key="sched_" + sched_id,
+                                 internal=False)
+            transfer_id = str(tr.get("transfer_id") or "")
+            mark_scheduled(conn, sched_id, "executed", transfer_id=transfer_id)
+            result["executed"].append({
+                "sched_id": sched_id, "transfer_id": transfer_id, "amount_cents": amount,
+                "amount_display": yuan(amount), "payee_name": str(row["payee_name"]),
+                "run_at": str(row["run_at"]),
+            })
+        except DomainError as exc:
+            _mark_schedule_failed(conn, sched_id)
+            result["failed"].append({"sched_id": sched_id, "code": exc.code, "message": exc.message,
+                                     "amount_cents": amount, "payee_name": str(row["payee_name"])})
+        except Exception as exc:  # 单条异常不影响其它预约，也不向上抛
+            _mark_schedule_failed(conn, sched_id)
+            result["failed"].append({"sched_id": sched_id, "code": "INTERNAL_ERROR",
+                                     "message": "预约执行失败：%s" % exc,
+                                     "amount_cents": amount, "payee_name": str(row["payee_name"])})
+    return result
+
+
+def _mark_schedule_failed(conn, sched_id: str) -> None:
+    try:
+        mark_scheduled(conn, sched_id, "failed")
+    except Exception:
+        pass

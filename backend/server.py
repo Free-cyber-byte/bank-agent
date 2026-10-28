@@ -14,21 +14,31 @@ import sys
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from app import audit, config, db, engine, llm, mock_core, totp  # noqa: E402
+from app import audit, config, db, engine, llm, mcp_client, mock_core, plugins, push, second_factor, skills, totp  # noqa: E402
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
 mimetypes.add_type("application/json", ".json")
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+mimetypes.add_type("image/png", ".png")
 
 CONN = db.connect()
 db.init_schema(CONN)
 db.seed_if_needed(CONN)
+plugins.bind_conn(lambda: CONN)  # 插件开关的审计写入复用主服务连接
+
+# v0.4.1 多因子审批：engine 统一抛 EngineError，这里补齐新增错误码的可读中文文案（均 400）
+_APPROVAL_ERROR_MESSAGES = {
+    "INVALID_SMS": "短信验证码不正确或已过期，请重新获取",
+    "INVALID_FACE": "人脸确认已过期，请重新发起",
+    "INVALID_METHOD": "不支持的校验方式",
+}
 
 
 def json_bytes(obj) -> bytes:
@@ -111,13 +121,88 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/llm/status":
                 return self._send(200, llm.status())
             if path == "/api/tasks":
-                return self._send(200, {"tasks": _list_tasks()})
+                return self._send(200, _tasks_page(self._query()))
+            # ---------- v0.3.0 新增：插件注册表（仿 DSH 能力开关） ----------
+            if path == "/api/plugins":
+                try:
+                    return self._send(200, plugins.status())
+                except Exception:  # noqa: BLE001 - 插件表异常也要给出可读结果，不泄堆栈
+                    return self._send(500, {"ok": False, "error": "服务不可用"})
+            # ---------- v0.2.0 新增：MCP / 技能卡 / 渠道状态 ----------
+            if path == "/api/mcp/status":
+                try:
+                    return self._send(200, _mcp_status())
+                except Exception:  # noqa: BLE001 - 外部服务探测失败也要给出可读结果，不泄堆栈
+                    return self._send(500, {"ok": False, "error": "服务不可用"})
+            if path == "/api/skills":
+                try:
+                    return self._send(200, _skills_status())
+                except Exception:  # noqa: BLE001
+                    return self._send(500, {"ok": False, "error": "服务不可用"})
+            if path.startswith("/api/skills/"):
+                card_id = unquote(path.rsplit("/", 1)[-1])
+                try:
+                    card = skills.get(card_id)
+                except Exception:  # noqa: BLE001
+                    return self._send(500, {"ok": False, "error": "服务不可用"})
+                if not card:
+                    return self._error(404, "SKILL_NOT_FOUND", "技能卡不存在")
+                return self._send(200, {"skill": card})
+            if path == "/api/channel/status":
+                try:
+                    return self._send(200, _channel_status())
+                except Exception:  # noqa: BLE001
+                    return self._send(500, {"ok": False, "error": "服务不可用"})
+            if path == "/api/scheduled":
+                # 预约转账列表（只读）：数据层未就绪时给出空列表，接口形状保持稳定
+                q = self._query()
+                status = (q.get("status") or [""])[0]
+                if status and status not in ("scheduled", "pending", "executed", "failed", "cancelled"):
+                    return self._send(400, {"ok": False, "error": "status 只能是 scheduled/executed/failed/cancelled（pending 同 scheduled）"})
+                if status == "scheduled":
+                    status = "pending"
+                try:
+                    limit = max(1, min(int((q.get("limit") or ["6"])[0]), 50))
+                except (TypeError, ValueError):
+                    limit = 6
+                try:
+                    offset = max(0, int((q.get("offset") or ["0"])[0]))
+                except (TypeError, ValueError):
+                    offset = 0
+                try:
+                    data = mock_core.list_scheduled_transfers(CONN, config.DEFAULT_USER_ID, status)
+                    all_items = (data or {}).get("items") or []
+                except Exception:  # noqa: BLE001 - 数据层未就绪/查询失败时返回空页，不泄堆栈
+                    all_items = []
+                total = len(all_items)
+                page = all_items[offset:offset + limit]
+                items = [{
+                    "sched_id": it.get("sched_id", ""),
+                    "payee_name": it.get("payee_name", ""),
+                    "payee_account_masked": it.get("payee_account_masked") or it.get("payee_account", ""),
+                    "amount_cents": int(it.get("amount_cents") or 0),
+                    "amount_display": mock_core.yuan(int(it.get("amount_cents") or 0)),
+                    "run_at": it.get("run_at", ""),
+                    "status": it.get("status", ""),
+                } for it in page]
+                return self._send(200, {"ok": True, "scheduled": items, "total": total,
+                                        "offset": offset, "limit": limit,
+                                        "has_more": offset + len(items) < total})
             if path == "/api/demo/totp":
                 if not config.DEMO_MODE:
                     return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启，不返回动态码")
                 user_id = (self._query().get("user_id") or [config.DEFAULT_USER_ID])[0]
                 return self._send(200, {"user_id": user_id, "code": totp.current_code(user_id),
                                         "seconds_left": totp.seconds_left()})
+            if path == "/api/demo/sms":
+                # 演示专用：短信因子为内存模拟，直接回显验证码与有效期（不接真实短信网关）
+                if not config.DEMO_MODE:
+                    return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启，不返回短信验证码")
+                user_id = (self._query().get("user_id") or [config.DEFAULT_USER_ID])[0]
+                info = second_factor.sms_send(user_id)
+                return self._send(200, {"ok": True, "user_id": user_id, "code": info.get("code") or "",
+                                        "seconds_left": int(info.get("seconds_left") or 0),
+                                        "ttl": int(info.get("ttl") or 0)})
             if path.startswith("/api/"):
                 return self._error(404, "NOT_FOUND", "接口不存在")
             return self._static(path)
@@ -140,6 +225,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启")
                 # 同一连接内做表级重置，避免 Windows 下删除被占用的 bank.db 抛 WinError 32
                 db.reset_demo(CONN)
+                plugins.reset()  # 插件状态一并回到默认「全部启用」
                 return self._send(200, {"reset": True, "seed_version": config.SEED_VERSION})
             if path == "/api/chat":
                 body = self._body()
@@ -151,10 +237,33 @@ class Handler(BaseHTTPRequestHandler):
                     return self._stream_chat(sid, text)
                 result = engine.run_turn(CONN, sid, text)
                 return self._send(200, _public(result))
+            if path == "/api/demo/face":
+                # 演示专用：人脸因子为内存模拟，签发 60 秒有效的一次性令牌（不接真实人脸 SDK）
+                if not config.DEMO_MODE:
+                    return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启，不返回人脸令牌")
+                body = self._body()
+                if not isinstance(body, dict):
+                    return self._error(400, "BAD_REQUEST", "请求体必须是 JSON 对象")
+                user_id = body.get("user_id") or config.DEFAULT_USER_ID
+                if not isinstance(user_id, str):
+                    return self._error(400, "BAD_REQUEST", "user_id 必须是字符串")
+                info = second_factor.face_scan(user_id)
+                return self._send(200, {"ok": True, "user_id": user_id, "token": info.get("token") or "",
+                                        "seconds_left": int(info.get("seconds_left") or 0),
+                                        "ttl": int(info.get("ttl") or 0)})
             if path == "/api/approval":
                 body = self._body()
-                result = engine.resume(CONN, body.get("session_id") or "", body.get("approval_id") or "",
-                                       body.get("decision") or "", body.get("code") or "")
+                method = body.get("method") or ""
+                if not isinstance(method, str):
+                    return self._error(400, "INVALID_METHOD", _APPROVAL_ERROR_MESSAGES["INVALID_METHOD"])
+                try:
+                    result = engine.resume(CONN, body.get("session_id") or "", body.get("approval_id") or "",
+                                           body.get("decision") or "", body.get("code") or "", method=method)
+                except engine.EngineError as exc:
+                    code = str(getattr(exc, "code", "") or "")
+                    if code in _APPROVAL_ERROR_MESSAGES:
+                        return self._error(400, code, _APPROVAL_ERROR_MESSAGES[code])
+                    raise
                 return self._send(200, _public(result))
             if path == "/api/llm/mode":
                 body = self._body()
@@ -163,6 +272,54 @@ class Handler(BaseHTTPRequestHandler):
                 status = llm.status()
                 status["switched"] = True
                 return self._send(200, status)
+            if path == "/api/llm/test":
+                # 一键诊断：无论成功或失败一律 200，返回可读原因与修复建议；不写审计链
+                return self._send(200, llm.test_connection())
+            if path.startswith("/api/plugins/") and path.endswith("/toggle"):
+                plugin_id = unquote(path[len("/api/plugins/"):-len("/toggle")].strip("/"))
+                try:
+                    body = self._body()
+                except (ValueError, TypeError):
+                    return self._error(400, "INVALID_BODY", "参数不合法")
+                if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+                    return self._error(400, "INVALID_BODY", "参数不合法")
+                try:
+                    plugin = plugins.set_enabled(plugin_id, bool(body["enabled"]), conn=CONN)
+                except plugins.PluginNotFound:
+                    return self._error(404, "PLUGIN_NOT_FOUND", "插件不存在")
+                except plugins.PluginLocked:
+                    return self._error(403, "PLUGIN_CORE_LOCKED", "核心能力不可停用")
+                except Exception:  # noqa: BLE001 - 插件开关失败要给可读错误，不泄堆栈
+                    return self._send(500, {"ok": False, "error": "服务不可用"})
+                return self._send(200, {"ok": True, "plugin": plugin, "counts": plugins.counts()})
+            if path == "/api/push":
+                # 主动触达：只读数据库生成文案、写审计、可选转发渠道；失败一律 200 带可读原因
+                try:
+                    body = self._body()
+                except (ValueError, TypeError):
+                    return self._error(400, "INVALID_BODY", "请求体不是合法 JSON")
+                if not isinstance(body, dict):
+                    return self._error(400, "INVALID_BODY", "请求体必须是 JSON 对象")
+                kind = body.get("kind") or push.DEFAULT_KIND
+                if not isinstance(kind, str) or kind.strip().lower() not in push.KINDS:
+                    return self._error(400, "BAD_KIND", "kind 只能是 %s" % " / ".join(push.KINDS))
+                user_id = body.get("user_id") or config.DEFAULT_USER_ID
+                if not isinstance(user_id, str):
+                    return self._error(400, "BAD_REQUEST", "user_id 必须是字符串")
+                return self._send(200, push.push(CONN, kind, user_id))
+            if path == "/api/scheduler/tick":
+                # 手动触发一次到期检查（演示/测试用）；后台线程也调用同一 tick
+                mod = _scheduler_mod()
+                if mod is None:
+                    return self._send(200, {"ok": True, "checked": 0, "executed": [], "failed": [],
+                                            "ts": db.now_iso(), "note": "调度器未启用"})
+                try:
+                    result = mod.tick(CONN) or {}
+                except Exception:  # noqa: BLE001 - 单次调度失败不能影响服务
+                    return self._send(500, {"ok": False, "error": "调度执行失败"})
+                return self._send(200, {"ok": True, "checked": int(result.get("checked") or 0),
+                                        "executed": result.get("executed") or [], "failed": result.get("failed") or [],
+                                        "ts": result.get("ts") or db.now_iso()})
             if path == "/api/undo":
                 body = self._body()
                 result = engine.undo_action(CONN, body.get("session_id") or "", body.get("action_id") or "")
@@ -255,6 +412,155 @@ def _list_tasks():
     return tasks
 
 
+def _to_int(value, default: int) -> int:
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _tasks_page(query) -> dict:
+    """快捷指令分页：只有传 limit 才分页；无参数时返回与旧版完全一致的全量。
+
+    limit 合法区间 1..50，非法/<=0/非数字回落 6；offset 非法/负数按 0 处理，
+    越界返回空列表（200，不报错）。has_more = offset + len(tasks) < total。
+    """
+    tasks = _list_tasks()
+    if "limit" not in query:
+        return {"tasks": tasks}
+    limit = _to_int((query.get("limit") or ["6"])[0], 6)
+    if limit < 1 or limit > 50:
+        limit = 6
+    offset = _to_int((query.get("offset") or ["0"])[0], 0)
+    if offset < 0:
+        offset = 0
+    total = len(tasks)
+    page = tasks[offset:offset + limit] if offset < total else []
+    return {"tasks": page, "total": total, "offset": offset, "limit": limit,
+            "has_more": offset + len(page) < total}
+
+
+def _mask_token(token: str) -> str:
+    """令牌脱敏展示：只保留前 4 位与末 2 位，绝不回传明文。"""
+    token = str(token or "")
+    if not token:
+        return ""
+    if len(token) <= 8:
+        return "*" * len(token)
+    return token[:4] + "***" + token[-2:]
+
+
+_MCP_PLUGIN_IDS = {"fx": "mcp-fx", "risk": "mcp-risk"}
+
+
+def _mcp_status() -> dict:
+    """MCP 状态超集：保留 mcp_client.status() 既有字段，只增不改。
+
+    - 每个 server 补 status（ok -> "ok"，否则 "degraded"）；
+    - 对应插件被停用时 status="disabled"、ok=false、degraded=true、last_error="插件已停用"
+      （插件停用优先于运行态展示；MCP_ENABLED=0 的「整体关闭」语义保持不变）；
+    - 顶层补 ok=true（接口本身可用）。前端已按这些字段渲染，故既有字段一个不少。
+    """
+    body = mcp_client.status()
+    servers = []
+    for item in body.get("servers") or []:
+        row = dict(item)
+        plugin_id = _MCP_PLUGIN_IDS.get(str(row.get("name") or ""))
+        if plugin_id and not plugins.is_enabled(plugin_id):
+            row["status"] = "disabled"
+            row["ok"] = False
+            row["degraded"] = True
+            row["last_error"] = "插件已停用"
+        else:
+            row["status"] = "ok" if row.get("ok") else "degraded"
+        servers.append(row)
+    body["servers"] = servers
+    body["ok"] = True
+    return body
+
+
+def _skills_status() -> dict:
+    """技能卡状态超集：保留 skills.status() 既有字段，只增不改。
+
+    每张卡补 risk（按工具动钱程度静态分级）与 tool（首个工具名，缺省 read_only），
+    前端已按这两个字段着色/展示，故不动既有字段；未知 id 兜底 medium。
+    skill-pack 插件停用时整体返回空列表，并带 disabled=true。
+    """
+    if not plugins.is_enabled("skill-pack"):
+        return {"count": 0, "skills": [], "disabled": True}
+    body = skills.status()
+    risk_map = {
+        "bills": "low",
+        "subscriptions": "low",
+        "cards": "medium",
+        "wealth": "medium",
+        "transfer": "high",
+        "cross": "high",
+    }
+    cards = []
+    for item in body.get("skills") or []:
+        row = dict(item)
+        row["risk"] = risk_map.get(str(row.get("id") or ""), "medium")
+        tools = row.get("tools") or []
+        row["tool"] = str(tools[0]) if tools else "read_only"
+        cards.append(row)
+    body["skills"] = cards
+    return body
+
+
+def _channel_status() -> dict:
+    """渠道服务状态：配置、webhook 地址与最近几条投递记录（不含令牌明文）。
+
+    每次调用都从 config 现读，便于演示时改环境变量后热切换；日志按行 JSON，
+    损坏行直接跳过，不影响接口可用性。会话数每次现读 sessions.json，失败按 0。
+    """
+    enabled = bool(getattr(config, "CHANNEL_ENABLED", False)) and plugins.is_enabled("channel-im")
+    port = int(getattr(config, "CHANNEL_PORT", 8400) or 8400)
+    token = str(getattr(config, "CHANNEL_TOKEN", "") or "")
+    log_path = Path(getattr(config, "CHANNEL_MESSAGE_LOG", BASE / "channels" / "messages.jsonl"))
+    recent = []
+    try:
+        if log_path.exists():
+            lines = [line for line in log_path.read_text(encoding="utf-8", errors="ignore").splitlines() if line.strip()]
+            for line in lines[-5:]:
+                try:
+                    recent.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        recent = []
+    sessions = 0
+    sessions_path = Path(getattr(config, "CHANNEL_SESSIONS_FILE", Path(log_path).parent / "sessions.json"))
+    if enabled:  # 渠道插件停用时按 0 展示，其余字段保留
+        try:
+            if sessions_path.exists():
+                session_data = json.loads(sessions_path.read_text(encoding="utf-8"))
+                if isinstance(session_data, dict):
+                    sessions = len(session_data)
+        except (OSError, ValueError):
+            sessions = 0
+    return {
+        "enabled": enabled,
+        "port": port,
+        "webhook_url": "http://127.0.0.1:%d/message" % port,
+        "token_set": bool(token),
+        "token_configured": bool(token),
+        "token_masked": _mask_token(token),
+        "sessions": sessions,
+        "message_log": str(log_path),
+        "recent": recent,
+    }
+
+
+def _scheduler_mod():
+    """预约转账调度器：模块缺失时返回 None，服务照常启动（手动 tick 也返回空结果）。"""
+    try:
+        from app import scheduler
+        return scheduler
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class Server(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -264,6 +570,12 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8000"))
     host = os.environ.get("HOST", "127.0.0.1")
     httpd = Server((host, port), Handler)
+    mod = _scheduler_mod()
+    if mod is not None:
+        try:
+            mod.start_background()
+        except Exception:  # noqa: BLE001 - 调度器起不来也要能演示
+            print("调度器启动失败，预约转账只能手动触发")
     print("ZeroStep 已在 http://%s:%d 启动（LLM 模式：%s，演示模式：%s）" %
           (host, port, llm.effective(), "开" if config.DEMO_MODE else "关"))
     try:
@@ -271,6 +583,11 @@ def main() -> None:
     except KeyboardInterrupt:
         print("\n已停止")
     finally:
+        if mod is not None:
+            try:
+                mod.stop_background()
+            except Exception:  # noqa: BLE001
+                pass
         httpd.server_close()
 
 

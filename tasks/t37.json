@@ -1,0 +1,44 @@
+{
+  "id": "t37",
+  "title": "理财赎回 1000 元稳利宝",
+  "category": "wealth",
+  "user_id": "u001",
+  "turns": [
+    "把稳利宝赎回来 1000 元"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "wealth_redeem",
+    "plan_tools": [
+      "redeem_wealth"
+    ],
+    "expected_skill": "wealth",
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "expected_rules": [
+      {
+        "rule": "reversed_window",
+        "contains": "60 秒",
+        "digit": true
+      }
+    ],
+    "expected_tools": [
+      "redeem_wealth"
+    ],
+    "reply_contains": [
+      "已赎回",
+      "¥1,000.00",
+      "审计链"
+    ],
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "redeem_wealth"
+      ]
+    }
+  },
+  "judge_rubric": "自然语言赎回理财：中风险二次确认，赎回金额回到活期并写入审计链"
+}

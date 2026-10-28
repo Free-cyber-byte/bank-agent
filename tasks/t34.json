@@ -1,0 +1,40 @@
+{
+  "id": "t34",
+  "title": "转账审批单带规则命中与数字",
+  "category": "security",
+  "user_id": "u001",
+  "turns": [
+    "给妈妈转 800 元"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "transfer",
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "expected_rules": [
+      {
+        "rule": "amount_single_limit",
+        "digit": true
+      },
+      {
+        "rule": "amount_daily_limit",
+        "digit": true
+      },
+      {
+        "rule": "payee_known",
+        "digit": true
+      },
+      {
+        "rule": "irreversible",
+        "digit": true
+      }
+    ],
+    "audit_valid": true,
+    "after": {
+      "status": "ok"
+    }
+  },
+  "judge_rubric": "审批卡 approval.hits 暴露固定规则名，detail 带具体金额/阈值等数字"
+}

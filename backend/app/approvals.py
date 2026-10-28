@@ -4,7 +4,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional, Tuple
 
-from . import config, db, totp
+from . import config, db, second_factor, totp
 
 
 def _now() -> datetime:
@@ -57,8 +57,14 @@ def mark(conn, approval_id: str, status: str) -> None:
     conn.commit()
 
 
-def check(conn, approval_id: str, decision: str, code: str, user_id: str) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
-    """返回 (ok, error_code, approval)。"""
+def check(conn, approval_id: str, decision: str, code: str, user_id: str,
+          method: str = "") -> Tuple[bool, str, Optional[Dict[str, Any]]]:
+    """返回 (ok, error_code, approval)。
+
+    method 为可选的校验方式（v0.4.1 多因子）：approve 且审批要求动态码时，
+    m = method or "totp"；totp 走原动态码校验（向后兼容），sms 校验短信验证码
+    （code 即短信码），face 校验人脸令牌（code 即 fc_ 令牌）。
+    """
     ap = get(conn, approval_id)
     if not ap:
         return False, "APPROVAL_NOT_FOUND", None
@@ -71,6 +77,15 @@ def check(conn, approval_id: str, decision: str, code: str, user_id: str) -> Tup
     if decision not in ("approve", "reject"):
         return False, "INVALID_DECISION", ap
     if decision == "approve" and ap["challenge"] == "totp":
-        if not totp.verify_code(user_id, code or "", window=config.TOTP_WINDOW):
+        factor = (method or "totp").strip().lower()
+        if factor not in ("totp", "sms", "face"):
+            return False, "INVALID_METHOD", ap
+        if factor == "sms":
+            if not second_factor.sms_verify(user_id, code or ""):
+                return False, "INVALID_SMS", ap
+        elif factor == "face":
+            if not second_factor.face_verify(user_id, code or ""):
+                return False, "INVALID_FACE", ap
+        elif not totp.verify_code(user_id, code or "", window=config.TOTP_WINDOW):
             return False, "INVALID_OTP", ap
     return True, "", ap

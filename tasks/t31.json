@@ -1,0 +1,25 @@
+{
+  "id": "t31",
+  "title": "汇率换算（MCP 外部汇率，不可用时降级）",
+  "category": "mcp",
+  "user_id": "u001",
+  "turns": [
+    "1000 元换成美元是多少"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "query_fx",
+    "plan_tools": [
+      "fx_convert"
+    ],
+    "expected_tools": [
+      "fx_convert"
+    ],
+    "reply_contains_any": [
+      "0.1403",
+      "外部实时汇率"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "query_fx 必须走 fx_convert 步骤；外部服务可用时给外部实时汇率，不可用时按内置参考价 0.1403 降级出结果，不报错、不臆造汇率"
+}

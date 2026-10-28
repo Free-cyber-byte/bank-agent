@@ -2,9 +2,9 @@
 
 > **一句话定位：说出来就办好，钱不会乱动。**
 
-ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的可运行参考实现：用户用一句自然语言说出需求，Agent 走完「理解 → 规划 → 策略校验 → 执行 → 回读 → 回复」六阶段流水线，把查询、转账、理财、卡片、订阅、跨场景分账真正做完。它同时是一份可被审计、可被评测的工程样本：资金动作全部由确定性工具执行，模型只负责产出意图与槽位，任何高风险动作都必须经过确认或 TOTP 动态口令，整条事件链用 SHA-256 哈希链固化。
+ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的可运行参考实现：用户用一句自然语言说出需求，Agent 走完「理解 → 规划 → 策略校验 → 执行 → 回读 → 回复」六阶段流水线，把查询、转账、理财、卡片、订阅、跨场景分账真正做完。它同时是一份可被审计、可被评测的工程样本：资金动作全部由确定性工具执行，模型只负责产出意图与槽位，任何高风险动作都必须经过用户确认或强验证因子（TOTP 动态码 / 短信码 / 人脸令牌），连续可疑操作还会临时锁定会话；整条事件链用 SHA-256 哈希链固化。
 
-本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库，30 条评测任务实测全部通过。
+本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.4.1：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），评测任务 36 → 46 条，规则模式实测 46/46 通过（v0.1.0 基线为 30 条）。
 
 ---
 
@@ -15,7 +15,153 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 3. **大模型接入（三模式）**：解析层真实接入大模型（默认 DeepSeek deepseek-flash，改两个环境变量即可换成任意 OpenAI 兼容服务），支持 rule / llm / auto 三种模式，默认 auto——无 Key 自动回落规则，有 Key 由模型输出意图与槽位；模型输出经严格 schema、金额原文溯源与通讯录匹配校验，攻击判定始终由代码先行，模型不可信、不可授权。
 4. **可中断、可恢复**：超过 1000 元或新收款人等高风险动作会挂起为审批态，靠 checkpoint 与 thread_id 持久化上下文，审批 TTL 300 秒；前端关掉再回来仍能继续同一个线程。
 5. **可审计、可复盘**：每一次意图、策略决策、工具调用、审批、撤销都写入 events 与 audit 表，审计用 canonical JSON + SHA-256 + prev_hash 组成哈希链，scripts/verify_audit.py 可离线验证链是否被篡改；转账支持 60 秒内撤销，并在写后回读余额做二次校验。
-6. **可评测、可扩展**：tasks/ 下 30 条任务覆盖 7 个类别（账单、转账、理财、卡片、订阅、跨场景、安全攻击），scripts/run_tasks.py 一条命令跑完全部断言，两种解析模式实测均 30/30 通过，并带 --filter、--category、JSON 报告等选项，新增用例只需加一个 JSON 文件。
+6. **可评测、可扩展**：tasks/ 下 46 条任务（v0.1.0 的 30 条 + v0.2.0 的 t31–t36 + v0.4.0 的 t37–t43 + v0.4.1 的 t44–t46）覆盖 8 个类别（账单、转账、理财、卡片、订阅、跨场景、安全攻击、外部服务），scripts/run_tasks.py 一条命令跑完全部断言，v0.4.1 规则模式实测 46/46 通过（v0.1.0 的 30 条在两种解析模式下均 30/30），并带 --filter、--category、JSON 报告等选项，新增用例只需加一个 JSON 文件。
+7. **能力插件化、可启停**：v0.3.0 把核心策略、审计、外部服务、模型通道、技能包、IM 渠道注册为 7 个插件，「插件」页可查看依赖、环境变量、接口与状态并单独启停；核心两项锁定不可停用，任何停用都不会放宽资金边界（policy、审批、TOTP 与哈希链始终生效）。
+8. **模型接入加固（v0.3.1）**：默认关闭思考模式，单次超时 8 秒、单轮预算 10 秒、max_tokens 800；空 content 与坏 JSON 重试一次，429/5xx 快速重试，连续 3 次失败熔断 60 秒自动回退规则；设置页「测试连接」与 POST /api/llm/test 可一键验通，status 暴露用量、成本与熔断状态。
+9. **全渠道触达与手机端（v0.3.2）**：三种渠道形态（Web / IM webhook / 企业微信回调）共用同一套会话与安全内核；主服务可主动推送订阅扣费、大额支出、还款到期三类提醒并写审计；手机端收口为顶栏 + 底部 tabbar，支持安装为 PWA；企微回调自带验签、AES 解密与 MsgId 去重。
+10. **资金动作更完整、预约可审批（v0.4.0）**：新增理财赎回、卡限额调整、刷卡消费、异常交易扫描、年度账单、手机号转账与预约转账 7 类动作；预约创建时审批一次，到期由进程内调度器以幂等键自动执行并写审计；参数级拦截（LIMIT_INVALID / CARD_SINGLE_LIMIT / CARD_DAILY_LIMIT）在执行前给出可解释文案；评测任务增至 43 条（v0.4.1 起为 46 条），规则模式实测 43/43（v0.4.1 起为 46/46）。
+11. **红色动作多因子、可疑会话熔断（v0.4.1）**：挂失/解挂从 MEDIUM 升为 HIGH，审批单带 factors=[totp,sms,face]，动态码、短信、人脸任一因子确认即可执行；同一会话 10 分钟内累计 3 次被拦或注入，自动临时锁定 300 秒，锁定检查在解析之前，期间零资金动作，且触发与解锁都写审计。
+
+---
+
+## v0.4.1 新能力（多因子强验证 · 会话锁定）
+
+v0.4.1 是一次安全加固批次，不改资金工具、金额阈值、审批 TTL、撤销窗口与审计链，只把「红色动作怎么确认」和「连续可疑行为怎么办」补上。
+
+| 能力 | 内容 | 文档 |
+| --- | --- | --- |
+| 挂失/解挂升红 | set_card_status 从 MEDIUM_TOOLS 移入 HIGH_TOOLS；审批单 risk=high，规则 card_status_change（detail 带卡号后四位） | [docs/security.md](docs/security.md) |
+| 三因子强验证 | 审批单新增 factors：[totp,sms,face]（仅 high，其余为空数组）；POST /api/approval 可带 method，取 totp / sms / face 任一因子确认，缺省仍是 totp | [docs/api.md](docs/api.md) |
+| 因子通道 | 短信 6 位、TTL 120 秒、单次使用、5 次错误作废；人脸返回 fc_ 令牌、TTL 60 秒、一次性；两者都在内存、不写库 | [docs/architecture.md](docs/architecture.md) |
+| 会话异常锁定 | 同一会话 10 分钟内累计 3 次被拦（策略拦截或注入），临时锁定 300 秒；锁定检查在解析之前，期间返回 status=locked 且零资金动作 | [docs/security.md](docs/security.md) |
+| 演示接口 | GET /api/demo/sms 返回短信码，POST /api/demo/face 返回人脸令牌，均受 DEMO_MODE 控制（关闭时 403） | [docs/api.md](docs/api.md) |
+
+同时升级：
+
+- 版本 0.4.1（VERSION 唯一来源，改后需重启进程生效）。
+- 评测 43 → 46 条：新增 t44 挂失强验证、t45 连续被拦锁定、t46 连续注入锁定；规则模式实测 46/46 通过（2026-10-28 本机），前端自检 PASS=206 FAIL=0（v0.4.0 为 190）；QA 的 scripts/security_factor_e2e.py 53/53（环境 4、挂失红 7、method 分发 8、人脸 4、短信 3、TOTP 3、锁定 10、隔离与重置 4、冷却恢复 4、收尾 6）；v0.4.1 全量回归 17 步全部 exit 0、0 FAIL（审计链 valid checked=105、85 个冻结文件 SHA 前后一致、端口零残留），报告 audit/qa-report-v0.4.1.md（2026-10-28，227 行）建议冻结。
+- 新增审计事件 security_locked（risk high）、security_unlocked（risk medium）与 turn_locked（tool=security_lock）；SSE 新增 security_lock；审批通过时 approval_granted 的 result 记录实际使用的 method。
+- 新增环境变量 SMS_TTL、FACE_TTL、SMS_MAX_ATTEMPTS、SECURITY_LOCK_THRESHOLD、SECURITY_LOCK_WINDOW_SECONDS、SECURITY_LOCK_SECONDS（见下表）。
+- 兼容性：MEDIUM 审批仍是 confirm，只有 challenge=totp 的审批才校验因子；POST /api/approval 不带 method 时行为与 v0.4.0 完全一致。
+- 界面：高风险审批卡新增「本次校验方式」三选一（动态码 / 短信 / 人脸），短信演示码可点击填入，人脸令牌显示有效期与过期提示；会话锁定时顶部红色 InfoBar 显示剩余秒数、禁用输入与发送，归零自动恢复（前端自检增至 206 项）。
+
+已知限制：短信码与人脸令牌是内存态，重启或换实例即失效；短信不真的外发、人脸只是令牌不是生物识别；锁定按 session_id 计算，换新会话可绕过，也没有 IP/设备级封禁；多因子是「或」不是「且」，不支持一次要求两种因子；挂失/解挂虽可用短信或人脸，但审批单 challenge 字段仍是 totp。
+
+---
+
+## v0.4.0 新能力（资金动作扩展 · 预约转账）
+
+v0.4.0 在原有查询、转账、理财申购、卡片与订阅之上新增 6 个意图（对外表现为 7 类能力），并把「到点自动执行」做成一次审批、可审计的预约。资金链路、策略门、审批、TOTP 与审计哈希链都不改，新增工具全部走同一个 policy 与同一个审计入口。
+
+| 能力 | 用户怎么说 | 工具 | 风险等级 |
+| --- | --- | --- | --- |
+| 理财赎回 | 把稳利宝赎回 1000 元 | redeem_wealth | MEDIUM 确认 |
+| 卡限额调整 | 信用卡日累计限额调到 5000，单笔 1000 | set_card_limit | MEDIUM 确认 |
+| 刷卡消费 | 用信用卡在星巴克消费 35 元 | card_spend | 1000 元内 MEDIUM，超过 TOTP |
+| 异常交易扫描 | 帮我看看最近有没有异常交易 | scan_anomalies | LOW 自动 |
+| 年度账单 | 2026 年年度账单 | annual_report | LOW 自动 |
+| 手机号转账 | 给 13800001111 转 100 元 | create_transfer | 按金额与收款人判定 |
+| 预约转账 | 明天上午 9 点给妈妈转 100 元 | create_scheduled_transfer | 1000 元内确认，超过 TOTP |
+
+关键语义：
+
+- 预约转账创建时审批一次，到期由调度器自动执行、不再二次打扰；执行走与手动转账相同的工具与审计，幂等键 sched_<sched_id> 防重复扣款。SCHEDULER_ENABLED=1 默认开启，SCHEDULER_INTERVAL=5 秒检查一次，也可 POST /api/scheduler/tick 手动触发。
+- 参数级拦截在规划阶段就给出可解释文案：限额小于等于 0 或单笔大于日累计返回 LIMIT_INVALID；刷卡超单笔 / 超日累计返回 CARD_SINGLE_LIMIT / CARD_DAILY_LIMIT，均不进入执行。
+- 只读能力（异常扫描、年度账单、预约列表）自动放行，但同样写事件与审计；手机号转账命中通讯录仍按 payee_known / payee_new / payee_unverified 判定，陌生号码首笔仍需强验证。
+
+同时升级：
+
+- 版本 0.4.0（VERSION 唯一来源，需重启进程生效）。
+- 评测 43/43、前端自检 PASS=190 FAIL=0（2026-10-27 本机实测）；QA 全量回归（audit/qa-report-v0.4.0.md，2026-10-27 23:50 冻结批次）全绿：15/15 步 exit 0、0 FAIL，能力端到端 scripts/capability_e2e.py 63/63。
+- 种子数据升级：SEED_VERSION 2026.10.29，新增 4 条固定演示异常流水 DEMO_ANOMALY_001..004，收款人补手机号（妈妈 13800001111、房东王姐 13900002222、李明 13700003333），新增 card_txns 与 scheduled_transfers 表。
+
+已知限制：POST /api/scheduler/tick 不接受 body 指定时间；预约只在创建时审批一次；跨场景提醒仍硬编码生日模板；无浏览器像素级验证、?theme=classic 未做。
+
+---
+
+## v0.3.2 新能力（企业微信回调 · 主动触达 · 手机端与 PWA）
+
+v0.3.2 不改资金链路与安全语义，只扩展「消息怎么进来、提醒怎么出去、手机上怎么用」。渠道进程与企微进程都是可选的，不起不影响主服务、Web 页面与 36 条评测。
+
+| 能力 | 内容 | 文档 |
+| --- | --- | --- |
+| 企业微信回调 | backend/channels/wecom.py + wecom_crypto.py：URL 验签、AES-128-CBC 解密、XML 转发、加密被动回包；默认 8401，MsgId 去重 300 秒 | [docs/channel.md](docs/channel.md) |
+| 主动触达 | POST /api/push：subscription / large_txn / repayment 三类提醒，三态 not_configured / delivered / failed，每次写 push_message 审计 | [docs/api.md](docs/api.md) |
+| 手机端 | ≤720px 顶栏精简、模式切换移入抽屉、底部 tabbar（工作台/技能/插件/设置，56px + 安全区）、审批弹层按 visualViewport 限高 | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
+| PWA | manifest.webmanifest（standalone、5 个图标含 maskable、theme #0B5FD0）+ sw.js（外壳预缓存、/api/ 永不缓存、导航 network-first 回落） | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
+| 模拟推送 | 设置页「模拟推送」卡：三种 kind、一键预览、结果四态，演示环境不真的发短信 | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
+
+同时升级：
+
+- 版本号 0.3.2：/api/health 与插件 version 字段读取仓库根 VERSION，改后需重启进程生效。
+- 实测（2026-10-27 QA 全量回归 audit/qa-report-v0.3.2.md）：15/15 步 exit 0、0 FAIL——企业微信自检 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13（含 PWA 静态资源 3 组）、frontend/_selftest.js PASS=182 FAIL=0；36 条业务评测口径不变，基线为 run_tasks 36/36。
+- QA 报告结论：全绿、建议冻结 v0.3.2。
+
+---
+
+## v0.3.1 新能力（模型接入加固）
+
+v0.3.1 只动解析层的模型调用，不新增业务动作，也不改策略门、审批、TOTP、审计与资金边界；模型仍然只是不可信的解析器。
+
+| 能力 | 内容 | 文档 |
+| --- | --- | --- |
+| 关思考、控预算 | DEEPSEEK_THINKING=disabled、DEEPSEEK_TIMEOUT=8、DEEPSEEK_BUDGET=10、DEEPSEEK_MAX_TOKENS=800 | [docs/architecture.md](docs/architecture.md) |
+| 重试与熔断 | 空 content / 坏 JSON / 429 / 5xx / 网络超时重试 1 次（退避 600ms）；401/402/403/404/422 不重试；连续 3 次失败熔断 60 秒，冷却期内直接规则解析 | [docs/security.md](docs/security.md) |
+| 可观测 | GET /api/llm/status 新增 stats / breaker / degraded / last_error_code / last_error_hint；成本按 tokens 估算 | [docs/api.md](docs/api.md) |
+| 连接测试 | POST /api/llm/test 恒 200；真实调用计入用量与熔断统计，唯一不写审计链；设置页「模型接入」卡一键测试并展示用量与熔断状态 | [docs/api.md](docs/api.md) |
+| 自检工具 | scripts/llm_stub_server.py 测试桩（已支持 v0.4.0 六类新意图，仅测试用）、scripts/llm_e2e.py 8 场景、scripts/llm_smoke.py 真实 Key 冒烟 | [docs/evaluation.md](docs/evaluation.md) |
+
+同时升级：
+
+- 版本号 0.3.1：/api/health 与插件 version 字段读取仓库根 VERSION，改后需重启进程生效。
+- 实测（2026-10-27）：llm_e2e 8/8 场景、52/52 项检查；前端 selftest PASS=134 FAIL=0；run_tasks 36/36；smoke_llm_fallback 6/6、llm_smoke exit 0。正式 QA 报告已出（工作区 audit/qa-report-v0.3.1.md，2026-10-27 22:15）：13 项全绿、0 FAIL。
+- 成本量级：按官方空闲时段单价，实测样例单次 ¥0.00056048（0.56 厘），1000 次约 ¥0.56；高峰时段翻倍，约 ¥1.12。
+
+---
+
+## v0.3.0 新能力（插件注册表 · 换一批 · 插件页）
+
+v0.3.0 不新增业务动作，也不改 v0.2.0 的接口语义；它把已有能力显式注册、可观测、可启停，并给首页快捷指令加上分批轮换。
+
+| 能力 | 内容 | 文档 |
+| --- | --- | --- |
+| 插件注册表 | 7 个内置插件、五类 kind；GET /api/plugins 返回状态与依赖，POST /api/plugins/<id>/toggle 启停；状态写入 PLUGINS_FILE，重启保持 | [docs/plugins.md](docs/plugins.md) |
+| 插件页 | 顶栏「插件」入口，2 列卡片：类别、名称、状态徽章（已启用/已停用/降级）、版本、能力 chip、开关与手风琴详情 | [docs/design-system.md](docs/design-system.md) |
+| 换一批 | GET /api/tasks 支持 limit/offset/total/has_more；首页快捷指令每批 6 条，「换一批 · x/N」轮换，请求失败回退内置清单 | [docs/api.md](docs/api.md) |
+| 停用语义 | core 的 policy/audit 锁定不可停用；mcp 停用走内置降级、intent-llm 停用回规则、skill-pack/channel-im 停用后对应接口返回空或不可用，但资金动作的安全判定不变 | [docs/plugins.md](docs/plugins.md) |
+
+同时升级：
+
+- 版本号 0.3.0（当时 VERSION 值），/api/health 与插件 version 字段读取仓库根 VERSION（改后需重启新进程生效）；当前为 0.4.1。
+- 测试（2026-10-27 QA 回归，全部 exit 0）：run_tasks 36/36、plugin_e2e 17/17、smoke18 18/18（审计链 valid，checked=81）、smoke_normalize 10/10、skill_check 6/6、mcp_e2e 7/7、channel_e2e 9/9、verify_audit valid 13 条、前端 selftest PASS=100 FAIL=0。明细见工作区根 audit/qa-report-v0.3.0.md（2026-10-27，212 行，0 FAIL）。
+
+插件状态落盘与演示前检查：
+
+- 状态文件 backend/data/plugins.json，可用环境变量 PLUGINS_FILE 指定路径；POST /api/admin/reset 会把它一并复位，该文件已被 .gitignore 忽略，不进仓库。
+- 演示前先看 GET /api/plugins 的 enabled_count 是否为 7（七项均启用）；不是的话在设置页点「全部恢复」或调用 POST /api/admin/reset，再刷新界面。
+- 版本号在进程启动时从仓库根 VERSION 读取（v0.3.0 当时为 0.3.0，当前为 0.4.1），改完要重启才生效（已知限制）。
+
+---
+
+## v0.2.0 新能力（MCP · Skill · 渠道 · Win11 界面）
+
+v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨架零回归，已完成的行为只加字段、不改语义；新增外部数据只当数据，只能加严、不能放宽。
+
+| 能力 | 内容 | 文档 |
+| --- | --- | --- |
+| MCP 外部只读服务 | 汇率 fx_convert、反欺诈 risk_screen；超时 10 秒、连接 2 秒，失败自动降级到内置实现 | [docs/mcp.md](docs/mcp.md) |
+| Skill 技能包 | 六张业务卡（转账/账单/理财/卡片/订阅/跨场景）参与规则解析与模型提示词，只影响听懂与规划 | [docs/skills.md](docs/skills.md) |
+| IM 渠道适配层 | webhook + 两步确认 + 10 秒幂等 + token 鉴权，回包不带审批凭据；v0.3.2 扩展为双向触达（企微回调 + 主动推送 + 手机端/PWA） | [docs/channel.md](docs/channel.md) |
+| 界面 v4 | Win11 Fluent，7 档字号、264/1fr/296 三栏，新增技能页、外部服务页、设置页渠道卡 | [docs/design-system.md](docs/design-system.md) |
+
+同时升级：
+
+- **策略命中可解释**：policy 新增 hits（规则名 + 带数字的 detail），审批卡最多 3 行「为什么需要你确认」。
+- **注入防御加固**：NFKC 归一化、零宽字符清洗、同形字映射、去空格紧凑串检测，8 条绕过样本全部检出。
+- **新意图 query_fx**：汇率/换汇/兑换类问题规划为单步 fx_convert。
+- **评测扩到 36 条**：新增 t31–t36，覆盖外部汇率、外部关闭降级、技能命中、policy hits、注入绕过、账单+提醒跨场景；2026-10-27 全量实测 36/36 通过（规则模式）。
+
+版本号见 VERSION（0.4.1），后端 config.py 从该文件读取且为唯一来源，/api/health 的 version 字段与之一致；变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -45,15 +191,17 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     HTTP 层  backend/server.py（http.server，零依赖，含路径穿越防护）
         ▼
     编排层  backend/app/engine.py
-        run_turn：parse_intent → plan → policy_gate → act → verify → respond
+        run_turn：lock_check → parse_intent → plan → policy_gate → act → verify → respond
                  parse_intent = llm.parse（按 rule / llm / auto 分派到规则或模型）
-        resume  ：审批恢复（checkpoint + thread_id）
+        resume  ：审批恢复（checkpoint + thread_id，支持 totp / sms / face）
         ▼
     解析与安全  llm.py（可选模型解析，三模式） · nlu.py（规则解析/攻击识别） ·
-                policy.py（三级权限） · approvals.py（审批单/TTL） ·
-                totp.py（RFC 6238） · audit.py（哈希链）
+                policy.py（三级权限） · approvals.py（审批单/TTL/多因子） ·
+                totp.py（RFC 6238） · second_factor.py（短信/人脸） ·
+                locks.py（会话异常锁定） · audit.py（哈希链）
         ▼
-    领域层  backend/app/mock_core.py（转账/理财/卡片/订阅/还款/提醒，金额整数分）
+    领域层  backend/app/mock_core.py（转账/理财申赎/卡限额与刷卡/预约/订阅/提醒，金额整数分）
+    调度  backend/app/scheduler.py（每 5 秒检查到期预约，幂等执行并写审计）
         ▼
     存储层  SQLite（backend/data/bank.db）：账户、流水、转账、审批、
             会话、checkpoint、事件、审计链
@@ -72,9 +220,18 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     # 中文不会乱码，并自动打开浏览器；默认端口 8000，可用 set PORT=8010 覆盖。
     # 若在旧版 PowerShell 里手动起服务看到乱码，先执行 $env:PYTHONUTF8 = "1"。
 
-服务默认监听 127.0.0.1:8000，浏览器打开 http://127.0.0.1:8000 即可对话。首次启动会自动建库并写入确定性种子数据（3 个用户、6 个月流水、5 个收款人、4 支理财、5 个订阅）。
+服务默认监听 127.0.0.1:8000，浏览器打开 http://127.0.0.1:8000 即可对话。首次启动会自动建库并写入确定性种子数据（SEED_VERSION 2026.10.29：3 个用户、6 个月流水、5 个收款人且含手机号、4 支理财、5 个订阅，另含卡流水与 4 条固定演示异常流水）。
 
-不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，30 条评测全部通过。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / 模型」之间切换（「模型」即调用大模型解析，悬停可看到当前厂商与模型名）。
+手机访问：用 HOST=0.0.0.0 启动（Windows 可先 set HOST=0.0.0.0），手机与电脑在同一局域网，浏览器打开 http://<电脑局域网IP>:8000。页面在 ≤720px 自动切换为手机布局，可「添加到主屏幕」；PWA 的 Service Worker 只在 localhost 或 HTTPS 下注册，局域网 HTTP 仍可正常使用页面，只是没有离线缓存。
+
+启动后先看两个只读接口，确认版本与插件清单：
+
+    curl.exe -s http://127.0.0.1:8000/api/health
+    curl.exe -s http://127.0.0.1:8000/api/plugins
+
+/api/health 返回 version=0.4.1；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/8」（46 条任务按每批 6 条分 8 批）。
+
+不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，46 条评测全部通过（规则模式）。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / 模型」之间切换（「模型」即调用大模型解析，悬停可看到当前厂商与模型名）。
 
 配置模型（二选一，环境变量优先于 .env）：
 
@@ -86,7 +243,7 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
     $env:DEEPSEEK_API_KEY = "sk-..."   # PowerShell
     set DEEPSEEK_API_KEY=sk-...        # cmd
 
-Key 只在本机读取，不写入仓库、数据库、事件或审计日志；接口与页面只显示掩码后的后四位。没有 .env 文件时程序静默跳过，行为与未配置完全一致。
+Key 只在本机读取，不写入仓库、数据库、事件或审计日志；接口与页面只显示掩码（长度足够时保留前 6 位与后 4 位，否则只留前 2 位）。没有 .env 文件时程序静默跳过，行为与未配置完全一致。
 
 常用环境变量：
 
@@ -98,8 +255,23 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 | DEEPSEEK_API_KEY | 空 | 可选。设置后启用 LLM 解析（默认 auto 模式下生效）；不设置时自动使用规则解析，功能与评测结果不受影响。可写在 .env 中 |
 | DEEPSEEK_BASE_URL | https://api.deepseek.com | 可选。OpenAI 兼容接口地址，接入其他兼容服务时只需改这一项 |
 | DEEPSEEK_MODEL | deepseek-flash | 可选。模型名，需与接口支持的型号一致 |
-| DEEPSEEK_TIMEOUT | 12 | 可选。单次模型调用超时秒数，超时自动回退规则解析 |
+| DEEPSEEK_TIMEOUT | 8 | 可选。单次模型调用超时秒数，超时自动回退规则解析 |
+| DEEPSEEK_BUDGET | 10 | 可选。单轮解析总预算秒数（含重试等待），超出即回退规则解析 |
+| DEEPSEEK_MAX_TOKENS | 800 | 可选。单次输出 token 上限，防止 JSON 被截断 |
+| DEEPSEEK_THINKING | disabled | 可选。思考模式开关；默认 disabled 关闭，enabled 开启（更慢更贵） |
+| DEEPSEEK_RETRY | 1 | 可选。空 content / JSON 截断 / 429 / 5xx 时的重试次数 |
+| DEEPSEEK_RETRY_BACKOFF_MS | 600 | 可选。重试前的等待毫秒数 |
+| DEEPSEEK_BREAKER_THRESHOLD | 3 | 可选。连续失败多少次后熔断，熔断期间直接走规则解析 |
+| DEEPSEEK_BREAKER_COOLDOWN | 60 | 可选。熔断冷却秒数，冷却结束后自动恢复尝试 |
 | ZEROSTEP_DISABLE_LLM | 空 | 设为 1 时即使有 Key 也强制走规则模式 |
+| SCHEDULER_ENABLED | 1 | 可选。预约转账调度器开关；设为 0 后预约仍会登记，但不会自动执行 |
+| SCHEDULER_INTERVAL | 5 | 可选。调度器检查到期预约的间隔秒数，最小 1 秒 |
+| SMS_TTL | 120 | 可选。短信因子有效期秒数（v0.4.1）；演示接口 GET /api/demo/sms 返回的码同此 TTL |
+| FACE_TTL | 60 | 可选。人脸因子令牌有效期秒数（v0.4.1）；POST /api/demo/face 返回的 token 同此 TTL |
+| SMS_MAX_ATTEMPTS | 5 | 可选。短信码连续错误多少次后作废（v0.4.1），作废后需重新获取 |
+| SECURITY_LOCK_THRESHOLD | 3 | 可选。同一会话在窗口内累计多少次被拦后触发锁定（v0.4.1） |
+| SECURITY_LOCK_WINDOW_SECONDS | 600 | 可选。统计被拦次数的窗口秒数（v0.4.1，默认 10 分钟） |
+| SECURITY_LOCK_SECONDS | 300 | 可选。临时锁定时长秒数（v0.4.1，默认 5 分钟） |
 
 不是只能接 DeepSeek：接口走 OpenAI 兼容协议（POST {base_url}/chat/completions + Bearer + JSON 模式），把 DEEPSEEK_BASE_URL / DEEPSEEK_MODEL / DEEPSEEK_API_KEY 换成对应厂商即可，界面上的厂商与模型名会随之变化。常见示例（仅供填写参考，除 DeepSeek 外未逐一实测，以各厂商文档为准，且对方需支持 JSON 输出）：
 
@@ -114,6 +286,59 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 
     python scripts/replay.py --script scripts/demo_flow.json
 
+### 四进程启动（v0.3.2）：每个进程都可选
+
+v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、推送接收端），另可选两个外部只读服务；但只有主服务是必需的：单进程 python backend/server.py 就能看到完整界面并办理全部业务。外部 fx/risk 可选，不起时外部服务页显示降级、汇率回落内置参考价、反欺诈评分跳过；IM 渠道可选，不起不影响页面、评测与 CI；企微回调可选，不起只影响企业微信侧；主动推送未配置接收端时只生成文案（not_configured），不阻断任何业务。
+
+| 进程 | 端口 | 是否必需 | 不起时的降级 |
+| --- | --- | --- | --- |
+| 主服务 backend/server.py | 8000 | 是 | 页面、业务、评测均不可用 |
+| IM 渠道 backend/channels/server.py | 8400 | 否 | 设置页渠道卡 enabled=false；Web 与评测不受影响 |
+| 企微回调 backend/channels/wecom.py | 8401 | 否 | 企业微信不可达；Web 与主服务不受影响 |
+| 外部 fx / risk | 8300 / 8301 | 否 | 汇率回落内置参考价、反欺诈评分跳过，回复标注降级 |
+| 推送接收端（CHANNEL_PUSH_URL） | 任意 | 否 | /api/push 返回 not_configured，仅生成文案并写审计 |
+
+    # 终端 1：汇率服务（8300）
+    python backend/external/fx_server.py
+
+    # 终端 2：反欺诈服务（8301）
+    python backend/external/risk_server.py
+
+    # 终端 3：主服务（8000）
+    python backend/server.py
+
+    # 可选：IM 渠道网关（8400）
+    python backend/channels/server.py
+
+    # 可选：企业微信回调（8401）；Token/AESKey/CorpID 见 .env.example
+    python backend/channels/wecom.py
+
+    # 自检：两服务进程内起停 + JSON-RPC 握手
+    python backend/external/selftest.py
+    python scripts/mcp_e2e.py
+    python scripts/channel_e2e.py
+
+    # 可选：企微回调自检 9/9、端到端 13/13、主动触达 13/13
+    python backend/channels/wecom.py --selftest
+    python scripts/channel_wecom_e2e.py
+    python scripts/push_e2e.py
+
+只起主服务（离线演示推荐）：
+
+    python backend/server.py
+
+此时 GET /api/mcp/status 显示 degraded=true，汇率回落内置表、反欺诈评分跳过；端口可用 --port 覆盖，环境变量 MCP_ENABLED=0 可整体关闭外部调用。手机访问同上：HOST=0.0.0.0 后用局域网 IP 打开。
+
+状态检查：
+
+    curl.exe -s http://127.0.0.1:8000/api/mcp/status
+    curl.exe -s http://127.0.0.1:8300/health
+    curl.exe -s http://127.0.0.1:8301/health
+    curl.exe -s http://127.0.0.1:8401/health
+    curl.exe -s http://127.0.0.1:8000/api/channel/status
+
+后端已冻结：v0.4.1 实跑 scripts/run_tasks.py 46/46（2026-10-28，含 t44–t46）、node frontend/_selftest.js PASS=206 FAIL=0（v0.4.0 为 190）；QA security_factor_e2e 53/53，v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face，字段见 docs/api.md §4。
+
 ---
 
 ## 大模型接入（三模式）
@@ -126,7 +351,7 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 | llm | 调用大模型（默认 DeepSeek deepseek-flash）输出意图与槽位，再经代码层严格校验 | 口语化、开放表达 |
 | auto（默认） | 有 Key 用 llm，无 Key 回落 rule | 默认体验 |
 
-接入是真实 HTTP 调用，不是占位：backend/app/llm.py 用标准库 urllib 请求 OpenAI 兼容接口 /chat/completions，默认模型 deepseek-flash，temperature=0、response_format=json_object、单次超时 12 秒（均可用环境变量覆盖）。模型只被允许输出一份 JSON：16 个预定义意图之一、金额、收款人、月份、品类、产品、订阅、卡、分账列表、提醒与理由；未在原文出现的字段必须为 null，不允许猜测。
+接入是真实 HTTP 调用，不是占位：backend/app/llm.py 用标准库 urllib 请求 OpenAI 兼容接口 /chat/completions，默认模型 deepseek-flash，temperature=0、response_format=json_object、单次超时 8 秒、单轮预算 10 秒、max_tokens 800、思考模式默认关闭（均可用环境变量覆盖）。模型只被允许输出一份 JSON：23 个预定义意图之一（含 v0.4.0 的理财赎回、卡限额、刷卡、异常扫描、年度账单、预约转账）、金额、单笔限额、年度、商户、预约时间说法、收款人、月份、品类、产品、订阅、卡、分账列表、提醒与理由；未在原文出现的字段必须为 null，不允许猜测。
 
 三道约束保证模型不影响资金安全：
 
@@ -134,25 +359,83 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 2. 输出必须过校验：金额必须在原文中找到出处，否则改用规则金额并在审批卡提示冲突；收款人必须命中通讯录或出现在原文；产品、订阅、卡必须匹配种子数据；字段越界一律回退规则值。
 3. 风险与动作仍在代码层：模型只产出意图与槽位，build_plan、policy.evaluate、审批、执行、回读、审计全部由确定性代码完成，模型无法决定放行、降低风险或选择工具。
 
-调用失败（网络不可达、超时、返回非 JSON、字段异常）会自动回退规则解析，事件与审计里记 source=fallback，失败原因通过 GET /api/llm/status 的 last_error 暴露；API Key 只从环境变量读取，不写入数据库、仓库与日志，状态接口只返回脱敏后的 key_masked。
+调用失败（网络不可达、超时、返回非 JSON、空 content、字段异常）会自动回退规则解析：空 content 与 JSON 截断重试 1 次，429/5xx 快速重试。这一次真实失败的调用会在事件与审计里记 source=fallback（尝试过模型但失败）；连续 3 次失败后熔断 60 秒，冷却期内的后续请求不再尝试模型，直接规则解析并记 source=rule（根本没调用），同时带 degraded=true。失败原因通过 GET /api/llm/status 的 last_error / last_error_code / last_error_hint 暴露。API Key 只从环境变量读取，不写入数据库、仓库与日志，状态接口只返回脱敏后的 key_masked。
 
-实测（2026-10-27 11:18，deepseek-flash，temperature=0，超时 12 秒）：30 条标准用例两种模式均 30/30；10 条口语化变体规则听懂 4 条、模型听懂 10 条；安全用例 t26–t30 两种模式均 5/5。完整对比表见「评测」节，接口与字段见 docs/api.md，安全边界见 docs/security.md。
+实测（2026-10-27 11:18，deepseek-flash，temperature=0，当时代码超时 12 秒）：30 条标准用例两种模式均 30/30；10 条口语化变体规则听懂 4 条、模型听懂 10 条；安全用例 t26–t30 两种模式均 5/5。v0.3.1 收紧为 8 秒超时并关闭思考模式后，用本地桩跑的 scripts/llm_e2e.py 8/8 场景、52/52 项检查通过（2026-10-27 QA 报告口径），详见「评测」节。完整对比表见「评测」节，接口与字段见 docs/api.md，安全边界见 docs/security.md。
+
+### 模型接入最佳实践（v0.3.1）
+
+**为什么默认关闭思考模式。** 零步银行调用模型只做一件事：把一句中文解析成固定字段的 JSON。这是抽取任务，不需要思维链。DeepSeek 官方文档中思考模式默认开启且 effort=high，开启后模型先生成长段推理再给答案：输出 token 变多、单次耗时变长、费用上升，而 JSON 仍可能被思维链挤占输出预算而截断；此外思考模式下 temperature 不生效，无法用 temperature=0 固定输出。因此 v0.3.1 默认发 DEEPSEEK_THINKING=disabled，需要更强推理时可显式改成 enabled。
+
+**一次解析的预算与失败处理。** 单次 HTTP 超时 8 秒，一次解析（含重试等待）总预算 10 秒；空 content 与 JSON 截断重试 1 次，间隔 600ms，429/5xx 同样快速重试；连续 3 次失败后熔断 60 秒，期间直接走规则解析（intent.source=rule，与真实失败的 fallback 区分），不再付费调用。所有失败最终都回退到 nlu 规则解析，资金动作和审批不受影响。
+
+**成本量级。** 按 DeepSeek 官方空闲时段单价：缓存命中输入 0.02 元/百万 tokens、缓存未命中输入 1 元/百万 tokens、输出 4 元/百万 tokens。本项目 system 前缀固定、技能提示移入 user 消息，同一进程内重复请求更容易命中上下文缓存；一次解析约消耗一两千输入 tokens 与一百左右输出 tokens。
+
+成本公式：
+
+    cost(元) = hit_tokens × 0.02 / 1,000,000
+             + miss_tokens × 1.0 / 1,000,000
+             + completion_tokens × 4.0 / 1,000,000
+
+真实样例（桩服务实测）：hit=1024、miss=156、completion=96，得 1024×0.02/1e6 + 156×1/1e6 + 96×4/1e6 = ¥0.00056048，即单次约 0.56 厘，1000 次约 ¥0.56。高峰时段（北京时间周一至周五 9:00–12:00、14:00–18:00）单价翻倍，约 ¥1.12；实际费用以账单为准。
+
+**两条自检命令。**
+
+    # 有 Key：真实调用一次，确认 Key、网络、模型名与费用都正常（会产生极小费用）
+    python scripts/llm_smoke.py
+
+    # 无 Key：本地起 OpenAI 兼容测试桩，跑 8 个场景（成功/空 content/坏 JSON/429/5xx/超时/熔断/连接测试），不花钱
+    python scripts/llm_e2e.py
+
+设置页「模型接入」卡也提供「测试连接」按钮，作用同 POST /api/llm/test：只测连通性与 Key，不写审计链；它仍是一次真实模型调用，会计入进程内 stats 与连续失败计数。v0.3.1 另由 backend-dev 实测：smoke_llm_fallback 6/6、llm_smoke exit 0、run_tasks 36/36；本地复跑（2026-10-27）前端 selftest PASS=134 FAIL=0、llm_e2e 8/8 场景 52/52 项检查。
 
 ---
 
 ## 评测与任务
 
-30 条任务分 7 类，分布为 5 / 5 / 4 / 4 / 4 / 3 / 5：
+46 条任务分 8 类，分布为 6 / 8 / 5 / 7 / 4 / 4 / 10 / 2（v0.1.0 基线为 30 条 7 类，分布 5 / 5 / 4 / 4 / 4 / 3 / 5；v0.2.0 增 6 条、v0.4.0 增 7 条、v0.4.1 增 3 条）。v0.3.x 都不新增业务任务；插件、前端、模型接入与能力端到端另由独立自检覆盖（见本节末尾）：
 
 | 类别 | 任务 id | 条数 | 覆盖内容 |
 | --- | --- | --- | --- |
-| bills 账单查询 | t01–t05 | 5 | 账单汇总、明细查询、预算分析、余额查询 |
-| transfer 转账 | t06–t10 | 5 | 小额转账（确认）、大额转账（TOTP）、新收款人拦截、超限拦截、余额不足拦截 |
-| wealth 理财 | t11–t14 | 4 | 申购（TOTP + 撤销）、持仓查询、低于起购金额、超额申购拦截 |
-| card 卡片 | t15–t18 | 4 | 卡列表、申请虚拟卡、卡状态管理 |
+| bills 账单查询 | t01–t05、t41 | 6 | 账单汇总、明细查询、预算分析、余额查询、年度账单 |
+| transfer 转账 | t06–t10、t33、t42、t43 | 8 | 小额转账（确认）、大额转账（TOTP）、新收款人拦截、超限拦截、余额不足拦截、技能卡命中、手机号转账、预约转账 |
+| wealth 理财 | t11–t14、t37 | 5 | 申购（TOTP + 撤销）、持仓查询、低于起购金额、超额申购拦截、赎回 |
+| card 卡片 | t15–t18、t38、t39、t44 | 7 | 卡列表、申请虚拟卡、卡状态管理、限额调整、刷卡超限拦截、挂失强验证 |
 | subscription 订阅 | t19–t22 | 4 | 订阅查询、取消订阅（确认）、不存在的订阅拦截 |
-| cross 跨场景 | t23–t25 | 3 | 工资分账、生日转账 + 提醒、旅行预算分析 |
-| security 安全 | t26–t30 | 5 | 直接提示注入、验证码钓鱼、越权查询、陌生收款人、流水备注间接注入 |
+| cross 跨场景 | t23–t25、t36 | 4 | 工资分账、生日转账 + 提醒、旅行预算分析、账单 + 提醒 |
+| security 安全 | t26–t30、t34–t35、t40、t45、t46 | 10 | 直接提示注入、验证码钓鱼、越权查询、陌生收款人、流水备注间接注入、审批规则明细、拆分注入、异常交易扫描、连续被拦锁定、连续注入锁定 |
+| mcp 外部服务 | t31–t32 | 2 | 外部汇率换算、MCP 关闭时的降级 |
+
+v0.2.0 新增的 6 条明细（已计入上表 46 条）：
+
+| 任务 id | 标题 | 覆盖内容 |
+| --- | --- | --- |
+| t31 | 汇率换算（MCP 外部汇率，不可用时降级） | 外部 fx 服务可用时走 MCP，审计记录 mcp_call |
+| t32 | MCP 关闭时汇率降级 | MCP_ENABLED=0 时回退内置参考价，回复标注来源 |
+| t33 | 技能卡命中 transfer | intent.skills 必须命中 transfer 且不误命中其他卡 |
+| t34 | 转账审批单带规则命中与数字 | policy_hits 规则名与金额、阈值数字进入审批理由 |
+| t35 | 零宽字符 + 空格拆分的提示注入 | 归一化后仍命中注入并拦截 |
+| t36 | 账单查询 + 跨场景提醒 | 一次对话内查询与提醒组合，计划多步执行 |
+
+v0.4.0 新增的 7 条明细（已计入上表 46 条）：
+
+| 任务 id | 标题 | 覆盖内容 |
+| --- | --- | --- |
+| t37 | 理财赎回 1000 元 | 确认后按持仓先进先出赎回，本金回活期，命中 reversed_window |
+| t38 | 信用卡日累计限额调整 | 日累计限额调到 5000 元，确认后生效，命中 card_limit_change |
+| t39 | 刷储蓄卡超单笔限额拦截 | 25000 元超过单笔 20000 元，直接 BLOCKED（CARD_SINGLE_LIMIT） |
+| t40 | 异常交易扫描 | 只读扫描近 30 天流水，三条异常规则，命中 bills 技能卡 |
+| t41 | 年度账单报告（2026） | 收入、支出、结余、储蓄率与最高支出月份 |
+| t42 | 手机号转账 | 给 13800001111 转 100 元，命中通讯录「妈妈」，payee_known |
+| t43 | 预约转账创建 + 列表 | 创建预约并查询列表，命中 scheduled_transfer_created |
+
+v0.4.1 新增的 3 条明细（已计入上表 46 条）：
+
+| 任务 id | 标题 | 覆盖内容 |
+| --- | --- | --- |
+| t44 | 挂失银行卡（红色强验证） | 挂失从 medium 升为 high，审批单 factors=[totp,sms,face]，命中 card_status_change，确认后执行 set_card_status |
+| t45 | 连续被拦触发会话锁定 | 同一会话三次刷卡均超单笔限额，第三次触发 300 秒临时锁定，回复含「已临时锁定」 |
+| t46 | 连续注入触发会话锁定 | 三次提示注入（含零宽/空格拆分）全部判 attack/PROMPT_INJECTION，第三次触发锁定并写 security_locked |
 
 运行方式：
 
@@ -179,7 +462,7 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 
 | 指标 | 规则模式 | LLM 模式 |
 | --- | --- | --- |
-| 30 条标准用例通过率 | 30/30 | 30/30 |
+| 30 条基线用例通过率 | 30/30 | 30/30 |
 | 10 条口语化变体听懂率 | 4/10 | 10/10 |
 | 安全用例通过（t26–t30） | 5/5 | 5/5 |
 | 解析耗时 均值 / p95 | 0.03 ms / 0.04 ms | 1219.37 ms / 1969.92 ms |
@@ -189,15 +472,60 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
     python scripts/compare_modes.py            # 需要 DEEPSEEK_API_KEY，否则 llm 模式自动回落规则
     python scripts/compare_modes.py --no-llm   # 只跑规则模式，离线可跑
 
-结论：模型解析把口语化表达的听懂率从 4/10 提升到 10/10，代价是单次解析约 1.2 秒；标准用例与安全用例结果不变，说明风险分级、审批与拦截完全由代码层决定，接入模型没有放宽任何安全边界。规则模式保留为默认回退路径，保证无 Key、断网时演示与评测仍可复现。
+结论：模型解析把口语化表达的听懂率从 4/10 提升到 10/10，代价是单次解析约 1.2 秒；30 条基线用例与安全用例结果不变，说明风险分级、审批与拦截完全由代码层决定，接入模型没有放宽任何安全边界。规则模式保留为默认回退路径，保证无 Key、断网时演示与评测仍可复现。
 
-实测结果（本机 Python 3.14.6，2026-10-26）：
+实测结果（本机 Python 3.14.6）：2026-10-26 基线 30 条全过；2026-10-28 全量 46 条复跑：
 
-    结果：30/30 通过，0 失败
+    结果：46/46 通过，0 失败
+
+v0.4.1 增量自检（2026-10-28 实测）：
+
+    python scripts/run_tasks.py       # 46/46 通过（含 t44–t46）
+    node frontend/_selftest.js        # PASS=206 FAIL=0（v0.4.0 为 190，新增多因子 13 + 锁定 3）
+
+v0.4.1 新增 3 条安全任务覆盖挂失强验证与连续可疑操作锁定，前端自检从 190 增至 206：审批卡新增「本次校验方式」三选一（动态码/短信/人脸）、短信演示码可点击填入、人脸令牌展示与过期提示、锁定 InfoBar 与 500ms 倒计时。QA 的 scripts/security_factor_e2e.py 已实测 53/53；全量回归见 audit/qa-report-v0.4.1.md：17 步全部 exit 0、0 FAIL、FREEZE_DIFF=none、建议冻结 v0.4.1。注意锁定响应是 HTTP 200 + status=locked（不是 423），审计只存 args/result 哈希，approval_granted 的 result.method 由「200 + 执行 + DB 卡片状态」侧证。
+
+v0.4.0 增量自检（2026-10-27 实测，当时数字）：
+
+    python scripts/run_tasks.py       # 43/43 通过
+    node frontend/_selftest.js        # PASS=190 FAIL=0
+
+v0.4.0 新增 7 条任务覆盖赎回、限额调整、刷卡拦截、异常扫描、年度账单、手机号转账与预约；前端自检从 182 增至 190，计划卡工具名全部中文化。QA 报告 audit/qa-report-v0.4.0.md 已出：capability_e2e 63/63、15/15 步 exit 0、0 FAIL，建议冻结 v0.4.0。
+
+v0.3.2 增量自检（2026-10-27 实测）：
+
+    python backend/channels/wecom.py --selftest   # 9/9
+    python scripts/channel_wecom_e2e.py           # 13/13
+    python scripts/push_e2e.py                    # 13/13
+    node frontend/_selftest.js                    # PASS=182 FAIL=0（v0.3.2 时点；v0.4.0 为 190）
+
+企微自检覆盖 FIPS-197 AES 官方向量、PKCS#7、验签与篡改、GET/POST 回包、MsgId 去重、主服务不可达与转发超时；channel_wecom_e2e 另验两步确认转发、回包不含审批凭据、坏 XML/坏签名/CorpID 不符与超时降级；push_e2e 验三类文案、push_message 审计链、未配置/不可达三态与账务不变，另含 PWA 静态资源 3 组（manifest / sw.js / 5 个图标）。v0.3.2 不新增业务任务，36 条口径不变。
+
+v0.3.1 增量自检（2026-10-27 实测）：
+
+    node frontend/_selftest.js        # 前端 DOM 行为自检（含模型接入卡）
+    PASS = 134   FAIL = 0
+
+    python scripts/llm_e2e.py         # 桩服务端到端，无需真实 Key
+    结果：8/8 场景、52/52 项检查通过
+
+    python scripts/llm_smoke.py       # 真实 Key 冒烟（无 Key 自动跳过，exit 0）
+
+v0.3.0 增量自检（2026-10-27 实测，当时数字）：
+
+    node frontend/_selftest.js        # 前端 DOM 行为自检
+    PASS = 100   FAIL = 0
+
+    python scripts/plugin_e2e.py      # 插件注册表端到端
+    结果：17/17 项通过
+
+plugin_e2e 覆盖注册表 7 项结构、toggle 的 400/403/404、停用后 mcp-fx/mcp-risk/intent-llm/skill-pack/channel-im 五项联动、plugin_toggled 审计与哈希链、重启后状态持久化；前端自检覆盖插件页 7 张卡与三种状态徽章、核心开关锁定、手风琴互斥、换一批分页与错误降级。
 
 执行器会为每条任务创建独立临时数据库（.eval_tmp/任务id/bank.db），重建种子数据后运行，互不污染；需要审批的用例会自动用当前 TOTP 走完 approve 流程，因此测的是完整链路而不是桩函数。断言字段与新增用例方法见 docs/evaluation.md。
 
-另有一条端到端演示流用于现场复现：scripts/smoke18.py 在临时库上顺序跑 17 轮真实对话（账单、流水、余额、四类转账、理财、订阅、卡片、分账、跨场景、四类攻击）再撤销最后一笔，结束后校验审计链。实测输出：18 轮 0.41 秒、审计链 valid=True 共 56 条、事件 111 条、业务表 17 张，完整结果见 scripts/smoke18_result.json。
+另有一条端到端演示流用于现场复现：scripts/smoke18.py 在临时库上顺序跑 18 轮真实对话（账单、流水、余额、四类转账、理财、订阅、卡片、分账、跨场景、四类攻击）再撤销最后一笔，结束后校验审计链。2026-10-27 QA 实测：18/18 轮通过、审计链 valid=True 共 checked=81 条、事件 111 条、业务表 17 张；完整结果见 scripts/smoke18_result.json 与工作区根 audit/qa-report-v0.3.0.md。
+
+v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦后锁 300 秒：2026-10-28 QA 实测 18 轮里第 6/7/9 轮被拦、第 10 轮起返回 locked（17 轮对话中 8 轮 locked），脚本仍 exit 0、审计链 valid（checked=52、事件 84 条）——这是锁定特性按设计生效，smoke18 本身只断言审计链与流程完成，不是失败。现场演示锁定后点「更多 → 重置演示数据」或等 5 分钟再继续。
 
 ---
 
@@ -205,10 +533,10 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 
 | 风险等级 | 判定依据 | 用户动作 |
 | --- | --- | --- |
-| LOW | 纯查询类工具（账单、流水、余额、持仓、收款人列表等） | 自动放行 |
-| MEDIUM | 1000 元以内转账、取消订阅、虚拟卡申请/状态变更、信用卡还款 | 弹层确认（confirm） |
-| HIGH | 超过 1000 元或 24 小时累计超 1000 元、新收款人首笔、理财申购 | 输入 TOTP 动态口令（totp） |
-| BLOCKED | 金额非法、超 5 万元硬上限、余额不足、产品不存在/未达起购、新收款人无账户信息 | 直接拒绝并给出原因 |
+| LOW | 纯查询类工具（账单、流水、余额、持仓、收款人列表、异常扫描、年度账单、预约列表等） | 自动放行 |
+| MEDIUM | 1000 元以内转账、取消订阅、虚拟卡申请、信用卡还款、理财赎回、卡限额调整、撤销预约、1000 元内刷卡与预约创建 | 弹层确认（confirm） |
+| HIGH | 超过 1000 元或 24 小时累计超 1000 元、新收款人首笔、理财申购、超过 1000 元的刷卡与预约创建、挂失/解挂银行卡（v0.4.1 起红色强验证） | 动态码 / 短信 / 人脸任一因子确认（challenge=totp，factors=[totp,sms,face]） |
+| BLOCKED | 金额非法、超 5 万元硬上限、余额不足、产品不存在/未达起购、新收款人无账户信息、限额小于等于 0 或单笔大于日累计（LIMIT_INVALID）、刷卡超单笔/超日累计（CARD_SINGLE_LIMIT / CARD_DAILY_LIMIT） | 直接拒绝并给出原因 |
 
 关键机制：
 
@@ -216,8 +544,14 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 - **TOTP 标准实现**：totp.py 按 RFC 6238 用标准库实现，HMAC-SHA1、30 秒步长、6 位数字、±1 个时间窗容错，无需 pyotp。
 - **审计哈希链**：audit.py 对排序后的 canonical JSON 做 SHA-256，并把上一条 hash 作为 prev_hash 字段一并哈希，任何一条被改写都会在 verify 时定位到 broken_at。
 - **提示注入四层防御**：入口规则检测 → 意图与执行隔离（攻击意图不建计划）→ 工具返回内容消毒（可疑指令替换为占位符并标记）→ 策略门 + 审批 + 哈希链兜底。
+- **外部结果只加严（v0.2.0）**：MCP 返回的汇率与反欺诈评分只作为数据展示与加成风险证据，不拼进提示词、不降低风险等级；外部不可用时自动降级内置实现，资金边界不变。
+- **能力可停用、安全不可停用（v0.3.0）**：插件只收起能力，不改变 policy、审批、TOTP 与哈希链；core 的 policy/audit 由服务端锁定（403 PLUGIN_CORE_LOCKED），停用 mcp-risk 时外部核查跳过但 policy 规则与审批仍生效，审计补记「外部反欺诈核查未执行」。
+- **不可逆动作升红（v0.4.1）**：挂失/解挂由 MEDIUM 移到 HIGH，审批单 factors 列出 totp/sms/face 三个可用因子；因子校验在 approvals.check 内完成，短信/人脸任一通过即算强验证，错误码分别为 INVALID_SMS / INVALID_FACE，失败仍保持 pending 可在 TTL 内换因子。
+- **会话异常熔断（v0.4.1）**：同一会话 10 分钟内累计 3 次被拦（策略拦截或注入判定），locks.py 把会话锁 300 秒；锁定检查在 run_turn 最前面，锁定期间返回 status=locked 且零资金动作，锁定与解锁分别写 security_locked / security_unlocked，锁定期间的请求写 turn_locked。
 - **模型只出意图、不出决策**：LLM 模式沿用同一套策略门与审批；模型输出经 schema、金额原文溯源与通讯录匹配校验，攻击判定和金额/收款人校验都在代码层，调用失败自动回退规则，模型不可信。
 - **可撤销与写后回读**：转账/申购 60 秒内可撤销（生成冲正流水）；转账成功后回读余额，不一致即标记审计异常并提示用户。
+- **预约是「一次审批、到期执行」（v0.4.0）**：创建时完成确认或 TOTP，到期由调度器自动执行、不再二次打扰；执行复用 create_transfer 与同一套审计，幂等键 sched_<sched_id> 防重复扣款，失败写 scheduled_transfer_failed（risk high）。
+- **参数级拦截前移（v0.4.0）**：限额小于等于 0、单笔大于日累计、刷卡超单笔/超日累计都在执行前拦截并给出可解释文案（LIMIT_INVALID / CARD_SINGLE_LIMIT / CARD_DAILY_LIMIT），不产生任何资金变动。
 
 完整威胁模型、攻击用例与已知限制见 [docs/security.md](docs/security.md)。
 
@@ -226,25 +560,53 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 ## 目录结构
 
     bank-agent/
+    ├── README.md                 项目说明与快速开始
+    ├── CHANGELOG.md              版本变更与兼容性记录
+    ├── VERSION                   版本号（0.4.1）
     ├── backend/
-    │   ├── server.py              HTTP/SSE 服务入口（零依赖，278 行）
+    │   ├── server.py              HTTP/SSE 服务入口（零依赖，595 行，含插件、分页、推送、预约/调度与多因子演示路由）
     │   ├── app/
-    │   │   ├── config.py          路径、阈值、LLM 与演示开关
-    │   │   ├── db.py              SQLite 建表、索引与确定性种子数据
+    │   │   ├── config.py          路径、阈值、LLM / MCP / 渠道开关
+    │   │   ├── db.py              SQLite 建表、索引与确定性种子数据（含 card_txns、scheduled_transfers）
     │   │   ├── nlu.py             规则意图解析 + 注入/钓鱼/越权检测
-    │   │   ├── llm.py            模型解析（DeepSeek 三模式、严格校验与回退）
+    │   │   ├── llm.py             模型解析（DeepSeek 三模式、严格校验与回退）
     │   │   ├── engine.py          六阶段编排、计划生成、审批恢复、撤销
     │   │   ├── policy.py          三级权限矩阵与参数级校验
-    │   │   ├── approvals.py       审批单创建、TTL 校验、TOTP 联动
+    │   │   ├── approvals.py       审批单创建、TTL 校验、多因子（totp/sms/face）分派
     │   │   ├── totp.py            RFC 6238 动态口令
+    │   │   ├── second_factor.py    短信/人脸因子（内存态、单次使用、失败上限）
+    │   │   ├── locks.py           会话异常锁定（10 分钟 3 次 → 锁 300 秒）
     │   │   ├── audit.py           canonical JSON + SHA-256 哈希链
-    │   │   └── mock_core.py       银行领域模拟（金额整数分、幂等、冲正）
-    │   └── data/bank.db           运行期数据库（首次启动自动生成）
+    │   │   ├── mock_core.py       银行领域模拟（转账/理财申赎/卡限额与刷卡/预约，金额整数分、幂等、冲正）
+    │   │   ├── mcp_client.py      MCP 客户端：JSON-RPC、白名单、超时与降级
+    │   │   ├── skills.py          技能卡加载、匹配、摘要与命中统计
+    │   │   ├── plugins.py         七插件注册表、状态探测、启停与持久化
+    │   │   ├── scheduler.py       预约转账调度器（到期检查、幂等执行、审计）
+    │   │   └── push.py            主动触达：三类提醒文案、投递与审计
+    │   ├── external/
+    │   │   ├── fx_server.py       汇率 MCP 服务（独立进程，8300）
+    │   │   ├── risk_server.py     反欺诈 MCP 服务（独立进程，8301）
+    │   │   └── selftest.py        外部服务自检（5 场景）
+    │   ├── channels/
+    │   │   ├── server.py          IM 渠道服务（8400，token 鉴权 + 两步确认）
+    │   │   ├── wecom.py           企业微信回调（8401，验签 + AES 解密 + 去重）
+    │   │   └── wecom_crypto.py    企微加解密（标准库 AES-128-CBC / SHA-1 验签）
+    │   └── data/bank.db           运行期数据库（首次启动自动生成；SEED_VERSION 2026.10.29）
+    ├── skills/                    六张技能卡（front matter + 正文）
+    │   ├── bills.skill.md
+    │   ├── cards.skill.md
+    │   ├── cross.skill.md
+    │   ├── subscriptions.skill.md
+    │   ├── transfer.skill.md
+    │   └── wealth.skill.md
     ├── frontend/
-    │   ├── index.html             单页界面
-    │   ├── app.js                 SSE 消费、审批弹层、审计面板
-    │   └── styles.css             样式
-    ├── tasks/t01.json … t30.json  30 条评测任务（声明式断言）
+    │   ├── index.html             单页界面（含 tabbar 与 PWA 元信息）
+    │   ├── app.js                 SSE 消费、审批弹层、审计面板、模拟推送
+    │   ├── styles.css             样式（设计令牌、三栏布局、手机端与 tabbar）
+    │   ├── manifest.webmanifest   PWA 清单（standalone、4 图标、主题色）
+    │   ├── sw.js                  Service Worker（外壳预缓存、/api/ 不缓存）
+    │   └── _selftest.js           前端自检（206 项断言，含 PWA、手机端、推送、多因子与锁定态）
+    ├── tasks/t01.json … t46.json  46 条评测任务（声明式断言）
     ├── scripts/
     │   ├── run_tasks.py           评测执行器
     │   ├── verify_audit.py        离线校验审计链
@@ -255,13 +617,28 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
     │   ├── smoke_llm_http.py      LLM 接口 HTTP 冒烟（三模式切换与状态）
     │   ├── smoke_llm_fallback.py  模型不可用时回退规则链路的冒烟测试
     │   ├── smoke18.py             18 轮端到端演示流 + 审计链自证
+    │   ├── mcp_e2e.py             MCP 端到端：服务起停、降级与审计链
+    │   ├── channel_e2e.py         IM 渠道端到端：鉴权、幂等、两步确认
+    │   ├── channel_wecom_e2e.py   企微回调端到端：验签、解密、去重、超时
+    │   ├── push_e2e.py            主动触达端到端：三类文案、三态与审计
+    │   ├── capability_e2e.py       v0.4.0 能力端到端：赎回、限额、刷卡、扫描、年报、预约
+    │   ├── smoke_normalize.py     归一化绕过冒烟（8 条绕过 + 2 条负样本）
+    │   ├── skill_check.py         技能卡自检（6 项，含 18 条示例）
     │   └── smoke18_result.json    上述运行器的完整实测输出（供复核）
     ├── docs/
-    │   ├── api.md                 HTTP 接口契约（含 LLM 三模式接口）
+    │   ├── api.md                 HTTP 接口契约（v1.6：LLM、插件、分页、推送、企微、预约与调度、多因子与会话锁定）
     │   ├── architecture.md        架构与流水线详解（三模式解析）
     │   ├── security.md            安全设计与攻击测试（含模型不可信组件）
-    │   ├── design-system.md       界面设计规范（去 AI 味、视觉令牌、审批卡）
-    │   └── evaluation.md          评测任务、断言与双模式对比
+    │   ├── design-system.md       界面设计规范 v0.3.0（延续 v4：Win11 Fluent、视觉令牌、插件页）
+    │   ├── mcp.md                 MCP 外部只读服务（接口、降级、演示）
+    │   ├── skills.md              Skill 技能包（六张卡、接口、接入位置）
+    │   ├── channel.md             渠道接入与主动触达（IM / 企微 / 推送 / 手机端）
+    │   ├── plugins.md             插件注册表：七插件、状态机、启停接口与审计
+    │   └── evaluation.md          46 条评测任务、断言、双模式对比与增量自检
+    ├── requirements.txt           零依赖说明（无需 pip install）
+    ├── start.bat                  Windows 一键启动（默认 8000 端口）
+    ├── start.sh                   macOS / Linux 一键启动
+    ├── LICENSE                    MIT
     ├── .env.example               本地配置模板（复制为 .env 后填 Key，.env 不进仓库）
     └── .github/workflows/ci.yml   CI：3.10/3.12 跑评测与演示
 
@@ -271,14 +648,18 @@ Key 只在本机读取，不写入仓库、数据库、事件或审计日志；�
 
 | 文档 | 内容 |
 | --- | --- |
-| [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化 |
+| [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化、插件注册表与渠道接入 |
 | [docs/security.md](docs/security.md) | 三级权限矩阵、阈值理由、TOTP 与哈希链实现、注入四层防御、攻击测试、已知限制 |
-| [docs/evaluation.md](docs/evaluation.md) | 30 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、新增任务方法 |
-| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（含 LLM 状态与模式切换接口、审批对象新字段） |
-| [docs/design-system.md](docs/design-system.md) | 前端 v2 设计规范：视觉令牌、三栏布局、审批卡与来源标注 |
+| [docs/evaluation.md](docs/evaluation.md) | 46 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、LLM 加固与渠道自检、v0.4.0/v0.4.1 增量自检、新增任务方法 |
+| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.6：v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定） |
+| [docs/design-system.md](docs/design-system.md) | 前端设计规范（v0.3.2，延续 v4 视觉）：Win11 Fluent、7 档字号、264/1fr/296 三栏、审批卡规则行、技能页/外部服务页/设置页、插件页与开关/徽章/手风琴/换一批、移动端与 PWA（tabbar、推送卡、安装态） |
+| [docs/mcp.md](docs/mcp.md) | MCP 外部只读服务：协议、接口、两个工具、降级行为、启动与演示 |
+| [docs/skills.md](docs/skills.md) | Skill 技能包：六张卡、front-matter 字段、match/summary/status、接入位置与新增方法 |
+| [docs/channel.md](docs/channel.md) | 渠道接入与主动触达：三种渠道形态、IM token 鉴权与两步确认、企微回调验签/AES/去重、POST /api/push 三态、手机端与 PWA、降级与边界 |
+| [docs/plugins.md](docs/plugins.md) | 插件注册表：七个内置插件、enabled/degraded/disabled 状态机、GET /api/plugins 与 toggle、停用效果、持久化与审计 |
 
 ---
 
 ## 免责声明
 
-本项目是**纯模拟的银行 Agent 演示**：不接入任何真实银行、支付或清算系统，账户、余额、流水、理财与卡片均为 seed 生成的虚构数据；TOTP 密钥由 user_id 派生且 DEMO_MODE 下 /api/demo/totp 会直接返回当前口令，仅用于演示便利；数据库为本地 SQLite 单文件，无登录鉴权、无多租户隔离。**请勿将本项目用于任何真实资金场景。**
+本项目是**纯模拟的银行 Agent 演示**：不接入任何真实银行、支付或清算系统，账户、余额、流水、理财与卡片均为 seed 生成的虚构数据；TOTP 密钥由 user_id 派生且 DEMO_MODE 下 /api/demo/totp 会直接返回当前口令，短信码与人脸令牌也由 /api/demo/sms、/api/demo/face 直接返回，全部仅用于演示便利；数据库为本地 SQLite 单文件，无登录鉴权、无多租户隔离。**请勿将本项目用于任何真实资金场景。**

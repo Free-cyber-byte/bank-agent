@@ -6,6 +6,9 @@ backend/data/*.db
 backend/data/*.db-wal
 backend/data/*.db-shm
 backend/data/replay.db*
+# 插件启停状态（运行时生成，默认全部启用）
+backend/data/plugins.json
+backend/data/plugins.json.tmp
 
 # 评测临时目录
 .eval_tmp/
@@ -26,6 +29,10 @@ Thumbs.db
 # 日志与临时文件
 *.log
 *.tmp
+
+# 渠道运行时会话与消息日志（演示时自动生成）
+backend/channels/sessions.json
+backend/channels/messages.jsonl
 
 # 提交材料（不随源码仓库发布）
 提交材料/模板原件/

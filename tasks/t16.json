@@ -13,9 +13,12 @@
       "set_card_status"
     ],
     "approval": {
-      "risk": "medium",
-      "challenge": "confirm"
+      "risk": "high",
+      "challenge": "totp"
     },
+    "expected_rules": [
+      "card_status_change"
+    ],
     "audit_valid": true,
     "after": {
       "status": "ok",
@@ -24,5 +27,5 @@
       ]
     }
   },
-  "judge_rubric": "卡片状态变更需确认；标题含卡号后四位"
+  "judge_rubric": "v0.4.1 起挂失/冻结属红色强验证：需动态码多因子确认，判定依据含 card_status_change；标题含卡号后四位"
 }

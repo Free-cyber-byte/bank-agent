@@ -1,0 +1,34 @@
+{
+  "id": "t33",
+  "title": "技能卡命中 transfer",
+  "category": "transfer",
+  "user_id": "u001",
+  "turns": [
+    "给李明转 900 元"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "transfer",
+    "plan_tools": [
+      "get_payees",
+      "create_transfer"
+    ],
+    "expected_skill": [
+      "transfer"
+    ],
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "get_payees",
+        "create_transfer"
+      ],
+      "undo": true
+    }
+  },
+  "judge_rubric": "六卡技能匹配注入后，转账意图与审批行为保持旧版不变"
+}

@@ -1,0 +1,34 @@
+{
+  "id": "t44",
+  "title": "挂失银行卡（红色强验证）",
+  "category": "card",
+  "user_id": "u001",
+  "turns": [
+    "把我的信用卡挂失"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "card_freeze",
+    "plan_tools": [
+      "set_card_status"
+    ],
+    "approval": {
+      "risk": "high",
+      "challenge": "totp"
+    },
+    "expected_rules": [
+      "card_status_change"
+    ],
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "set_card_status"
+      ]
+    },
+    "reply_contains": [
+      "已冻结"
+    ]
+  },
+  "judge_rubric": "v0.4.1 起挂失/解挂按官方红线归入红色强验证：必须多因子（动态码/短信/人脸）确认，审批单判定依据含 card_status_change 且详情带卡号"
+}

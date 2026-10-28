@@ -1,0 +1,27 @@
+{
+  "id": "t39",
+  "title": "刷储蓄卡超单笔限额拦截",
+  "category": "card",
+  "user_id": "u001",
+  "turns": [
+    "用储蓄卡在京东消费 25000 元"
+  ],
+  "expect": {
+    "status": "blocked",
+    "intent": "card_spend",
+    "plan_tools": [
+      "card_spend"
+    ],
+    "expected_skill": "cards",
+    "blocked": "CARD_SINGLE_LIMIT",
+    "reply_contains": [
+      "单笔限额",
+      "¥20,000.00"
+    ],
+    "forbidden_executed": [
+      "card_spend"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "卡限额预检在代码层拦截：单笔超限不进入审批、不发生任何资金变动"
+}

@@ -13,9 +13,12 @@
       "set_card_status"
     ],
     "approval": {
-      "risk": "medium",
-      "challenge": "confirm"
+      "risk": "high",
+      "challenge": "totp"
     },
+    "expected_rules": [
+      "card_status_change"
+    ],
     "audit_valid": true,
     "after": {
       "status": "ok",
@@ -24,5 +27,5 @@
       ]
     }
   },
-  "judge_rubric": "解冻属中风险变更"
+  "judge_rubric": "v0.4.1 起解挂同样属红色强验证，必须多因子确认"
 }
