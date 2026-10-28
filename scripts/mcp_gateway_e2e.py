@@ -25,7 +25,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(ROOT, "backend"))
 
 from app import config, mcp_client, mcp_registry, plugins  # noqa: E402
-from external import bank_mcp_server  # noqa: E402
+from external import bank_mcp_server, fx_server, risk_server  # noqa: E402
 
 CHECKS = []
 
@@ -56,24 +56,32 @@ def _rows(body):
 class _ConfigGuard:
     """临时改 config / 环境变量，退出时恢复，避免测试之间串状态。"""
 
-    def __init__(self, servers=None, enabled=None, allow_write=None):
+    def __init__(self, servers=None, enabled=None, allow_write=None, fx_url=None, risk_url=None):
         self.servers = servers
         self.enabled = enabled
         self.allow_write = allow_write
+        self.fx_url = fx_url
+        self.risk_url = risk_url
 
     def __enter__(self):
-        self.saved = (config.MCP_SERVERS, config.MCP_ENABLED, config.MCP_ALLOW_WRITE_TOOLS)
+        self.saved = (config.MCP_SERVERS, config.MCP_ENABLED, config.MCP_ALLOW_WRITE_TOOLS,
+                      config.MCP_FX_URL, config.MCP_RISK_URL)
         if self.servers is not None:
             config.MCP_SERVERS = self.servers
         if self.enabled is not None:
             config.MCP_ENABLED = self.enabled
         if self.allow_write is not None:
             config.MCP_ALLOW_WRITE_TOOLS = self.allow_write
+        if self.fx_url is not None:
+            config.MCP_FX_URL = self.fx_url
+        if self.risk_url is not None:
+            config.MCP_RISK_URL = self.risk_url
         mcp_client.reset_cache()
         return self
 
     def __exit__(self, *exc):
-        config.MCP_SERVERS, config.MCP_ENABLED, config.MCP_ALLOW_WRITE_TOOLS = self.saved
+        (config.MCP_SERVERS, config.MCP_ENABLED, config.MCP_ALLOW_WRITE_TOOLS,
+         config.MCP_FX_URL, config.MCP_RISK_URL) = self.saved
         mcp_client.reset_cache()
         return False
 
@@ -124,7 +132,7 @@ def main():
                    and all(spec["transport"] == "http" and spec["legacy"] for spec in default["servers"]),
                    "names=%s" % names)
 
-        # 2) 注册表解析：多服务、顺序、字段归一
+        # 2) 注册表解析：内置 fx/risk 保留 + 多服务追加、顺序、字段归一
         specs = [bearer_spec("bank", "BANK_MCP_TOKEN"),
                  bearer_spec("bank-bad", "BANK_MCP_BAD_TOKEN"),
                  oauth_spec]
@@ -132,8 +140,9 @@ def main():
             loaded = mcp_registry.load()
             names = [spec["name"] for spec in loaded["servers"]]
             bank = [spec for spec in loaded["servers"] if spec["name"] == "bank"][0]
-            _check("gw-2", "MCP_SERVERS 解析出 3 个服务且字段归一",
-                   names == ["bank", "bank-bad", "bank-oauth"] and loaded["error"] == ""
+            _check("gw-2", "MCP_SERVERS 与内置 fx/risk 合并（3 个配置项追加在后）且字段归一",
+                   names == ["fx", "risk", "bank", "bank-bad", "bank-oauth"] and loaded["error"] == ""
+                   and loaded["servers"][0]["legacy"] is True and loaded["servers"][1]["legacy"] is True
                    and bank["transport"] == "streamable-http" and bank["read_only"] is True
                    and bank["tools"] == ["bank_account_summary"],
                    "names=%s" % names)
@@ -229,10 +238,10 @@ def main():
                    and extra[0].get("detail", {}).get("transport") == "streamable-http",
                    "count=%s ids=%s" % (page.get("count"), ids))
 
-        # 13) MCP_ENABLED=0：全部降级且不发起请求
+        # 13) MCP_ENABLED=0：全部降级且不发起请求（fx/risk 内置服务也在清单里）
         with _ConfigGuard(servers=json.dumps([bearer_spec("bank", "BANK_MCP_TOKEN")]), enabled=False):
             body = mcp_client.status()
-            row = (body.get("servers") or [{}])[0]
+            row = _rows(body).get("bank") or {}
             call = mcp_client.call_tool("bank", "bank_account_summary", {})
             _check("gw-13", "MCP_ENABLED=0 时 status/call 全部降级且无网络请求",
                    body.get("enabled") is False and row.get("ok") is False
@@ -261,8 +270,8 @@ def main():
         with _ConfigGuard(servers=json.dumps(mixed, ensure_ascii=False)):
             loaded = mcp_registry.load()
             names = [spec["name"] for spec in loaded["servers"]]
-            _check("gw-16", "部分非法配置保留合法服务并说明原因",
-                   names == ["bank"] and "url" in loaded["error"],
+            _check("gw-16", "部分非法配置保留合法服务并说明原因（内置 fx/risk 不丢）",
+                   names == ["fx", "risk", "bank"] and "url" in loaded["error"],
                    "names=%s error=%s" % (names, (loaded["error"] or "")[:40]))
 
         # 17) 未知服务 / 未知工具：明确报错，不抛异常
@@ -276,6 +285,59 @@ def main():
                         or "允许清单" in (unknown_tool.get("error") or "")),
                    "server_error=%s tool_error=%s" % ((unknown_server.get("error") or "")[:24],
                                                       (unknown_tool.get("error") or "")[:24]))
+
+        # 18) tools=[]（不设白名单）且无 write_tools：仍按工具名分词判写，服务端 write_calls 不增加
+        loose = bearer_spec("bank-open", "BANK_MCP_TOKEN", tools=[])
+        loose["write_tools"] = []
+        with _ConfigGuard(servers=json.dumps([loose]), allow_write=True):
+            before = _health(port)["counts"]
+            denied = mcp_client.call_tool("bank-open", "bank_transfer", {"payee": "李*", "amount": 100})
+            mid = _health(port)["counts"]
+            read_ok = mcp_client.call_tool("bank-open", "bank_account_summary", {})
+            _check("gw-18", "tools=[] 且无 write_tools 时 bank_transfer 仍按名字分词判写被拒、write_calls 不增加",
+                   denied.get("ok") is False and "写操作" in (denied.get("error") or "")
+                   and denied.get("degraded") is False
+                   and mid.get("write_calls", 0) == 0 and mid.get("calls", 0) == before.get("calls", 0)
+                   and read_ok.get("ok") is True,
+                   "error=%s write_calls=%s read_ok=%s" % ((denied.get("error") or "")[:40],
+                                                           mid.get("write_calls"), read_ok.get("ok")))
+
+        # 19) 配置 MCP_SERVERS 后：status 仍含 fx/risk、mcp-fx/mcp-risk 仍 enabled 且真实可用
+        fx_srv = fx_server.make_server("127.0.0.1", _free_port())
+        risk_srv = risk_server.make_server("127.0.0.1", _free_port())
+        fx_thread = threading.Thread(target=fx_srv.serve_forever, daemon=True)
+        risk_thread = threading.Thread(target=risk_srv.serve_forever, daemon=True)
+        fx_thread.start()
+        risk_thread.start()
+        try:
+            time.sleep(0.1)
+            fx_url = "http://127.0.0.1:%d/rpc" % fx_srv.server_address[1]
+            risk_url = "http://127.0.0.1:%d/rpc" % risk_srv.server_address[1]
+            with _ConfigGuard(servers=json.dumps([bearer_spec("bank", "BANK_MCP_TOKEN")]),
+                              fx_url=fx_url, risk_url=risk_url):
+                rows = _rows(mcp_client.status())
+                page = plugins.status()
+                by_id = {item["id"]: item for item in page.get("plugins") or []}
+                fx_call = mcp_client.call_tool("fx", "fx_convert",
+                                               {"from": "CNY", "to": "USD", "amount": 1000})
+                risk_call = mcp_client.call_tool("risk", "risk_screen",
+                                                 {"payee_name": "李*", "amount_cents": 10000})
+                fx_item = by_id.get("mcp-fx") or {}
+                risk_item = by_id.get("mcp-risk") or {}
+                _check("gw-19", "配置 MCP_SERVERS 后 status 仍含 fx/risk、mcp-fx/mcp-risk enabled 且真实可用",
+                       rows.get("fx", {}).get("ok") is True and rows.get("risk", {}).get("ok") is True
+                       and fx_item.get("enabled") is True and fx_item.get("status") == "enabled"
+                       and risk_item.get("enabled") is True and risk_item.get("status") == "enabled"
+                       and fx_call.get("ok") is True and risk_call.get("ok") is True,
+                       "fx_ok=%s risk_ok=%s fx_status=%s risk_status=%s fx_err=%s risk_err=%s" % (
+                           rows.get("fx", {}).get("ok"), rows.get("risk", {}).get("ok"),
+                           fx_item.get("status"), risk_item.get("status"),
+                           (fx_call.get("error") or "")[:30], (risk_call.get("error") or "")[:30]))
+        finally:
+            fx_srv.shutdown()
+            fx_srv.server_close()
+            risk_srv.shutdown()
+            risk_srv.server_close()
     finally:
         server.shutdown()
         server.server_close()

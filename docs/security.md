@@ -62,10 +62,11 @@ ZeroStep 的安全设计围绕一句话：**理解可以模糊，资金动作必
 
 ## 4. TOTP 实现（RFC 6238）
 
-totp.py（42 行）用纯标准库实现，无 pyotp 依赖。算法即 RFC 6238 的「时间步长 HOTP」：
+totp.py（约 150 行）用纯标准库实现，无 pyotp 依赖。算法即 RFC 6238 的「时间步长 HOTP」：
 
-    # 1. 派生密钥：sha256("zerostep:" + user_id) 取前 20 字节，再 base32 编码
-    _secret(user_id) = base32(sha256("zerostep:" + user_id)[:20])
+    # 1. 取密钥：每用户首次使用时 secrets.token_bytes(20) 随机生成，base32 后落库
+    #    （v0.6.1 起不再用 sha256("zerostep:" + user_id) 派生——旧派生只要知道 user_id 就能复算）
+    secret = base32(secrets.token_bytes(20))          # 存在 db.totp_secrets.secret，仅服务端可读
 
     # 2. 时间计数器：30 秒一步
     counter = int(time.time() // 30)
@@ -80,8 +81,8 @@ totp.py（42 行）用纯标准库实现，无 pyotp 依赖。算法即 RFC 6238
     # 5. 取模得 6 位数字（左侧补零）
     code = str(binary % 1000000).zfill(6)
 
-    # 6. 校验：窗口 ±1，即当前步及前后各一步都能通过（±30 秒容错）
-    valid = any(_hotp(key, counter + d) == code for d in range(-1, 2))
+    # 6. 校验：窗口 ±1（±30 秒），常量时间比较
+    valid = any(hmac.compare_digest(_hotp(key, counter + d), code) for d in range(-1, 2))
 
 | 参数 | 取值 | 说明 |
 | --- | --- | --- |
@@ -89,14 +90,16 @@ totp.py（42 行）用纯标准库实现，无 pyotp 依赖。算法即 RFC 6238
 | 步长 | 30 秒 | RFC 推荐值 |
 | 位数 | 6 位 | 纯数字，verify_code 先校验 isdigit |
 | 时间窗 | ±1 步（±30 秒） | config.TOTP_WINDOW=1，容忍时钟漂移 |
-| 密钥来源 | sha256("zerostep:" + user_id) 前 20 字节 | 演示用派生密钥，真实系统必须独立密钥 |
+| 密钥来源 | 每用户随机 20 字节，存 db.totp_secrets | v0.6.1 修复：不可由 user_id 推导；真实系统仍应放 HSM/KMS |
+| 比较方式 | hmac.compare_digest | v0.6.1 修复：常量时间，避免时序侧信道 |
+| 暴力破解 | 连续失败 5 次锁 60 秒 | v0.6.1 新增：fails / locked_until 落库，成功即清零 |
 | 剩余时间 | seconds_left = 30 - (now mod 30) | 前端倒计时用 |
 
-**使用路径**：审批单的 challenge 为 totp 且 method 缺省或为 totp 时，approvals.check 调用 totp.verify_code(user_id, code, window=config.TOTP_WINDOW)；失败返回 INVALID_OTP（HTTP 400），审批单保持 pending，用户可在 300 秒内重试。v0.4.1 起也可改用短信或人脸因子，见 4.1 节。
+**使用路径**：审批单的 challenge 为 totp 且 method 缺省或为 totp 时，approvals.check 调用 totp.verify_code(user_id, code, window=config.TOTP_WINDOW, conn=conn)；失败返回 INVALID_OTP（HTTP 400），审批单保持 pending，用户可在 300 秒内重试。v0.4.1 起也可改用短信或人脸因子，见 4.1 节。
 
-**演示便利接口**：GET /api/demo/totp?user_id=u001 返回当前 code 与 seconds_left，仅在 DEMO_MODE 开启时可用（设为 0 即关闭）。前端审批弹层用它展示当前口令，方便评委手动走通流程。
+**演示便利接口**：GET /api/demo/totp?user_id=u001 返回当前 code 与 seconds_left，仅在 DEMO_MODE 开启时可用（设为 0 即关闭），且 v0.6.1 起只接受本机回环连接（其它来源 403 DEMO_LOCAL_ONLY）。前端审批弹层用它展示当前口令，方便评委手动走通流程。
 
-**局限**：密钥由 user_id 推导，知道算法即可复算；TOTP 本身没有失败次数限制与账号锁定（v0.4.1 的会话锁定是另一层行为熔断，不按单因子计失败）；演示接口会直接把口令给到前端。真实系统需要服务端独立密钥（HSM/KMS）、一次性绑定、失败计数、频控与审计告警。
+**局限**：密钥以明文存于 SQLite（未接 HSM/KMS，拿到 backend/data 文件即可算出所有码）；动态码在 ±30 秒窗口内可重复使用（没有「一次性」消费，已知取舍：smoke18 / run_tasks 会在同一窗口内连续审批）；演示接口在本机可直接拿到当前码，等于本机进程天然绕过第二因子；没有 IP / 设备绑定与告警。真实系统需要独立密钥托管、一次性绑定、频控与审计告警，并关闭演示接口。
 
 ---
 
@@ -285,11 +288,32 @@ Key 与日志：
 
 ---
 
+### 9.1 v0.6.1 边界加固（对应 v0.6.0 审查报告）
+
+| 措施 | 实现 | 作用 |
+| --- | --- | --- |
+| CORS 白名单 | server.py 读取 CORS_ALLOW_ORIGINS（默认 http://127.0.0.1:8000,http://localhost:8000），只回显允许的 Origin + Vary: Origin；OPTIONS 对未知 Origin 403；带未授权 Origin 的写请求 403 CORS_ORIGIN_DENIED | 恶意网页不能再跨域读响应、代发写请求 |
+| Host 校验 | Host 主机名必须在 {127.0.0.1, localhost, ::1} ∪ HOST_ALLOW 内，否则 403 HOST_DENIED | 防 DNS rebinding 把 evil.com 解析到 127.0.0.1 |
+| 请求体上限 | 512 KiB，超限 413 PAYLOAD_TOO_LARGE；JSON 解析失败 400 BAD_JSON | 挡内存放大与坏请求 500 |
+| 参数收敛 | limit clamp 到 1..200；非法整数 400 BAD_REQUEST | 挡 `limit=-1` 全表与 int() 抛 500 |
+| 错误脱敏 | 未预期异常只回 500 INTERNAL_ERROR「服务器内部错误」，细节写 stderr；EngineError 等已知错误原样返回 | 不再把 str(exc)、路径、SQL 回给客户端 |
+| 可选 API_TOKEN | 环境变量非空时，除 /api/health 外要求 X-ZeroStep-Token（hmac 比较），否则 401 | 给非演示部署加一层共享口令（不是身份体系） |
+| 演示接口本机限制 | /api/demo/{totp,sms,face} 与 /api/admin/reset 只接受 127.0.0.1/::1，其它来源 403 DEMO_LOCAL_ONLY | 同网段/恶意网页不能自助领取二次因子或清库 |
+| 审批绑定会话 | approvals.check 校验 approval_id 归属 session_id，跨会话 403 APPROVAL_SESSION_MISMATCH | 修 IDOR：拿到 approval_id 也不能用别的会话批准 |
+| 审批原子 CAS | approvals.mark 改为 `UPDATE ... WHERE status='pending'`，未命中 409 APPROVAL_ALREADY_DECIDED | 并发双击审批不会重复执行工具 |
+| 审批参数摘要 | approvals.params_digest + engine.resume 比对 checkpoint steps 摘要，篡改/换单 400 APPROVAL_PARAMS_MISMATCH | 防「审批 A 执行 B」与库内改写 |
+| TOTP 随机密钥 + 锁定 | db.totp_secrets 每用户随机密钥、compare_digest、连续 5 次失败锁 60 秒 | 修「user_id 可复算动态码」与在线爆破 |
+| 资金条件扣款 | mock_core 六个资金函数改 BEGIN IMMEDIATE + `WHERE balance_cents>=?`，失败回滚抛 INSUFFICIENT_FUNDS；撤销改 CAS | 修同进程并发读-改-写双花 |
+| MCP 注册表合并 | mcp_registry.load 内置 fx/risk + MCP_SERVERS 合并，同名以配置为准并记 error | 不再因配置外部服务导致反欺诈闸门静默消失 |
+| MCP 写闸分词 | looks_write_tool 驼峰/分隔符分词 + 整词匹配，tools=[] 也逐工具判写；status url/last_error 脱敏 | 修 bank_transfer 漏判与内部端点/凭据泄露 |
+
+---
+
 ## 10. 已知限制
 
-1. **无身份认证**：没有登录与会话鉴权，服务默认以 u001 张伟的身份运行（engine.create_session 使用 DEFAULT_USER_ID），任何人访问 127.0.0.1:8000 都是同一用户。
+1. **无登录鉴权（v0.6.1 收窄了浏览器可达面）**：没有登录与会话鉴权，服务默认以 u001 张伟的身份运行（engine.create_session 使用 DEFAULT_USER_ID）。v0.6.1 起：CORS 不再回 `*`，只对 `CORS_ALLOW_ORIGINS`（默认本机 8000 的两个 Origin）回显并带 `Vary: Origin`；Host 头限定 127.0.0.1/localhost/::1（可加 HOST_ALLOW），带未授权 Origin 的写请求 403；可选的 `API_TOKEN` 打开后除 /api/health 外都要求 `X-ZeroStep-Token`。但这些是「浏览器/网络边界」，不是身份认证——本机进程、curl 与同源脚本仍视为同一用户，多租户与真实登录不在本版本范围。
 2. **LLM 模式的能力与成本**：默认 auto 在配置 Key 后调用 deepseek-flash，单次解析比规则模式慢两个数量级；模型输出经 schema 与原文溯源校验，越权与注入判定仍由代码完成，因此模型只影响「听懂多少」，不影响「能放行什么」。无 Key 或断网时自动回退规则模式，评测用例仍全部通过（v0.5.0 实测 56/56；v0.4.0 为 43/43；v0.3.1 为 36/36）。v0.3.1 已补 8 秒单次超时、10 秒单轮预算、有限重试、连续失败熔断，以及 stats 中的失败率与熔断状态；真实部署前仍需补充模型版本固定、长期回归评测与告警接入。
-3. **TOTP 强度受限**：密钥由 user_id 派生、无失败计数与账号锁定（v0.4.1 的会话锁定是会话级熔断，不是因子级防护）、演示接口直出当前码，仅适合演示。
+3. **TOTP 强度仍受部署约束**：v0.6.1 已把密钥改为每用户随机并落库（不可由 user_id 推导）、校验改常量时间比较、连续失败 5 次锁 60 秒；但密钥明文存 SQLite、动态码在 ±30 秒窗口内可重复使用、演示接口 GET /api/demo/totp 在本机直接返回当前码（现在只对本机回环开放），因此仍只适合演示与内网评审，生产需接 HSM/KMS 与关闭演示接口。
 4. **审计链无外部锚定**：本地哈希链能发现「改某条」，但不能防「整库重算」，真实系统需外部签名/时间戳。
 5. **checkpoint 单线程覆盖**：checkpoints 以 thread_id 为主键且 INSERT OR REPLACE，同一线程若连续发起两笔待审批动作，后一笔会覆盖前一笔的恢复快照（审批单本身仍在 approvals 表中，但恢复执行只剩最新一份）。
 6. **内部划转不触发 1000 元阈值**：internal=True 的转账按 MEDIUM 处理，只受 5 万元硬上限约束；如果业务上需要「本人账户间大额也强验证」，应把 internal 分支也纳入累计判定。
@@ -313,6 +337,10 @@ Key 与日志：
 24. **多因子是「或」不是「且」**：任一因子通过即完成强验证，不支持必须两个因子同时通过；MEDIUM 动作仍是单次 confirm，没有因子要求（v0.4.1）。
 25. **洞察结论是启发式估算**：订阅识别靠「连续 3 次、间隔 25–35 天、相邻金额差 ≤10%」的规则，一次性消费、改价、跨月缺记录都可能误报或漏报；潜在可省金额按订阅月费或分类压缩 10% 估算，不是财务建议（v0.5.0）。
 26. **流式参数是演示取值**：每块 12 字符、块间 18ms 由代码常量与环境变量 ZS_STREAM_DELAY_MS 控制，不同机器与网络下节奏不同；取消只在服务端置标记，已发出的 SSE 片段不会撤回，前端需自行丢弃后续内容（v0.5.0）。
+27. **审批参数摘要只防「库内篡改与换单」**：v0.6.1 的 params_digest 由归一化 JSON 计算，能发现 approvals 表被手工改写、以及「审批 A 执行 B」；但它不是签名（无外部密钥），整库重算仍不可检测，与审计链同样的信任假设。
+28. **资金原子性只在单进程内成立**：v0.6.1 的 BEGIN IMMEDIATE + 条件扣款解决了同进程并发双花，但 SQLite 单文件、单进程服务器仍是演示形态；多实例 / 多机部署需要真正的数据库事务与行锁。
+29. **MCP 写闸是「宁拦勿放」的启发式**：v0.6.1 用分词/驼峰判定写风险（bank_transfer、funds.transfer、bankTransfer、remit、wire、buy、sell、trade、repay 都会被判写），但 credit_score、get_transfer_status 这类含动词的只读工具也会被保守拦截；真实接入应以银行侧工具清单 + 显式 write_tools 为准。
+30. **演示接口本机限制不是强安全边界**：DEMO_MODE=1 时 /api/demo/* 与 /api/admin/reset 只接受 127.0.0.1/::1，但本机任意进程（含恶意脚本）仍可调用；演示场景接受该风险，线上必须 DEMO_MODE=0 并删除数据文件。
 
 ---
 

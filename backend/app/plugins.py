@@ -279,11 +279,16 @@ def _status_of(spec: Dict[str, Any], enabled: bool, mcp_rows: Dict[str, Dict[str
     if not enabled:
         return "disabled"
     probe = str(spec.get("probe") or "")
-    if probe:
-        row = mcp_rows.get(probe)
-        if isinstance(row, dict) and not row.get("ok"):
-            return "degraded"
-    return "enabled"
+    if not probe:
+        return "enabled"
+    row = mcp_rows.get(probe)
+    if isinstance(row, dict):
+        return "enabled" if row.get("ok") else "degraded"
+    # 探测跑过（mcp_rows 非空）却没有该服务的行：说明配置里已不含它（或探测没覆盖到），
+    # 不能谎报 enabled——v0.6.1 起按 degraded 展示。
+    # 探测整体没跑（toggle 响应 / mcp_client.status() 异常，mcp_rows 为空）时无从判断，
+    # 按启停状态展示 enabled（保持 toggle 响应的既有语义，plugin_e2e plg-10 依赖）。
+    return "degraded" if mcp_rows else "enabled"
 
 
 def _item(spec: Dict[str, Any], enabled: bool, mcp_rows: Dict[str, Dict[str, Any]]) -> Dict[str, Any]:

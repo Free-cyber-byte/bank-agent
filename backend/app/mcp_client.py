@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import http.client
 import json
+import re
 import socket
 import threading
 import time
@@ -39,6 +40,24 @@ _TOOLS_CACHE_SECONDS = 60
 _DEFAULT_SOURCE = "external-%s"
 
 _LOCK = threading.RLock()
+
+# status()/discover() 对外的 URL 与错误文本脱敏：去 userinfo、把 query 里的
+# token/key/secret/password/signature 值打码（评审可投屏，见 docs/mcp.md §11.2）。
+_QUERY_SECRET_RE = re.compile(
+    r"(?i)([?&][a-z0-9_.-]*(?:token|key|secret|password|passwd|signature|sign|auth|credential)"
+    r"[a-z0-9_.-]*=)[^&;#\s\"']*"
+)
+_USERINFO_RE = re.compile(r"(?i)\b(https?://)[^/@\s]+@")
+
+
+def _redact(text: Any) -> str:
+    """把 URL / 错误文本里的密钥与 userinfo 替换成 ***，其余内容保持可读。"""
+    raw = str(text or "")
+    if not raw:
+        return ""
+    raw = _USERINFO_RE.sub(r"\1***@", raw)
+    raw = _QUERY_SECRET_RE.sub(r"\1***", raw)
+    return raw
 
 
 class _ServerState:
@@ -382,7 +401,7 @@ def _failure(spec: Optional[Dict[str, Any]], server: str, tool: Optional[str], m
         "latency_ms": int((time.time() - started) * 1000),
         "degraded": degraded,
         "source": _source(spec) if spec else "external-%s" % server,
-        "error": message,
+        "error": _redact(message),
         "server": server,
         "tool": tool,
     }
@@ -464,7 +483,9 @@ def call_tool(server: str, tool: Any = None, args: Optional[Dict[str, Any]] = No
             "error": "",
             "server": spec["name"],
             "tool": tool_name,
-            "read_only": True,
+            # 不再硬编码 True：只有「服务声明为只读」且「工具名不是写风险」才算只读调用。
+            "read_only": bool(spec.get("read_only", True))
+            and not mcp_registry.looks_write_tool(tool_name),
         }
     except Exception as exc:  # noqa: BLE001
         message = str(exc) or type(exc).__name__
@@ -490,7 +511,7 @@ def status() -> Dict[str, Any]:
         row: Dict[str, Any] = {
             "name": spec["name"],
             "label": spec.get("label") or spec["name"],
-            "url": spec.get("url", ""),
+            "url": _redact(spec.get("url", "")),
             "transport": spec.get("transport", "http"),
             "ok": False,
             "latency_ms": 0,
@@ -512,7 +533,7 @@ def status() -> Dict[str, Any]:
             row["degraded"] = False
             row["last_error"] = ""
         except Exception as exc:  # noqa: BLE001
-            row["last_error"] = str(exc) or type(exc).__name__
+            row["last_error"] = _redact(str(exc) or type(exc).__name__)
         row["latency_ms"] = int((time.time() - started) * 1000)
         with _LOCK:
             row["session"] = bool(state.session_id)
@@ -550,7 +571,7 @@ def discover(server: Any) -> Dict[str, Any]:
     row: Dict[str, Any] = {
         "name": spec["name"],
         "label": spec.get("label") or spec["name"],
-        "url": spec.get("url", ""),
+        "url": _redact(spec.get("url", "")),
         "transport": spec.get("transport", "http"),
         "auth": mcp_registry.auth_summary(spec.get("auth") or {}),
         "read_only": bool(spec.get("read_only", True)),
@@ -567,7 +588,7 @@ def discover(server: Any) -> Dict[str, Any]:
     try:
         tools = _list_tools(spec, state, None, force=True)
     except Exception as exc:  # noqa: BLE001
-        row["error"] = str(exc) or type(exc).__name__
+        row["error"] = _redact(str(exc) or type(exc).__name__)
         return row
     names = sorted(str(item.get("name")) for item in tools)
     row["tools"] = names

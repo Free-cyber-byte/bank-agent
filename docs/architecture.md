@@ -18,7 +18,7 @@
 | 层 | 模块 | 职责 |
 | --- | --- | --- |
 | 表现层 | frontend/index.html、app.js、styles.css | 原生单页应用，消费 SSE 事件流，渲染对话、审批弹层、TOTP 演示与审计面板 |
-| 接口层 | backend/server.py | 零依赖 http.server；REST + SSE；静态资源与路径穿越防护；统一错误体 {error:{code,message}} |
+| 接口层 | backend/server.py | 零依赖 http.server；REST + SSE；静态资源与路径穿越防护；统一错误体 {error:{code,message}}；v0.6.1 起加 CORS Origin 白名单、Host 校验、全局 body 上限（413/411）、limit clamp、可选 API_TOKEN 与演示接口本机限制 |
 | 编排层 | backend/app/engine.py | run_turn 六阶段编排、build_plan 计划生成、execute_steps 执行、_finalize 回复、resume 审批恢复、undo_action 撤销 |
 | 解析与安全层 | llm.py、nlu.py、policy.py、approvals.py、totp.py、second_factor.py、locks.py、audit.py | 解析（规则 / 模型 / 自动）、模型输出的严格校验与失败回退、意图与攻击识别、三级权限判定、审批单与 TTL、RFC 6238 动态口令、短信 / 人脸因子、会话异常锁定、哈希链审计 |
 | 领域层 | backend/app/mock_core.py | 转账、理财申赎、卡限额与刷卡、预约、订阅、还款、提醒的模拟实现；金额一律整数分；DomainError 统一错误码 |
@@ -726,7 +726,7 @@ app.js:468 定义 refreshAccountSnapshot()：GET /api/session/{id} → 覆盖 st
 
 ### 14.4 静态资源缓存版本
 
-frontend/sw.js:6 的 VERSION 为 0.5.1，CACHE_NAME 为 zerostep-shell-v0.5.1，activate 阶段删除旧前缀缓存。只改 app.js / styles.css 而不改这一行时，已安装的 PWA 会继续用旧外壳，这是「改了代码、页面没变」最常见的原因。
+frontend/sw.js:6 的 VERSION 与仓库根 VERSION 同步升级（v0.6.1 时为 0.6.1），CACHE_NAME 为 zerostep-shell-v0.6.1，activate 阶段删除旧前缀缓存。只改 app.js / styles.css 而不改这一行时，已安装的 PWA 会继续用旧外壳，这是「改了代码、页面没变」最常见的原因。
 
 ### 14.5 验证
 

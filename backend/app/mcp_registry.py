@@ -26,10 +26,19 @@ _AUTH_TYPES = ("none", "headers", "bearer", "oauth2")
 _LEGACY_LABELS = {"fx": "汇率服务", "risk": "反欺诈风控"}
 
 # 只用于「配置里没写 read_only=False 时」的兜底判断；显式 write_tools 优先级更高。
-_WRITE_PREFIXES = (
-    "transfer", "pay", "payment", "withdraw", "deposit", "refund", "purchase",
-    "create", "update", "delete", "remove", "set", "cancel", "submit", "execute",
-)
+# v0.6.1：不再只看整体前缀（bank_transfer 会被漏判），改为「分词 + 驼峰拆分」后按词判断。
+_WRITE_WORDS = frozenset({
+    "transfer", "transfers", "remit", "remittance", "wire", "pay", "payment", "payments",
+    "payout", "withdraw", "withdrawal", "deposit", "refund", "purchase", "buy", "sell",
+    "trade", "repay", "repayment", "redeem", "subscribe", "cancel", "revoke", "delete",
+    "remove", "update", "modify", "create", "submit", "execute", "recharge", "topup",
+    "settle", "settlement", "charge", "debit", "credit", "disburse", "disbursement",
+})
+# 兼容连写（banktransfer / prepayment / overpay）：长度 >=5 的词做前后缀包含判断，
+# 太短的词（set / pay）只做整词匹配，避免 asset / offset 这类误伤。
+_WRITE_STEMS = frozenset(word for word in _WRITE_WORDS if len(word) >= 5)
+_CAMEL_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+_SEPARATOR_RE = re.compile(r"[^a-z0-9]+")
 
 
 def _text(value: Any) -> str:
@@ -169,33 +178,45 @@ def _normalize(item: Any, index: int) -> Tuple[Optional[Dict[str, Any]], str]:
 
 
 def load() -> Dict[str, Any]:
-    """返回 {"servers": [...], "error": ""}；永不抛异常。"""
+    """返回 {"servers": [...], "error": ""}；永不抛异常。
+
+    v0.6.1：内置 fx/risk 始终保留（v0.5.x 兼容），MCP_SERVERS 里的服务是「追加」
+    而不是「替换」——否则一旦配置了银行服务，汇率/风控插件就会从能力页消失、
+    引擎也会失去 fx_convert / risk_screen。配置项与内置服务同名时以配置为准，
+    并在 error 里说明（避免静默改变内置行为）。
+    """
+    legacy = _legacy_servers()
+    legacy_names = {spec["name"] for spec in legacy}
     raw = _text(getattr(config, "MCP_SERVERS", "") or os.environ.get("MCP_SERVERS", ""))
     if not raw:
-        return {"servers": _legacy_servers(), "error": ""}
+        return {"servers": legacy, "error": ""}
     try:
         parsed = json.loads(raw)
     except ValueError as exc:
-        return {"servers": _legacy_servers(), "error": "MCP_SERVERS 不是合法 JSON，已回退 fx/risk：%s" % exc}
+        return {"servers": legacy, "error": "MCP_SERVERS 不是合法 JSON，已回退 fx/risk：%s" % exc}
     items = parsed.get("servers") if isinstance(parsed, dict) else parsed
     if not isinstance(items, list) or not items:
-        return {"servers": _legacy_servers(), "error": "MCP_SERVERS 必须是服务数组，已回退 fx/risk"}
+        return {"servers": legacy, "error": "MCP_SERVERS 必须是服务数组，已回退 fx/risk"}
     limit = max(1, int(getattr(config, "MCP_MAX_SERVERS", 8)))
-    servers: List[Dict[str, Any]] = []
+    servers: List[Dict[str, Any]] = list(legacy)
     errors: List[str] = []
-    seen = set()
+    seen = set(legacy_names)
     for index, item in enumerate(items[:limit]):
         spec, error = _normalize(item, index)
         if error:
             errors.append(error)
             continue
-        if spec["name"] in seen:
-            errors.append("服务名重复：%s" % spec["name"])
+        name = spec["name"]
+        if name in legacy_names:
+            # 同名以 MCP_SERVERS 配置为准（例如把 fx 指向自建汇率服务），但必须留痕。
+            servers = [spec if existing["name"] == name else existing for existing in servers]
+            errors.append("服务名 %s 与内置服务同名，已按 MCP_SERVERS 配置覆盖" % name)
             continue
-        seen.add(spec["name"])
+        if name in seen:
+            errors.append("服务名重复：%s" % name)
+            continue
+        seen.add(name)
         servers.append(spec)
-    if not servers:
-        return {"servers": _legacy_servers(), "error": "；".join(errors) or "MCP_SERVERS 没有可用服务"}
     return {"servers": servers, "error": "；".join(errors)}
 
 
@@ -234,9 +255,23 @@ def auth_summary(auth: Dict[str, Any]) -> Dict[str, Any]:
     return {"type": kind, "configured": auth_configured(auth or {})}
 
 
-def looks_write_tool(tool: str) -> bool:
-    name = _text(tool).lower().lstrip("_")
-    return any(name.startswith(prefix) for prefix in _WRITE_PREFIXES)
+def _write_tokens(tool: Any) -> List[str]:
+    """把工具名拆成小写词：bank_transfer / bankTransfer / bank.transfer -> [bank, transfer]。"""
+    name = _text(tool)
+    if not name:
+        return []
+    name = _CAMEL_RE.sub("_", name)  # bankTransfer -> bank_Transfer
+    return [token for token in _SEPARATOR_RE.split(name.lower()) if token]
+
+
+def looks_write_tool(tool: Any) -> bool:
+    """按分词判断是否写风险工具：整词命中或长词前后缀包含都算写。"""
+    for token in _write_tokens(tool):
+        if token in _WRITE_WORDS:
+            return True
+        if any(token.startswith(stem) or token.endswith(stem) for stem in _WRITE_STEMS):
+            return True
+    return False
 
 
 def is_write_tool(spec: Dict[str, Any], tool: str) -> bool:
@@ -248,12 +283,20 @@ def is_write_tool(spec: Dict[str, Any], tool: str) -> bool:
 
 
 def write_allowed(spec: Dict[str, Any], tool: str) -> bool:
+    """只读四道闸里的第 2 道：写操作硬拦（先于白名单，见 docs/mcp.md §11.3）。
+
+    1) write_tools 显式拉黑：无论白名单 / read_only / 全局开关，一律拒绝；
+    2) 名字分词后像资金动作（bank_transfer、funds.transfer、bankTransfer、remit、
+       wire、buy、sell、trade、repay …）：同样一律拒绝——不依赖服务声明，也不
+       因为 tools 留空（[] 表示不设白名单）就整段跳过；
+    3) 只有 read_only=False 的服务，在 MCP_ALLOW_WRITE_TOOLS=1 时，非写风险工具
+       才可能放行（默认仍拒绝）。
+    """
     name = _text(tool)
     if name in {str(t) for t in spec.get("write_tools") or []}:
-        return False  # 硬拉黑，全局开关也不能放行
-    if spec.get("read_only", True):
-        # 只读服务：正常读工具放行，名字像资金动作的一律拒绝（防止服务端实际可写）
-        return not looks_write_tool(name)
-    if not bool(getattr(config, "MCP_ALLOW_WRITE_TOOLS", False)):
         return False
-    return True
+    if looks_write_tool(name):
+        return False
+    if spec.get("read_only", True):
+        return True
+    return bool(getattr(config, "MCP_ALLOW_WRITE_TOOLS", False))

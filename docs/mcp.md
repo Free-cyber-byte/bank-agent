@@ -267,7 +267,7 @@ v0.6.0 起由 transport 字段决定握手方式：
 
 ## 十一、v0.6.0：通用 MCP 接入（银行开放平台）
 
-v0.6.0 把「MCP 客户端」升级成「MCP 网关」：除内置 fx / risk 外，任何符合 MCP 语义的银行开放平台接口都可以用一段 MCP_SERVERS 配置接入。原则仍然是只追加不改语义——v0.5.x 的 fx/risk 行为、降级、审计与资金边界一字不改。
+v0.6.0 把「MCP 客户端」升级成「MCP 网关」：除内置 fx / risk 外，任何符合 MCP 语义的银行开放平台接口都可以用一段 MCP_SERVERS 配置接入。原则仍然是只追加不改语义——v0.5.x 的 fx/risk 行为、降级、审计与资金边界一字不改。v0.6.1 起注册表由「替换」改为「合并」（内置 fx / risk 始终在列，配置项追加在其后，同名以配置为准并记 error），因此接入银行服务不会让内置 fx/risk 消失或让插件状态谎报。
 
 ### 11.1 注册表与环境变量
 
@@ -279,7 +279,7 @@ MCP_SERVERS 是一个 JSON 数组（.env 里写单行）。每个元素字段：
 | label | 否 | 展示名，缺省同 name |
 | url | 是 | MCP 端点，http / https |
 | transport | 否 | http（默认，旧 fx/risk 形态）/ streamable-http |
-| tools | 否 | 只读白名单：只允许调用这些工具；空数组表示按服务 tools/list 全量只读 |
+| tools | 否 | 只读白名单：只允许调用这些工具；空数组表示不设白名单，但写风险工具仍按工具名判写拒绝（不会因为留空而放行） |
 | write_tools | 否 | 显式写操作黑名单：无论白名单、read_only 与全局开关如何，一律拒绝 |
 | read_only | 否 | 默认 true；仅 false 时非 write_tools 工具才可能在 MCP_ALLOW_WRITE_TOOLS=1 下放行（默认仍拒绝） |
 | timeout_ms | 否 | 读超时，100–120000，默认取 MCP_TIMEOUT_MS |
@@ -320,11 +320,11 @@ backend/external/bank_mcp_server.py（默认 8310，零依赖标准库实现）�
 ### 11.3 只读治理：四道闸，顺序固定
 
 1. 服务必须已声明：未在 MCP_SERVERS（或未内置）的服务名直接拒绝。
-2. 写操作硬拦（先于白名单）：工具在 write_tools、或名字命中写前缀（transfer / pay / withdraw / submit / cancel / execute / delete / update / create / modify / refund 等）、或服务 read_only 且未开全局写开关 → 拒绝。白名单即使写错，也放不进写操作。
+2. 写操作硬拦（先于白名单）：工具在 write_tools、或名字被判定为资金动作（v0.6.1 起按分词 / 驼峰匹配动词表：transfer / pay / withdraw / deposit / refund / purchase / create / update / delete / remove / set / cancel / submit / execute / remit / wire / buy / sell / trade / repay 等，`bank_transfer`、`funds_transfer`、`bankTransfer` 同样命中）、或服务 read_only 且未开全局写开关 → 拒绝。白名单即使写错，也放不进写操作；白名单留空时同样按此判写。
 3. 白名单：tools 非空时只允许其中工具。
 4. tools/list 声明校验：工具必须由服务声明，否则拒绝。
 
-四道闸都在客户端完成，请求不会到达银行服务——e2e 用服务端 write_calls==0 且 calls 不增加来证明。
+四道闸都在客户端完成：被判写的工具零转发（e2e 用服务端 `write_calls==0` 且 `calls` 不增加来证明）；未声明服务、未声明工具同样在客户端拒绝。`/api/mcp/status` 输出的 `url` 与 `last_error` 在 v0.6.1 起脱敏（去 userinfo、query 中的 token/key/secret 值打码），不把凭据回显给任何调用方。
 
 ### 11.4 降级与错误语义
 
@@ -408,3 +408,11 @@ backend/external/bank_mcp_server.py（默认 8310，零依赖标准库实现）�
 - 不内置任何银行 SDK，也不做请求签名：若平台要求 HMAC 签名、mTLS 或双向证书，需要扩展 `backend/app/mcp_client.py` 的 `_rpc_headers()`（追加签名头）与 `_post()`（注入 ssl context），并在注册表透传对应字段；属小改动，但本仓库未内置。
 - OAuth2 只实现 client_credentials（服务间只读调用）；授权码模式 / 用户态 token 不适用。
 - 外部结果只加严不加宽：外部工具结果只用于展示与参考，不会降低风险等级或绕过审批。
+
+### 11.7 v0.6.1 修正（对应审查报告 mcp.md）
+
+- 注册表由「有 MCP_SERVERS 就替换 fx/risk」改为「合并」：内置 fx/risk 恒在列，配置项追加；同名配置覆盖内置并记 error。修正「配置任一服务后反欺诈预检静默失效、/api/plugins 仍报 mcp-fx/mcp-risk enabled」。
+- 写闸判词由「整串 startswith 前缀」改为「分词 / 驼峰 + 动词表」，`bank_transfer` / `funds_transfer` / `bankTransfer` 均判写；`tools` 留空不再整段跳过判写。
+- `/api/mcp/status` 的 `url`、`last_error` 脱敏后再输出；`call_tool` 成功返回的 `read_only` 按服务真实配置返回，不再硬编码 `true`。
+- 新增 e2e：gw-18（tools 留空 + 无 write_tools 时 bank_transfer 被拒且服务端 write_calls 不增）、gw-19（配置 MCP_SERVERS 后 fx/risk 仍在且插件状态为 enabled）。
+

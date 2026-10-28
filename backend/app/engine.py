@@ -1296,25 +1296,40 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
 
 
 def resume(conn, session_id: str, approval_id: str, decision: str, code: str, method: str = "", sink=None) -> Dict[str, Any]:
-    """v0.4.1：method 指定强验证因子（totp / sms / face），缺省按 totp，保持旧调用方兼容。"""
+    """v0.4.1：method 指定强验证因子（totp / sms / face），缺省按 totp，保持旧调用方兼容。
+
+    安全修复点（P1）：
+    - 审批单绑定会话：check 收到 session_id，跨会话提交直接拒绝（IDOR）。
+    - 参数绑定：审批时审批单里的 steps 必须与 checkpoint 里待执行的 steps 一致，
+      防止「审批 A 却执行 B」。
+    - 二次决策：mark 是 CAS，未命中即 409 APPROVAL_ALREADY_DECIDED，且不再写 approval_granted。
+    """
     sess = get_session(conn, session_id)
     try:
+        ok, err, ap = approvals.check(conn, approval_id, decision, code, sess["user_id"],
+                                      method=method, session_id=session_id)
+    except TypeError:  # 旧版 approvals.check 不接受新增关键字时回退，避免升级顺序造成 500
         ok, err, ap = approvals.check(conn, approval_id, decision, code, sess["user_id"], method=method)
-    except TypeError:  # 旧版 approvals.check 不接受 method 时回退，避免升级顺序造成 500
-        ok, err, ap = approvals.check(conn, approval_id, decision, code, sess["user_id"])
     if not ok:
-        status = 410 if err == "APPROVAL_EXPIRED" else (409 if err == "APPROVAL_ALREADY_DECIDED" else 400)
+        status = {"APPROVAL_EXPIRED": 410, "APPROVAL_ALREADY_DECIDED": 409,
+                  "APPROVAL_SESSION_MISMATCH": 403, "APPROVAL_PARAMS_MISMATCH": 400}.get(err, 400)
         raise EngineError(err, {"INVALID_OTP": "动态验证码不正确或已过期，请重新获取", "APPROVAL_EXPIRED": "审批已过期，请重新发起",
                                 "INVALID_SMS": "短信验证码不正确或已过期，请重新获取",
                                 "INVALID_FACE": "人脸确认已过期，请重新发起",
                                 "INVALID_METHOD": "不支持的校验方式，请选择动态码、短信或人脸",
+                                "APPROVAL_SESSION_MISMATCH": "该审批单不属于当前会话，已拒绝",
+                                "APPROVAL_PARAMS_MISMATCH": "审批参数与会话状态不一致，已拒绝执行",
                                 "APPROVAL_ALREADY_DECIDED": "该审批已处理过，不能重复提交"}.get(err, "审批处理失败"), status)
     emit = Emitter(conn, session_id, sink)
     ctx = _load_checkpoint(conn, ap["thread_id"])
     if not ctx:
         raise EngineError("CHECKPOINT_NOT_FOUND", "找不到待恢复的执行状态，请重新发起", 410)
+    approved_steps = (ap.get("params") or {}).get("steps")
+    if approvals.params_digest({"steps": approved_steps}) != approvals.params_digest({"steps": ctx.get("steps")}):
+        raise EngineError("APPROVAL_PARAMS_MISMATCH", "审批参数与会话状态不一致，已拒绝执行", 400)
     if decision == "reject":
-        approvals.mark(conn, approval_id, "rejected")
+        if not approvals.mark(conn, approval_id, "rejected"):
+            raise EngineError("APPROVAL_ALREADY_DECIDED", "该审批已处理过，不能重复提交", 409)
         audit.append(conn, "approval_rejected", session_id=session_id, tool=ap["action"], args=ap["params"], result={"decision": "reject"}, risk_level=ap["risk_level"], approval_id=approval_id)
         reply = "好的，已取消这笔操作，没有发生任何资金变动。"
         emit.emit("message", {"delta": reply})
@@ -1322,7 +1337,8 @@ def resume(conn, session_id: str, approval_id: str, decision: str, code: str, me
         return {"session_id": session_id, "thread_id": ap["thread_id"], "status": "ok", "reply": reply, "intent": ctx.get("intent"),
                 "plan": {"steps": ctx.get("steps", []), "edges": ctx.get("edges", [])}, "executed": [], "approval": None, "undo": None,
                 "audit": audit.entries(conn, session_id, 20), "events": emit.events}
-    approvals.mark(conn, approval_id, "approved")
+    if not approvals.mark(conn, approval_id, "approved"):
+        raise EngineError("APPROVAL_ALREADY_DECIDED", "该审批已处理过，不能重复提交", 409)
     used_method = (method or "totp") if ap["challenge"] == "totp" else "confirm"
     audit.append(conn, "approval_granted", session_id=session_id, tool=ap["action"], args=ap["params"],
                  result={"decision": "approve", "challenge": ap["challenge"], "method": used_method},

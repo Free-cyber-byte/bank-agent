@@ -66,7 +66,11 @@ CREATE TABLE IF NOT EXISTS approvals (
     approval_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, thread_id TEXT NOT NULL, action TEXT NOT NULL,
     params_json TEXT NOT NULL, risk_level TEXT NOT NULL, reasons_json TEXT NOT NULL, challenge TEXT NOT NULL,
     nonce TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL,
-    expires_at TEXT NOT NULL, decided_at TEXT
+    expires_at TEXT NOT NULL, decided_at TEXT, params_digest TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS totp_secrets (
+    user_id TEXT PRIMARY KEY, secret TEXT NOT NULL, fails INTEGER NOT NULL DEFAULT 0,
+    locked_until TEXT NOT NULL DEFAULT '', last_counter INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS audit (
     seq INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '',
@@ -135,10 +139,17 @@ def init_schema(conn: sqlite3.Connection) -> None:
 
 
 def _migrate(conn: sqlite3.Connection) -> None:
-    """兼容旧库：CREATE TABLE IF NOT EXISTS 不会给已有表补列，这里补 payees.phone。"""
+    """兼容旧库：CREATE TABLE IF NOT EXISTS 不会给已有表补列/补表，这里统一补齐。
+
+    修复点（task-5）：旧库不重建也能升级 —— payees.phone、approvals.params_digest；
+    totp_secrets 表由 SCHEMA 的 CREATE TABLE IF NOT EXISTS 自动补建。
+    """
     cols = {row["name"] for row in conn.execute("PRAGMA table_info(payees)").fetchall()}
     if cols and "phone" not in cols:
         conn.execute("ALTER TABLE payees ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+    acols = {row["name"] for row in conn.execute("PRAGMA table_info(approvals)").fetchall()}
+    if acols and "params_digest" not in acols:
+        conn.execute("ALTER TABLE approvals ADD COLUMN params_digest TEXT NOT NULL DEFAULT ''")
 
 
 def seed_if_needed(conn: sqlite3.Connection) -> bool:
@@ -157,7 +168,7 @@ def seed_if_needed(conn: sqlite3.Connection) -> bool:
 RESET_TABLES = [
     "audit", "events", "checkpoints", "sessions", "session_locks", "approvals", "transfers", "reminders",
     "scheduled_transfers", "subscriptions", "cards", "card_txns", "payees", "wealth_holdings",
-    "wealth_products", "budgets", "transactions", "accounts", "users", "meta",
+    "wealth_products", "budgets", "transactions", "accounts", "users", "totp_secrets", "meta",
 ]
 
 

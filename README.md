@@ -4,7 +4,7 @@
 
 ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的可运行参考实现：用户用一句自然语言说出需求，Agent 走完「理解 → 规划 → 策略校验 → 执行 → 回读 → 回复」六阶段流水线，把查询、转账、理财、卡片、订阅、跨场景分账真正做完。它同时是一份可被审计、可被评测的工程样本：资金动作全部由确定性工具执行，模型只负责产出意图与槽位，任何高风险动作都必须经过用户确认或强验证因子（TOTP 动态码 / 短信码 / 人脸令牌），连续可疑操作还会临时锁定会话；整条事件链用 SHA-256 哈希链固化。
 
-本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.6.0：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56；v0.6.0 把 MCP 客户端升级为通用网关（MCP_SERVERS 多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE），并提供银行开放平台演示服务，MCP 仍严格只读。
+本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.6.1：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56；v0.6.0 把 MCP 客户端升级为通用网关（MCP_SERVERS 多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE），并提供银行开放平台演示服务，MCP 仍严格只读；v0.6.1 按全量安全审查收口边界（CORS/Origin/Host 三收紧、演示二次因子接口仅本机、TOTP 改每用户随机密钥、审批 CAS 与会话绑定、转账改单事务、MCP 注册表由替换改为合并、写闸按分词判写、status 脱敏）。
 
 ---
 
@@ -27,6 +27,7 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 
 15. **操作后总览即刻对齐（v0.5.1）**：账户类型统一按 kind 判断（acctKind），资产构成与账户列表计入理财持仓并单列「理财 · 持仓」一行，回合结束、审批通过与撤销后自动 GET /api/session/{id} 刷新快照；实测 56/56、e2e_stream 33/33、前端自检 247 项全过。
 16. **通用 MCP 接入、银行可插拔（v0.6.0）**：MCP_SERVERS 多服务注册表 + Bearer / Headers / OAuth2 鉴权 + streamable-http 会话与 SSE，附带银行开放平台演示服务（8310）验证全链路；只读四道闸把写操作挡在客户端，全局写开关也放不进显式 write_tools——能接更多外部服务，能动钱的边界不变。
+17. **边界加固（v0.6.1）**：按全量审查收口——CORS 从 `*` 改为 Origin 白名单、Host 校验防 DNS rebinding、请求体 512 KiB 上限、limit 参数 clamp；演示二次因子接口只接受本机连接；TOTP 每用户随机密钥 + `compare_digest` + 失败锁定；审批改为原子 CAS 并绑定会话与参数摘要；转账改为单事务条件更新，禁负余额；MCP 注册表合并内置 fx/risk、写闸按分词判写、`/api/mcp/status` 脱敏。审查报告保存在本地 `.review/`（三份，未随仓库提交）。
 
 ---
 
@@ -56,6 +57,25 @@ v0.6.0 把 MCP 从「两个内置演示服务」升级为通用接入：任何�
     python scripts/mcp_gateway_e2e.py
 
 - 实测（2026-10-28）：scripts/mcp_gateway_e2e.py 17/17；scripts/mcp_probe.py 对演示银行服务 1/1（3 工具，bank_transfer 标写风险）；回归全部 exit 0（run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、skill_check 6/6、smoke_normalize 10/10、channel_e2e 9/9、wecom --selftest 9/9、channel_wecom_e2e 13/13、push_e2e 13/13、前端 247/0）。
+
+---
+
+## v0.6.1 修复（接口边界 · 审批绑定 · 资金原子性）
+
+v0.6.1 不增加业务能力，只把全量安全审查（本地 `.review/` 三份报告）发现的问题收口，目标是「默认部署形态」不再能被浏览器里的任意网页或本机其它进程随意驱动，资金操作在并发下也不会超支。
+
+| 问题 | 修复 | 位置 |
+| --- | --- | --- |
+| CORS `*` + 任意 Origin 可读写接口 | 改为 `CORS_ALLOW_ORIGINS` 白名单（默认只 127.0.0.1/localhost:8000）；带未授权 Origin 的写请求 403；Host 校验防 DNS rebinding | `backend/server.py` |
+| 无认证 | 可选 `API_TOKEN`（Header `X-ZeroStep-Token`，默认关闭）；演示模式提示 | `backend/server.py` |
+| 演示二次因子自助领取 | `/api/demo/*` 与 `/api/admin/reset` 只接受本机回环连接 | `backend/server.py` |
+| TOTP 密钥由公开 user_id 派生、可离线复算 | 每用户随机密钥入库（`totp_secrets` 表）+ `hmac.compare_digest` + 失败 5 次锁 60 秒 | `backend/app/totp.py`、`db.py` |
+| 审批不绑会话、可重放 | `check` 校验 `session_id` + 参数摘要；`mark` 改为 `WHERE status='pending'` 的原子 CAS | `backend/app/approvals.py`、`engine.py` |
+| 转账读-改-写无事务，可双花/负余额 | `BEGIN IMMEDIATE` + 条件更新（`WHERE balance_cents >= ?`），rowcount 不符即回滚 | `backend/app/mock_core.py` |
+| `MCP_SERVERS` 替换内置 fx/risk、写闸可被「bank_transfer」绕过 | 注册表改为「内置 fx/risk + 配置项」合并；写闸按分词/驼峰判动词；`/api/mcp/status` 的 url 与错误脱敏 | `backend/app/mcp_registry.py`、`mcp_client.py` |
+| 请求体无上限、limit 无边界、500 回显异常 | 512 KiB 上限（413）、limit clamp 1..200（400）、内部错误只回 `INTERNAL_ERROR` | `backend/server.py` |
+
+实测见下方「后端口径」与 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -163,7 +183,7 @@ v0.3.2 不改资金链路与安全语义，只扩展「消息怎么进来、提�
 | 企业微信回调 | backend/channels/wecom.py + wecom_crypto.py：URL 验签、AES-128-CBC 解密、XML 转发、加密被动回包；默认 8401，MsgId 去重 300 秒 | [docs/channel.md](docs/channel.md) |
 | 主动触达 | POST /api/push：subscription / large_txn / repayment 三类提醒，三态 not_configured / delivered / failed，每次写 push_message 审计 | [docs/api.md](docs/api.md) |
 | 手机端 | ≤720px 顶栏精简、模式切换移入抽屉、底部 tabbar（工作台/技能/插件/设置，56px + 安全区）、审批弹层按 visualViewport 限高 | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
-| PWA | manifest.webmanifest（standalone、5 个图标含 maskable、theme #0B5FD0）+ sw.js（外壳预缓存、/api/ 永不缓存、导航 network-first 回落；VERSION 0.5.1） | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
+| PWA | manifest.webmanifest（standalone、5 个图标含 maskable、theme #0B5FD0）+ sw.js（外壳预缓存、/api/ 永不缓存、导航 network-first 回落；VERSION 0.6.1） | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
 | 模拟推送 | 设置页「模拟推送」卡：三种 kind、一键预览、结果四态，演示环境不真的发短信 | [docs/design-system.md](docs/design-system.md) · [docs/channel.md](docs/channel.md) |
 
 同时升级：
@@ -207,14 +227,14 @@ v0.3.0 不新增业务动作，也不改 v0.2.0 的接口语义；它把已有�
 
 同时升级：
 
-- 版本号 0.3.0（当时 VERSION 值），/api/health 与插件 version 字段读取仓库根 VERSION（改后需重启新进程生效）；当前为 0.6.0。
+- 版本号 0.3.0（当时 VERSION 值），/api/health 与插件 version 字段读取仓库根 VERSION（改后需重启新进程生效）；当前为 0.6.1。
 - 测试（2026-10-27 QA 回归，全部 exit 0）：run_tasks 36/36、plugin_e2e 17/17、smoke18 18/18（审计链 valid，checked=81）、smoke_normalize 10/10、skill_check 6/6、mcp_e2e 7/7、channel_e2e 9/9、verify_audit valid 13 条、前端 selftest PASS=100 FAIL=0。明细见工作区根 audit/qa-report-v0.3.0.md（2026-10-27，212 行，0 FAIL）。
 
 插件状态落盘与演示前检查：
 
 - 状态文件 backend/data/plugins.json，可用环境变量 PLUGINS_FILE 指定路径；POST /api/admin/reset 会把它一并复位，该文件已被 .gitignore 忽略，不进仓库。
 - 演示前先看 GET /api/plugins 的 enabled_count 是否为 7（七项均启用）；不是的话在设置页点「全部恢复」或调用 POST /api/admin/reset，再刷新界面。
-- 版本号在进程启动时从仓库根 VERSION 读取（v0.3.0 当时为 0.3.0，当前为 0.6.0），改完要重启才生效（已知限制）。
+- 版本号在进程启动时从仓库根 VERSION 读取（v0.3.0 当时为 0.3.0，当前为 0.6.1），改完要重启才生效（已知限制）。
 
 ---
 
@@ -236,7 +256,7 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 - **新意图 query_fx**：汇率/换汇/兑换类问题规划为单步 fx_convert。
 - **评测扩到 36 条**：新增 t31–t36，覆盖外部汇率、外部关闭降级、技能命中、policy hits、注入绕过、账单+提醒跨场景；2026-10-27 全量实测 36/36 通过（规则模式）。
 
-版本号见 VERSION（0.6.0），后端 config.py 从该文件读取且为唯一来源，/api/health 的 version 字段与之一致；变更明细见 [CHANGELOG.md](CHANGELOG.md)。
+版本号见 VERSION（0.6.1），后端 config.py 从该文件读取且为唯一来源，/api/health 的 version 字段与之一致；变更明细见 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 
@@ -301,14 +321,14 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 
 手机访问：用 HOST=0.0.0.0 启动（Windows 可先 set HOST=0.0.0.0），手机与电脑在同一局域网，浏览器打开 http://<电脑局域网IP>:8000。页面在 ≤720px 自动切换为手机布局，可「添加到主屏幕」；PWA 的 Service Worker 只在 localhost 或 HTTPS 下注册，局域网 HTTP 仍可正常使用页面，只是没有离线缓存。
 
-更新后看不到变化：先 Ctrl+F5 强刷；若改的是前端静态资源（app.js / styles.css / index.html），必须同步把 frontend/sw.js 的 VERSION 改成新版本号（当前 0.5.1），否则已安装的 PWA 会继续用旧缓存外壳。
+更新后看不到变化：先 Ctrl+F5 强刷；若改的是前端静态资源（app.js / styles.css / index.html），必须同步把 frontend/sw.js 的 VERSION 改成新版本号（当前 0.6.1），否则已安装的 PWA 会继续用旧缓存外壳。
 
 启动后先看两个只读接口，确认版本与插件清单：
 
     curl.exe -s http://127.0.0.1:8000/api/health
     curl.exe -s http://127.0.0.1:8000/api/plugins
 
-/api/health 返回 version=0.6.0；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（56 条任务按每批 6 条分 10 批）。
+/api/health 返回 version=0.6.1；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（56 条任务按每批 6 条分 10 批）。
 
 不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，56 条评测全部通过（规则模式）。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / 模型」之间切换（「模型」即调用大模型解析，悬停可看到当前厂商与模型名）。
 
@@ -440,7 +460,7 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
     curl.exe -s http://127.0.0.1:8401/health
     curl.exe -s http://127.0.0.1:8000/api/channel/status
 
-后端口径（逐版本累积）：v0.6.0 实跑 scripts/mcp_gateway_e2e.py 17/17，回归 run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、前端 247/0（2026-10-28）；v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件，字段见 docs/api.md §2 / §4 / §7。
+后端口径（逐版本累积）：v0.6.1 全量回归 15 项脚本 + 前端自检全部 exit 0（2026-10-28）——mcp_gateway_e2e 19/19、security_factor_e2e 55/55、capability_e2e 63/63、run_tasks 56/56、e2e_stream 33/33、smoke18 18 轮审计链 valid、plugin_e2e 17/17、push_e2e 13/13、channel_wecom_e2e 13/13、skill_check 6/6、smoke_normalize 10/10、mcp_e2e 7/7、selftest 5/5、channel_e2e 9/9、wecom 自检 9/9、前端 PASS=247 FAIL=0；curl 边界自测：恶意 Origin 的 POST/OPTIONS 403、`Host: evil.com` 403、600 KiB body 413、`limit=abc` 400、`limit=-1` 不再全表、无 Origin 的 /api/health 无 ACAO、允许 Origin 回显 + Vary: Origin；v0.6.0 实跑 scripts/mcp_gateway_e2e.py 17/17，回归 run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、前端 247/0（2026-10-28）；v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件、v0.6.1 CORS/Host/body/limit/API_TOKEN 边界与演示接口本机限制，字段见 docs/api.md §0 / §2 / §4 / §7。
 
 ---
 
@@ -691,7 +711,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     bank-agent/
     ├── README.md                 项目说明与快速开始
     ├── CHANGELOG.md              版本变更与兼容性记录
-    ├── VERSION                   版本号（0.6.0）
+    ├── VERSION                   版本号（0.6.1）
     ├── backend/
     │   ├── server.py              HTTP/SSE 服务入口（零依赖，698 行，含插件、分页、推送、预约/调度、多因子演示与逐字流式/取消路由）
     │   ├── app/
@@ -736,7 +756,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   ├── app.js                 SSE 消费、审批弹层、审计面板、模拟推送
     │   ├── styles.css             样式（设计令牌、三栏布局、手机端与 tabbar）
     │   ├── manifest.webmanifest   PWA 清单（standalone、4 图标、主题色）
-    │   ├── sw.js                  Service Worker（外壳预缓存、/api/ 不缓存；VERSION 0.5.1，改静态资源须同步改）
+    │   ├── sw.js                  Service Worker（外壳预缓存、/api/ 不缓存；VERSION 0.6.1，改静态资源须同步改）
     │   └── _selftest.js           前端自检（247 项断言，含 PWA、手机端、推送、多因子、锁定态、逐字流式与资金流向刷新）
     ├── tasks/t01.json … t56.json  56 条评测任务（声明式断言）
     ├── scripts/
@@ -761,7 +781,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   ├── skill_check.py         技能卡自检（6 项，含 18 条示例）
     │   └── smoke18_result.json    上述运行器的完整实测输出（供复核）
     ├── docs/
-    │   ├── api.md                 HTTP 接口契约（v1.9：MCP 通用接入字段，以及 LLM、插件、分页、推送、企微、预约与调度、多因子与会话锁定、洞察与流式取消）
+    │   ├── api.md                 HTTP 接口契约（v1.10：v0.6.1 边界与审批绑定，以及 MCP 通用接入、LLM、插件、分页、推送、企微、预约与调度、多因子与会话锁定、洞察与流式取消）
     │   ├── architecture.md        架构与流水线详解（三模式解析）
     │   ├── security.md            安全设计与攻击测试（含模型不可信组件）
     │   ├── design-system.md       界面设计规范 v0.3.0（延续 v4：Win11 Fluent、视觉令牌、插件页）
@@ -786,7 +806,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
 | [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化、插件注册表与渠道接入 |
 | [docs/security.md](docs/security.md) | 三级权限矩阵、阈值理由、TOTP 与哈希链实现、注入四层防御、攻击测试、已知限制 |
 | [docs/evaluation.md](docs/evaluation.md) | 56 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、流式 e2e 33/33、v0.4.0/v0.4.1/v0.5.0 增量自检、新增任务方法 |
-| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.9：v0.6.0 MCP 通用接入字段 label/transport/auth/session/read_only 与动态 mcp-<name> 插件、v0.5.1 会话 wealth 与 accounts.kind 口径、v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
+| [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.10：v0.6.1 CORS/Host/body/limit/API_TOKEN 边界、审批会话绑定与 CAS、401/403/409/413 错误码；v1.9：v0.6.0 MCP 通用接入字段 label/transport/auth/session/read_only 与动态 mcp-<name> 插件、v0.5.1 会话 wealth 与 accounts.kind 口径、v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
 | [docs/design-system.md](docs/design-system.md) | 前端设计规范（v0.3.2，延续 v4 视觉）：Win11 Fluent、7 档字号、264/1fr/296 三栏、审批卡规则行、技能页/外部服务页/设置页、插件页与开关/徽章/手风琴/换一批、移动端与 PWA（tabbar、推送卡、安装态） |
 | [docs/mcp.md](docs/mcp.md) | MCP 只读服务与通用接入：协议、接口、两个内置工具、降级行为、启动与演示；v0.6.0 注册表、鉴权、streamable-http/SSE 四道闸与银行开放平台演示 |
 | [docs/skills.md](docs/skills.md) | Skill 技能包：六张卡、front-matter 字段、match/summary/status、接入位置与新增方法 |

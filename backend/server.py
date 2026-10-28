@@ -7,6 +7,7 @@
 接口契约见 docs/api.md。结构化事件（tool_start/tool_end/approval_required/message）
 通过 SSE 推给前端，同时持久化到 events 表，可回放、可审计。
 """
+import hmac
 import json
 import mimetypes
 import os
@@ -49,6 +50,84 @@ _STREAMS_LOCK = threading.Lock()
 _STREAM_CHUNK_CHARS = 12
 _STREAM_DELAY_DEFAULT_MS = 18
 
+# ---------------- v0.6.1 HTTP 边界（浏览器可达面收窄；默认演示形态不变） ----------------
+# CORS：默认只允许本机 8000 端口的前端 Origin；同源请求（无 Origin）不带任何 ACAO 头。
+DEFAULT_CORS_ORIGINS = "http://127.0.0.1:8000,http://localhost:8000"
+# Host：防 DNS rebinding——只认回环主机名，可用 HOST_ALLOW 追加。
+DEFAULT_ALLOWED_HOSTS = {"127.0.0.1", "localhost", "::1"}
+LOCAL_CLIENT_ADDRS = {"127.0.0.1", "::1", "::ffff:127.0.0.1"}
+# body：512 KiB 上限；413 先回包再限量丢弃请求体，避免客户端因 RST 收不到错误。
+MAX_BODY_BYTES = 512 * 1024
+MAX_DRAIN_BYTES = 4 * 1024 * 1024
+# limit 参数统一 clamp 到 1..200（非法整数才是 400）。
+LIMIT_MIN = 1
+LIMIT_MAX = 200
+
+
+class _HttpError(Exception):
+    """已知的客户端错误：按契约回给调用方，堆栈只留给真正的未知异常。"""
+
+    def __init__(self, status: int, code: str, message: str):
+        super().__init__(message)
+        self.status = status
+        self.code = code
+        self.message = message
+
+
+class _BadJSON(_HttpError, ValueError):
+    """请求体不是合法 JSON → 400 BAD_JSON（插件/推送等既有接口仍按 INVALID_BODY 兜底）。"""
+
+    def __init__(self, message: str = "请求体不是合法 JSON"):
+        _HttpError.__init__(self, 400, "BAD_JSON", message)
+
+
+class _PayloadTooLarge(_HttpError):
+    """请求体超过 512 KiB → 413 PAYLOAD_TOO_LARGE。"""
+
+    def __init__(self, length: int):
+        _HttpError.__init__(self, 413, "PAYLOAD_TOO_LARGE", "请求体超过 512 KiB 上限")
+        self.length = int(length or 0)
+
+
+def _env_list(name: str, default: str = "") -> list:
+    """读取逗号分隔的环境变量列表（空值回落 default）。"""
+    raw = os.environ.get(name)
+    if raw is None or str(raw).strip() == "":
+        raw = default
+    return [item.strip() for item in str(raw).split(",") if item.strip()]
+
+
+def _host_name(raw) -> str:
+    """Host 头 → 纯主机名：允许端口、IPv6 方括号、结尾点，统一小写。"""
+    text = str(raw or "").strip()
+    if not text:
+        return ""
+    try:
+        name = urlparse("//" + text).hostname or ""
+    except ValueError:
+        return ""
+    return name.rstrip(".").lower()
+
+
+CORS_ALLOW_ORIGINS = set(_env_list("CORS_ALLOW_ORIGINS", DEFAULT_CORS_ORIGINS))
+ALLOWED_HOSTS = DEFAULT_ALLOWED_HOSTS | {_host_name(h) for h in _env_list("HOST_ALLOW") if _host_name(h)}
+# 可选令牌：非空时才启用鉴权（默认空=关闭，保持纯本机演示与既有测试行为）。
+API_TOKEN = os.environ.get("API_TOKEN", "").strip()
+
+
+def _clamp_int(query, name: str, default: int, lo=None, hi=None) -> int:
+    """查询参数整数化：非整数 400 BAD_REQUEST，越界 clamp 到 [lo, hi]。"""
+    raw = (query.get(name) or [str(default)])[0]
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise _HttpError(400, "BAD_REQUEST", "%s 必须是整数" % name)
+    if lo is not None and value < lo:
+        value = lo
+    if hi is not None and value > hi:
+        value = hi
+    return value
+
 
 def _stream_delay_ms() -> int:
     """块间延迟（毫秒）：默认 18，环境变量 ZS_STREAM_DELAY_MS 覆盖（测试传 0 可秒回）。"""
@@ -69,6 +148,55 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.0"
     server_version = "ZeroStep/" + config.VERSION
 
+    # ---------- v0.6.1 边界校验 ----------
+    def _request_origin(self) -> str:
+        return str(self.headers.get("Origin") or "").strip()
+
+    def _cors_headers(self) -> None:
+        """仅当 Origin 命中白名单时回显该 Origin；同源/无 Origin 请求不带任何 ACAO。"""
+        origin = self._request_origin()
+        if origin and origin in CORS_ALLOW_ORIGINS:
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Vary", "Origin")
+
+    def _client_is_local(self) -> bool:
+        addr = str(self.client_address[0]) if self.client_address else ""
+        return addr.split("%", 1)[0] in LOCAL_CLIENT_ADDRS
+
+    def _demo_guard(self) -> bool:
+        """演示因子/重置接口只接受本机回环连接（否则 403 DEMO_LOCAL_ONLY）。"""
+        if self._client_is_local():
+            return True
+        self._error(403, "DEMO_LOCAL_ONLY", "演示接口仅允许本机访问")
+        return False
+
+    def _guard(self, method: str, path: str) -> bool:
+        """Host 校验（防 DNS rebinding）+ 可选 API_TOKEN + 写请求 CSRF 来源校验。"""
+        host = self.headers.get("Host")
+        if host is not None and _host_name(host) not in ALLOWED_HOSTS:
+            self._error(403, "HOST_DENIED", "Host 不在允许列表内")
+            return False
+        if API_TOKEN and method != "OPTIONS" and path != "/api/health":
+            token = str(self.headers.get("X-ZeroStep-Token") or "")
+            if not hmac.compare_digest(token, API_TOKEN):
+                self._error(401, "UNAUTHORIZED", "缺少或错误的 X-ZeroStep-Token")
+                return False
+        if method in ("POST", "DELETE"):
+            origin = self._request_origin()
+            if origin and origin not in CORS_ALLOW_ORIGINS:
+                self._error(403, "CORS_ORIGIN_DENIED", "请求来源不在 CORS 白名单内")
+                return False
+        return True
+
+    def _discard_body(self, length: int) -> None:
+        """413 已回包后限量丢弃请求体，避免客户端还没读完响应就吃到 TCP RST。"""
+        left = min(int(length or 0), MAX_DRAIN_BYTES)
+        while left > 0:
+            chunk = self.rfile.read(min(left, 65536))
+            if not chunk:
+                break
+            left -= len(chunk)
+
     # ---------- 基础输出 ----------
     def _send(self, status: int, payload) -> None:
         body = json_bytes(payload)
@@ -76,7 +204,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -84,12 +212,20 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, {"error": {"code": code, "message": message}})
 
     def _body(self):
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_length = self.headers.get("Content-Length")
+        try:
+            length = int(str(raw_length).strip()) if raw_length not in (None, "") else 0
+        except (TypeError, ValueError):
+            raise _HttpError(400, "BAD_REQUEST", "Content-Length 不合法")
+        if length < 0:
+            raise _HttpError(400, "BAD_REQUEST", "Content-Length 不合法")
+        if length > MAX_BODY_BYTES:
+            raise _PayloadTooLarge(length)
         raw = self.rfile.read(length) if length else b"{}"
         try:
             return json.loads(raw.decode("utf-8") or "{}")
-        except json.JSONDecodeError:
-            raise ValueError("请求体不是合法 JSON")
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            raise _BadJSON()
 
     def _query(self):
         return parse_qs(urlparse(self.path).query)
@@ -100,14 +236,24 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---------- 路由 ----------
     def do_OPTIONS(self):
-        self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        path = urlparse(self.path).path
+        if not self._guard("OPTIONS", path):
+            return
+        origin = self._request_origin()
+        if not origin or origin not in CORS_ALLOW_ORIGINS:
+            return self._error(403, "CORS_ORIGIN_DENIED", "请求来源不在 CORS 白名单内")
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self._cors_headers()
         self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type,X-ZeroStep-Token")
+        self.send_header("Access-Control-Max-Age", "600")
         self.end_headers()
 
     def do_GET(self):
         path = urlparse(self.path).path
+        if not self._guard("GET", path):
+            return
         try:
             if path == "/api/health":
                 return self._send(200, {"status": "ok", "app": config.APP_NAME, "version": config.VERSION,
@@ -124,17 +270,17 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/transactions":
                 sid = (self._query().get("session_id") or [""])[0]
                 snap = engine.session_snapshot(CONN, sid)
-                limit = int((self._query().get("limit") or ["20"])[0])
+                limit = _clamp_int(self._query(), "limit", 20, LIMIT_MIN, LIMIT_MAX)
                 return self._send(200, {"transactions": mock_core.list_transactions(CONN, snap["user"]["user_id"], limit=limit)})
             if path == "/api/audit":
                 q = self._query()
                 sid = (q.get("session_id") or [None])[0]
-                limit = int((q.get("limit") or ["50"])[0])
+                limit = _clamp_int(q, "limit", 50, LIMIT_MIN, LIMIT_MAX)
                 return self._send(200, {"entries": audit.entries(CONN, sid, limit), "chain": audit.verify(CONN)})
             if path == "/api/events":
                 q = self._query()
                 sid = (q.get("session_id") or [""])[0]
-                after = int((q.get("after") or ["0"])[0])
+                after = _clamp_int(q, "after", 0, 0)
                 rows = CONN.execute("SELECT seq, type, payload_json, ts FROM events WHERE session_id=? AND seq>? ORDER BY seq", (sid, after)).fetchall()
                 events = [{"seq": r["seq"], "type": r["type"], "payload": json.loads(r["payload_json"]), "ts": r["ts"]} for r in rows]
                 return self._send(200, {"events": events})
@@ -211,6 +357,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/demo/totp":
                 if not config.DEMO_MODE:
                     return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启，不返回动态码")
+                if not self._demo_guard():
+                    return
                 user_id = (self._query().get("user_id") or [config.DEFAULT_USER_ID])[0]
                 return self._send(200, {"user_id": user_id, "code": totp.current_code(user_id),
                                         "seconds_left": totp.seconds_left()})
@@ -218,6 +366,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 演示专用：短信因子为内存模拟，直接回显验证码与有效期（不接真实短信网关）
                 if not config.DEMO_MODE:
                     return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启，不返回短信验证码")
+                if not self._demo_guard():
+                    return
                 user_id = (self._query().get("user_id") or [config.DEFAULT_USER_ID])[0]
                 info = second_factor.sms_send(user_id)
                 return self._send(200, {"ok": True, "user_id": user_id, "code": info.get("code") or "",
@@ -228,13 +378,39 @@ class Handler(BaseHTTPRequestHandler):
             return self._static(path)
         except engine.EngineError as exc:
             return self._error(exc.http_status, exc.code, exc.message)
-        except Exception as exc:  # noqa: BLE001
+        except _HttpError as exc:
+            return self._error(exc.status, exc.code, exc.message)
+        except Exception:  # noqa: BLE001
             traceback.print_exc()
-            return self._error(500, "INTERNAL", str(exc))
+            return self._error(500, "INTERNAL_ERROR", "服务器内部错误")
 
     def do_POST(self):
         global CONN
         path = urlparse(self.path).path
+        if not self._guard("POST", path):
+            return
+        # v0.6.1 边界：即使接口不读 body（如 /api/session），也先按 Content-Length 拦超大请求体，
+        # 否则「512 KiB 上限」只对调用 _body() 的接口生效。
+        declared = self.headers.get("Content-Length")
+        if declared is not None:
+            try:
+                declared_len = int(declared)
+            except (TypeError, ValueError):
+                declared_len = -1
+            if declared_len < 0:
+                self._error(400, "BAD_REQUEST", "Content-Length 不合法")
+                return
+            if declared_len > MAX_BODY_BYTES:
+                self._error(413, "PAYLOAD_TOO_LARGE", "请求体超过 512 KiB 上限")
+                if declared_len <= MAX_DRAIN_BYTES:
+                    self._discard_body(declared_len)
+                self.close_connection = True
+                return
+        if self.headers.get("Transfer-Encoding", "").lower().strip() == "chunked":
+            # 分块传输无法预知大小：直接拒绝，避免绕过 Content-Length 上限。
+            self._error(411, "LENGTH_REQUIRED", "不支持分块传输，请提供 Content-Length")
+            self.close_connection = True
+            return
         try:
             if path == "/api/session":
                 created = engine.create_session(CONN)
@@ -243,6 +419,8 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/admin/reset":
                 if not config.DEMO_MODE:
                     return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启")
+                if not self._demo_guard():
+                    return
                 # 同一连接内做表级重置，避免 Windows 下删除被占用的 bank.db 抛 WinError 32
                 db.reset_demo(CONN)
                 plugins.reset()  # 插件状态一并回到默认「全部启用」
@@ -265,8 +443,13 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, {"cancelled": True, "emitted_chunks": emitted})
             if path == "/api/chat":
                 body = self._body()
+                if not isinstance(body, dict):
+                    return self._error(400, "BAD_REQUEST", "请求体必须是 JSON 对象")
                 sid = body.get("session_id") or ""
-                text = (body.get("text") or "").strip()
+                raw_text = body.get("text") or ""
+                if not isinstance(sid, str) or not isinstance(raw_text, str):
+                    return self._error(400, "BAD_REQUEST", "session_id 与 text 必须是字符串")
+                text = raw_text.strip()
                 if not sid or not text:
                     return self._error(400, "BAD_REQUEST", "缺少 session_id 或 text")
                 if body.get("stream"):
@@ -278,6 +461,8 @@ class Handler(BaseHTTPRequestHandler):
                 # 演示专用：人脸因子为内存模拟，签发 60 秒有效的一次性令牌（不接真实人脸 SDK）
                 if not config.DEMO_MODE:
                     return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启，不返回人脸令牌")
+                if not self._demo_guard():
+                    return
                 body = self._body()
                 if not isinstance(body, dict):
                     return self._error(400, "BAD_REQUEST", "请求体必须是 JSON 对象")
@@ -290,6 +475,8 @@ class Handler(BaseHTTPRequestHandler):
                                         "ttl": int(info.get("ttl") or 0)})
             if path == "/api/approval":
                 body = self._body()
+                if not isinstance(body, dict):
+                    return self._error(400, "BAD_REQUEST", "请求体必须是 JSON 对象")
                 method = body.get("method") or ""
                 if not isinstance(method, str):
                     return self._error(400, "INVALID_METHOD", _APPROVAL_ERROR_MESSAGES["INVALID_METHOD"])
@@ -304,7 +491,10 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(200, _public(result))
             if path == "/api/llm/mode":
                 body = self._body()
-                if not llm.set_mode(body.get("mode") or ""):
+                if not isinstance(body, dict):
+                    return self._error(400, "BAD_REQUEST", "请求体必须是 JSON 对象")
+                mode = body.get("mode") or ""
+                if not isinstance(mode, str) or not llm.set_mode(mode):
                     return self._error(400, "BAD_MODE", "mode 只能是 rule / llm / auto")
                 status = llm.status()
                 status["switched"] = True
@@ -359,16 +549,24 @@ class Handler(BaseHTTPRequestHandler):
                                         "ts": result.get("ts") or db.now_iso()})
             if path == "/api/undo":
                 body = self._body()
+                if not isinstance(body, dict):
+                    return self._error(400, "BAD_REQUEST", "请求体必须是 JSON 对象")
                 result = engine.undo_action(CONN, body.get("session_id") or "", body.get("action_id") or "")
                 return self._send(200, result)
             return self._error(404, "NOT_FOUND", "接口不存在")
         except engine.EngineError as exc:
             return self._error(exc.http_status, exc.code, exc.message)
+        except _HttpError as exc:
+            self._error(exc.status, exc.code, exc.message)
+            if exc.status == 413:
+                self._discard_body(getattr(exc, "length", 0))
+                self.close_connection = True
+            return
         except ValueError as exc:
             return self._error(400, "BAD_REQUEST", str(exc))
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             traceback.print_exc()
-            return self._error(500, "INTERNAL", str(exc))
+            return self._error(500, "INTERNAL_ERROR", "服务器内部错误")
 
     # ---------- SSE ----------
     def _stream_chat(self, sid: str, text: str, stream_text: bool = True) -> None:
@@ -381,7 +579,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Connection", "close")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors_headers()
         self.end_headers()
 
         def write_event(event_type: str, payload) -> None:
@@ -454,10 +652,10 @@ class Handler(BaseHTTPRequestHandler):
         except engine.EngineError as exc:
             write_event("error", {"code": exc.code, "message": exc.message})
             write_event("done", {"status": "error"})
-        except Exception as exc:  # noqa: BLE001
+        except Exception:  # noqa: BLE001
             traceback.print_exc()
             try:
-                write_event("error", {"code": "INTERNAL", "message": str(exc)})
+                write_event("error", {"code": "INTERNAL_ERROR", "message": "服务器内部错误"})
                 write_event("done", {"status": "error"})
             except Exception:
                 pass
@@ -489,6 +687,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
+        self._cors_headers()
         self.end_headers()
         self.wfile.write(body)
 
@@ -691,6 +890,10 @@ def main() -> None:
             print("调度器启动失败，预约转账只能手动触发")
     print("ZeroStep 已在 http://%s:%d 启动（LLM 模式：%s，演示模式：%s）" %
           (host, port, llm.effective(), "开" if config.DEMO_MODE else "关"))
+    if config.DEMO_MODE:
+        print("演示模式：二次因子接口仅本机可用（/api/demo/* 与 /api/admin/reset 仅接受 127.0.0.1 / ::1）")
+    print("CORS 白名单：%s；Host 白名单：%s" %
+          (", ".join(sorted(CORS_ALLOW_ORIGINS)) or "（空）", ", ".join(sorted(ALLOWED_HOSTS))))
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

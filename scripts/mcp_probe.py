@@ -57,7 +57,11 @@ def _print_row(row):
         print("       错误：%s" % row["error"])
         return
     tools = row.get("tools") or []
-    writes = set(row.get("writes") or [])
+    # 写风险标注与写闸（mcp_registry.write_allowed / looks_write_tool）共用同一套
+    # 分词判定：bank_transfer / funds.transfer / bankTransfer / remit / wire 等都能标出，
+    # 不依赖服务端 discover 的 writes 字段是否完整。
+    writes = {str(tool) for tool in (row.get("writes") or [])}
+    writes.update(tool for tool in tools if mcp_registry.looks_write_tool(tool))
     print("       工具 %d 个%s" % (len(tools), "" if tools else "（服务未声明任何工具）"))
     for tool in tools:
         print("         - %-34s %s" % (tool, "写风险：勿加入白名单" if tool in writes else "只读"))

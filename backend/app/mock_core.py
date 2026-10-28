@@ -6,6 +6,7 @@
 import json
 import re
 import secrets
+import sqlite3
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -18,6 +19,48 @@ class DomainError(Exception):
         self.code = code
         self.message = message
         self.detail = detail or {}
+
+
+def _begin_immediate(conn) -> None:
+    """开启写事务：先拿写锁（BEGIN IMMEDIATE）再做读-改-写。
+
+    修复点（P1 资金原子性）：旧实现在 autocommit 下「先 SELECT 余额、再 UPDATE 覆盖」，
+    并发请求会互相覆盖（丢失更新），也可能把余额扣成负数。BEGIN IMMEDIATE 保证
+    读到的余额与随后的条件更新在同一把写锁内，配合 `UPDATE ... WHERE balance_cents>=?`
+    的 rowcount 校验，任何余额不足都会整体回滚。
+    """
+    if getattr(conn, "in_transaction", False):
+        conn.commit()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError:
+        # 连接已处于显式事务中（极少见）：沿用现有事务，仍由 outer try 统一提交/回滚
+        pass
+
+
+def _rollback_quietly(conn) -> None:
+    try:
+        conn.rollback()
+    except Exception:
+        pass
+
+
+def _guarded_debit(conn, account_id: str, user_id: str, amount_cents: int, available_cents: int,
+                   kind: str = "") -> bool:
+    """条件扣款：余额不足时不动任何行，返回 False（不抛异常，由调用方决定错误文案）。"""
+    if kind == "credit":
+        cur = conn.execute(
+            "UPDATE accounts SET balance_cents=balance_cents-? WHERE account_id=? AND user_id=?"
+            " AND balance_cents+credit_limit_cents>=?",
+            (amount_cents, account_id, user_id, amount_cents),
+        )
+    else:
+        cur = conn.execute(
+            "UPDATE accounts SET balance_cents=balance_cents-? WHERE account_id=? AND user_id=?"
+            " AND balance_cents>=?",
+            (amount_cents, account_id, user_id, amount_cents),
+        )
+    return cur.rowcount == 1
 
 
 def yuan(cents: int) -> str:
@@ -189,34 +232,43 @@ def create_transfer(conn, user_id: str, session_id: str, thread_id: str, from_ac
         raise DomainError("AMOUNT_INVALID", "转账金额必须大于 0")
     if amount_cents > config.HARD_SINGLE_LIMIT_CENTS:
         raise DomainError("LIMIT_EXCEEDED", "单笔金额超过演示系统上限 5 万元")
-    acc = get_account(conn, from_account_id, user_id)
-    before = int(acc["balance_cents"])
-    available = before if acc["kind"] != "credit" else int(acc["credit_limit_cents"]) + before
-    if amount_cents > available:
-        raise DomainError("INSUFFICIENT_FUNDS", "账户可用余额不足，当前可用 %s" % yuan(available),
-                          {"available_cents": available})
-    key = idempotency_key or ("idem_" + secrets.token_hex(8))
-    exist = conn.execute("SELECT * FROM transfers WHERE idempotency_key=?", (key,)).fetchone()
-    if exist:
-        d = dict(exist)
-        d.update({"deduplicated": True, "action_id": d["transfer_id"]})
-        return d
-    after = before - amount_cents
-    conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (after, from_account_id))
-    if internal:
-        to = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='savings' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
-        if to:
-            conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (int(to["balance_cents"]) + amount_cents, to["account_id"]))
-            _record_txn(conn, to["account_id"], user_id, "in", amount_cents, "转账", "本人储蓄卡", memo or "内部转账", int(to["balance_cents"]) + amount_cents)
-    transfer_id = "tr_" + secrets.token_hex(6)
-    created = db.now_iso()
-    conn.execute(
-        "INSERT INTO transfers (transfer_id, session_id, thread_id, user_id, from_account_id, payee_name, payee_account, amount_cents, status, memo, idempotency_key, balance_before_cents, balance_after_cents, created_at, undone_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        (transfer_id, session_id, thread_id, user_id, from_account_id, payee_name, payee_account, amount_cents,
-         "executed", memo, key, before, after, created, None),
-    )
-    txn_id = _record_txn(conn, from_account_id, user_id, "out", amount_cents, "转账", payee_name, memo, after)
-    conn.commit()
+    _begin_immediate(conn)
+    try:
+        acc = get_account(conn, from_account_id, user_id)
+        before = int(acc["balance_cents"])
+        available = before if acc["kind"] != "credit" else int(acc["credit_limit_cents"]) + before
+        if amount_cents > available:
+            raise DomainError("INSUFFICIENT_FUNDS", "账户可用余额不足，当前可用 %s" % yuan(available),
+                              {"available_cents": available})
+        key = idempotency_key or ("idem_" + secrets.token_hex(8))
+        exist = conn.execute("SELECT * FROM transfers WHERE idempotency_key=?", (key,)).fetchone()
+        if exist:
+            conn.rollback()  # 幂等命中：不产生新资金流动，结束只读写事务
+            d = dict(exist)
+            d.update({"deduplicated": True, "action_id": d["transfer_id"]})
+            return d
+        if not _guarded_debit(conn, from_account_id, user_id, amount_cents, available, str(acc["kind"] or "")):
+            raise DomainError("INSUFFICIENT_FUNDS", "账户可用余额不足，当前可用 %s" % yuan(available),
+                              {"available_cents": available})
+        after = _balance(conn, from_account_id)
+        if internal:
+            to = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='savings' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
+            if to:
+                conn.execute("UPDATE accounts SET balance_cents=balance_cents+? WHERE account_id=?", (amount_cents, to["account_id"]))
+                to_after = _balance(conn, to["account_id"])
+                _record_txn(conn, to["account_id"], user_id, "in", amount_cents, "转账", "本人储蓄卡", memo or "内部转账", to_after)
+        transfer_id = "tr_" + secrets.token_hex(6)
+        created = db.now_iso()
+        conn.execute(
+            "INSERT INTO transfers (transfer_id, session_id, thread_id, user_id, from_account_id, payee_name, payee_account, amount_cents, status, memo, idempotency_key, balance_before_cents, balance_after_cents, created_at, undone_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (transfer_id, session_id, thread_id, user_id, from_account_id, payee_name, payee_account, amount_cents,
+             "executed", memo, key, before, after, created, None),
+        )
+        txn_id = _record_txn(conn, from_account_id, user_id, "out", amount_cents, "转账", payee_name, memo, after)
+        conn.commit()
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     return {
         "transfer_id": transfer_id, "action_id": transfer_id, "txn_id": txn_id, "amount_cents": amount_cents,
         "amount_display": yuan(amount_cents), "payee_name": payee_name, "payee_account": payee_account,
@@ -228,24 +280,42 @@ def create_transfer(conn, user_id: str, session_id: str, thread_id: str, from_ac
 
 
 def undo_transfer(conn, user_id: str, action_id: str) -> Dict[str, Any]:
-    t = conn.execute("SELECT * FROM transfers WHERE transfer_id=? AND user_id=?", (action_id, user_id)).fetchone()
-    if not t:
-        raise DomainError("ACTION_NOT_FOUND", "没有找到可撤销的操作")
-    t = dict(t)
-    if t["status"] != "executed":
-        raise DomainError("ACTION_NOT_UNDOABLE", "该操作当前状态不可撤销")
-    created = datetime.fromisoformat(t["created_at"])
-    if datetime.now().astimezone() - created > timedelta(seconds=config.UNDO_WINDOW_SECONDS):
-        raise DomainError("UNDO_EXPIRED", "已超过 %d 秒撤销窗口" % config.UNDO_WINDOW_SECONDS)
-    conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (int(t["balance_before_cents"]), t["from_account_id"]))
-    to = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='savings' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
-    if t["payee_name"] == "储蓄卡" and to:
-        conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (int(to["balance_cents"]) - int(t["amount_cents"]), to["account_id"]))
-    _record_txn(conn, t["from_account_id"], user_id, "in", int(t["amount_cents"]), "撤销", t["payee_name"], "转账撤销冲正", int(t["balance_before_cents"]))
-    conn.execute("UPDATE transfers SET status='undone', undone_at=? WHERE transfer_id=?", (db.now_iso(), t["transfer_id"]))
-    conn.commit()
+    _begin_immediate(conn)
+    try:
+        t = conn.execute("SELECT * FROM transfers WHERE transfer_id=? AND user_id=?", (action_id, user_id)).fetchone()
+        if not t:
+            raise DomainError("ACTION_NOT_FOUND", "没有找到可撤销的操作")
+        t = dict(t)
+        if t["status"] != "executed":
+            raise DomainError("ACTION_NOT_UNDOABLE", "该操作当前状态不可撤销")
+        created = datetime.fromisoformat(t["created_at"])
+        if datetime.now().astimezone() - created > timedelta(seconds=config.UNDO_WINDOW_SECONDS):
+            raise DomainError("UNDO_EXPIRED", "已超过 %d 秒撤销窗口" % config.UNDO_WINDOW_SECONDS)
+        # 先 CAS 迁移状态：并发重复撤销只有一个能成功，另一个不会二次入账
+        cur = conn.execute(
+            "UPDATE transfers SET status='undone', undone_at=? WHERE transfer_id=? AND user_id=? AND status='executed'",
+            (db.now_iso(), t["transfer_id"], user_id),
+        )
+        if cur.rowcount != 1:
+            raise DomainError("ACTION_NOT_UNDOABLE", "该操作当前状态不可撤销")
+        amount = int(t["amount_cents"])
+        conn.execute("UPDATE accounts SET balance_cents=balance_cents+? WHERE account_id=?", (amount, t["from_account_id"]))
+        to = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='savings' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
+        if t["payee_name"] == "储蓄卡" and to:
+            cur2 = conn.execute(
+                "UPDATE accounts SET balance_cents=balance_cents-? WHERE account_id=? AND user_id=? AND balance_cents>=?",
+                (amount, to["account_id"], user_id, amount),
+            )
+            if cur2.rowcount != 1:
+                raise DomainError("INSUFFICIENT_FUNDS", "储蓄卡余额不足，无法完成撤销")
+        balance_after = _balance(conn, t["from_account_id"])
+        _record_txn(conn, t["from_account_id"], user_id, "in", amount, "撤销", t["payee_name"], "转账撤销冲正", balance_after)
+        conn.commit()
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     return {"undone": True, "action_id": t["transfer_id"], "amount_cents": t["amount_cents"],
-            "message": "已撤销，资金已回到原账户", "balance_cents": int(t["balance_before_cents"])}
+            "message": "已撤销，资金已回到原账户", "balance_cents": balance_after}
 
 
 # ---------------- 理财 ----------------
@@ -260,21 +330,29 @@ def list_wealth(conn, user_id: str) -> Dict[str, Any]:
 
 
 def purchase_wealth(conn, user_id: str, session_id: str, thread_id: str, product_id: str, amount_cents: int) -> Dict[str, Any]:
-    p = conn.execute("SELECT * FROM wealth_products WHERE product_id=?", (product_id,)).fetchone()
-    if not p:
-        raise DomainError("PRODUCT_NOT_FOUND", "没有找到该理财产品")
-    if amount_cents < int(p["min_amount_cents"]):
-        raise DomainError("BELOW_MIN_AMOUNT", "起购金额为 %s" % yuan(int(p["min_amount_cents"])))
-    acc = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='checking' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
-    before = int(acc["balance_cents"])
-    if amount_cents > before:
-        raise DomainError("INSUFFICIENT_FUNDS", "工资卡余额不足，当前 %s" % yuan(before))
-    after = before - amount_cents
-    conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (after, acc["account_id"]))
-    holding_id = "h_" + secrets.token_hex(4)
-    conn.execute("INSERT INTO wealth_holdings VALUES (?,?,?,?,?,?)", (holding_id, user_id, product_id, amount_cents, "holding", db.now_iso()))
-    _record_txn(conn, acc["account_id"], user_id, "out", amount_cents, "理财", p["name"], "理财申购", after)
-    conn.commit()
+    _begin_immediate(conn)
+    try:
+        p = conn.execute("SELECT * FROM wealth_products WHERE product_id=?", (product_id,)).fetchone()
+        if not p:
+            raise DomainError("PRODUCT_NOT_FOUND", "没有找到该理财产品")
+        if amount_cents < int(p["min_amount_cents"]):
+            raise DomainError("BELOW_MIN_AMOUNT", "起购金额为 %s" % yuan(int(p["min_amount_cents"])))
+        acc = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='checking' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
+        if not acc:
+            raise DomainError("ACCOUNT_NOT_FOUND", "没有可扣款的工资卡")
+        before = int(acc["balance_cents"])
+        if amount_cents > before:
+            raise DomainError("INSUFFICIENT_FUNDS", "工资卡余额不足，当前 %s" % yuan(before))
+        if not _guarded_debit(conn, acc["account_id"], user_id, amount_cents, before, str(acc["kind"] or "")):
+            raise DomainError("INSUFFICIENT_FUNDS", "工资卡余额不足，当前 %s" % yuan(before))
+        after = _balance(conn, acc["account_id"])
+        holding_id = "h_" + secrets.token_hex(4)
+        conn.execute("INSERT INTO wealth_holdings VALUES (?,?,?,?,?,?)", (holding_id, user_id, product_id, amount_cents, "holding", db.now_iso()))
+        _record_txn(conn, acc["account_id"], user_id, "out", amount_cents, "理财", p["name"], "理财申购", after)
+        conn.commit()
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     return {"action_id": holding_id, "holding_id": holding_id, "product_id": product_id, "product_name": p["name"],
             "amount_cents": amount_cents, "amount_display": yuan(amount_cents), "balance_before_cents": before,
             "balance_after_cents": after, "status": "holding", "created_at": db.now_iso(),
@@ -282,20 +360,33 @@ def purchase_wealth(conn, user_id: str, session_id: str, thread_id: str, product
 
 
 def undo_purchase(conn, user_id: str, action_id: str) -> Dict[str, Any]:
-    h = conn.execute("SELECT * FROM wealth_holdings WHERE holding_id=? AND user_id=?", (action_id, user_id)).fetchone()
-    if not h:
-        raise DomainError("ACTION_NOT_FOUND", "没有找到可撤销的理财申购")
-    h = dict(h)
-    if h["status"] != "holding":
-        raise DomainError("ACTION_NOT_UNDOABLE", "该申购当前状态不可撤销")
-    bought = datetime.fromisoformat(h["bought_at"])
-    if datetime.now().astimezone() - bought > timedelta(seconds=config.UNDO_WINDOW_SECONDS):
-        raise DomainError("UNDO_EXPIRED", "已超过撤销窗口")
-    acc = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='checking' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
-    conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (int(acc["balance_cents"]) + int(h["amount_cents"]), acc["account_id"]))
-    conn.execute("UPDATE wealth_holdings SET status='undone' WHERE holding_id=?", (action_id,))
-    _record_txn(conn, acc["account_id"], user_id, "in", int(h["amount_cents"]), "撤销", "理财申购撤销", "理财申购撤销冲正", int(acc["balance_cents"]))
-    conn.commit()
+    _begin_immediate(conn)
+    try:
+        h = conn.execute("SELECT * FROM wealth_holdings WHERE holding_id=? AND user_id=?", (action_id, user_id)).fetchone()
+        if not h:
+            raise DomainError("ACTION_NOT_FOUND", "没有找到可撤销的理财申购")
+        h = dict(h)
+        if h["status"] != "holding":
+            raise DomainError("ACTION_NOT_UNDOABLE", "该申购当前状态不可撤销")
+        bought = datetime.fromisoformat(h["bought_at"])
+        if datetime.now().astimezone() - bought > timedelta(seconds=config.UNDO_WINDOW_SECONDS):
+            raise DomainError("UNDO_EXPIRED", "已超过撤销窗口")
+        cur = conn.execute(
+            "UPDATE wealth_holdings SET status='undone' WHERE holding_id=? AND user_id=? AND status='holding'",
+            (action_id, user_id),
+        )
+        if cur.rowcount != 1:
+            raise DomainError("ACTION_NOT_UNDOABLE", "该申购当前状态不可撤销")
+        acc = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='checking' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
+        if not acc:
+            raise DomainError("ACCOUNT_NOT_FOUND", "没有可入账的工资卡")
+        conn.execute("UPDATE accounts SET balance_cents=balance_cents+? WHERE account_id=?", (int(h["amount_cents"]), acc["account_id"]))
+        balance_after = _balance(conn, acc["account_id"])
+        _record_txn(conn, acc["account_id"], user_id, "in", int(h["amount_cents"]), "撤销", "理财申购撤销", "理财申购撤销冲正", balance_after)
+        conn.commit()
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     return {"undone": True, "action_id": action_id, "message": "理财申购已撤销，资金已退回工资卡"}
 
 
@@ -460,42 +551,52 @@ def redeem_wealth(conn, user_id: str, session_id: str, thread_id: str, product_i
     amount_cents = int(amount_cents or 0)
     if amount_cents <= 0:
         raise DomainError("AMOUNT_INVALID", "赎回金额必须大于 0")
-    sql = "SELECT * FROM wealth_holdings WHERE user_id=? AND status='holding'"
-    args: List[Any] = [user_id]
-    if holding_id:
-        sql += " AND holding_id=?"
-        args.append(holding_id)
-    if product_id:
-        sql += " AND product_id=?"
-        args.append(product_id)
-    rows = [dict(r) for r in conn.execute(sql + " ORDER BY bought_at, holding_id", args).fetchall()]
-    total_holding = sum(int(r["amount_cents"]) for r in rows)
-    if total_holding < amount_cents:
-        raise DomainError("INSUFFICIENT_HOLDING", "可赎回持仓不足，当前持仓 %s" % yuan(total_holding),
-                          {"holding_cents": total_holding})
-    deducted: List[Dict[str, Any]] = []
-    remaining = amount_cents
-    for row in rows:
-        if remaining <= 0:
-            break
-        take = min(int(row["amount_cents"]), remaining)
-        left = int(row["amount_cents"]) - take
-        conn.execute("UPDATE wealth_holdings SET amount_cents=?, status=? WHERE holding_id=?",
-                     (left, "holding" if left > 0 else "redeemed", row["holding_id"]))
-        deducted.append({"holding_id": row["holding_id"], "product_id": row["product_id"], "amount_cents": take})
-        remaining -= take
-    first = deducted[0]
-    prod = conn.execute("SELECT name FROM wealth_products WHERE product_id=?", (first["product_id"],)).fetchone()
-    product_name = str(prod["name"]) if prod else ""
-    acc = _first_account(conn, user_id, "checking")
-    if not acc:
-        raise DomainError("ACCOUNT_NOT_FOUND", "没有可入账的账户")
-    after = int(acc["balance_cents"]) + amount_cents
-    conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (after, acc["account_id"]))
-    redeemed_at = db.now_iso()
-    _record_txn(conn, acc["account_id"], user_id, "in", amount_cents, "赎回", product_name or "理财", "理财赎回",
-                after, source="redeem")
-    conn.commit()
+    _begin_immediate(conn)
+    try:
+        sql = "SELECT * FROM wealth_holdings WHERE user_id=? AND status='holding'"
+        args: List[Any] = [user_id]
+        if holding_id:
+            sql += " AND holding_id=?"
+            args.append(holding_id)
+        if product_id:
+            sql += " AND product_id=?"
+            args.append(product_id)
+        rows = [dict(r) for r in conn.execute(sql + " ORDER BY bought_at, holding_id", args).fetchall()]
+        total_holding = sum(int(r["amount_cents"]) for r in rows)
+        if total_holding < amount_cents:
+            raise DomainError("INSUFFICIENT_HOLDING", "可赎回持仓不足，当前持仓 %s" % yuan(total_holding),
+                              {"holding_cents": total_holding})
+        deducted: List[Dict[str, Any]] = []
+        remaining = amount_cents
+        for row in rows:
+            if remaining <= 0:
+                break
+            take = min(int(row["amount_cents"]), remaining)
+            left = int(row["amount_cents"]) - take
+            cur = conn.execute(
+                "UPDATE wealth_holdings SET amount_cents=?, status=? WHERE holding_id=? AND user_id=? AND status='holding'",
+                (left, "holding" if left > 0 else "redeemed", row["holding_id"], user_id),
+            )
+            if cur.rowcount != 1:
+                raise DomainError("INSUFFICIENT_HOLDING", "可赎回持仓不足，当前持仓 %s" % yuan(total_holding),
+                                  {"holding_cents": total_holding})
+            deducted.append({"holding_id": row["holding_id"], "product_id": row["product_id"], "amount_cents": take})
+            remaining -= take
+        first = deducted[0]
+        prod = conn.execute("SELECT name FROM wealth_products WHERE product_id=?", (first["product_id"],)).fetchone()
+        product_name = str(prod["name"]) if prod else ""
+        acc = _first_account(conn, user_id, "checking")
+        if not acc:
+            raise DomainError("ACCOUNT_NOT_FOUND", "没有可入账的账户")
+        conn.execute("UPDATE accounts SET balance_cents=balance_cents+? WHERE account_id=?", (amount_cents, acc["account_id"]))
+        after = _balance(conn, acc["account_id"])
+        redeemed_at = db.now_iso()
+        _record_txn(conn, acc["account_id"], user_id, "in", amount_cents, "赎回", product_name or "理财", "理财赎回",
+                    after, source="redeem")
+        conn.commit()
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     return {
         "holding_id": first["holding_id"], "product_id": first["product_id"], "product_name": product_name,
         "amount_cents": amount_cents, "amount_display": yuan(amount_cents),
@@ -535,30 +636,35 @@ def card_spend(conn, user_id: str, session_id: str, thread_id: str, card_id: str
                amount_cents: int = 0, merchant: str = "") -> Dict[str, Any]:
     """卡消费：校验卡状态与单笔/单日限额，通过后写入 card_txns 流水。"""
     amount_cents = int(amount_cents or 0)
-    card = _any_card(conn, user_id, card_id)
-    if not card:
-        raise DomainError("CARD_NOT_FOUND", "没有找到该银行卡")
-    if str(card["status"]) != "active":
-        raise DomainError("CARD_FROZEN", "卡片当前状态为冻结，无法消费")
     if amount_cents <= 0:
         raise DomainError("AMOUNT_INVALID", "消费金额必须大于 0")
-    single = int(card["single_limit_cents"] or 0)
-    daily = int(card["daily_limit_cents"] or 0)
-    if single > 0 and amount_cents > single:
-        raise DomainError("CARD_SINGLE_LIMIT", "超出单笔限额 %s，本笔 %s" % (yuan(single), yuan(amount_cents)))
-    today = datetime.now().astimezone().date().isoformat()
-    used = int(conn.execute(
-        "SELECT COALESCE(SUM(amount_cents),0) AS s FROM card_txns WHERE card_id=? AND user_id=? AND ts LIKE ?",
-        (card["card_id"], user_id, today + "%"),
-    ).fetchone()["s"])
-    if daily > 0 and used + amount_cents > daily:
-        raise DomainError("CARD_DAILY_LIMIT", "超出单日限额 %s，今日已用 %s，本笔 %s"
-                          % (yuan(daily), yuan(used), yuan(amount_cents)))
-    txn_id = "ct_" + secrets.token_hex(6)
-    ts = db.now_iso()
-    conn.execute("INSERT INTO card_txns VALUES (?,?,?,?,?,?,?)",
-                 (txn_id, card["card_id"], user_id, ts, amount_cents, str(merchant or ""), "success"))
-    conn.commit()
+    _begin_immediate(conn)
+    try:
+        card = _any_card(conn, user_id, card_id)
+        if not card:
+            raise DomainError("CARD_NOT_FOUND", "没有找到该银行卡")
+        if str(card["status"]) != "active":
+            raise DomainError("CARD_FROZEN", "卡片当前状态为冻结，无法消费")
+        single = int(card["single_limit_cents"] or 0)
+        daily = int(card["daily_limit_cents"] or 0)
+        if single > 0 and amount_cents > single:
+            raise DomainError("CARD_SINGLE_LIMIT", "超出单笔限额 %s，本笔 %s" % (yuan(single), yuan(amount_cents)))
+        today = datetime.now().astimezone().date().isoformat()
+        used = int(conn.execute(
+            "SELECT COALESCE(SUM(amount_cents),0) AS s FROM card_txns WHERE card_id=? AND user_id=? AND ts LIKE ?",
+            (card["card_id"], user_id, today + "%"),
+        ).fetchone()["s"])
+        if daily > 0 and used + amount_cents > daily:
+            raise DomainError("CARD_DAILY_LIMIT", "超出单日限额 %s，今日已用 %s，本笔 %s"
+                              % (yuan(daily), yuan(used), yuan(amount_cents)))
+        txn_id = "ct_" + secrets.token_hex(6)
+        ts = db.now_iso()
+        conn.execute("INSERT INTO card_txns VALUES (?,?,?,?,?,?,?)",
+                     (txn_id, card["card_id"], user_id, ts, amount_cents, str(merchant or ""), "success"))
+        conn.commit()
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     new_used = used + amount_cents
     remaining = max(0, daily - new_used) if daily > 0 else 0
     return {

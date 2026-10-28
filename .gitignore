@@ -13,6 +13,9 @@ backend/data/plugins.json.tmp
 # 评测临时目录
 .eval_tmp/
 
+# 安全审查报告（本地保留，不随仓库提交）
+.review/
+
 # Python
 __pycache__/
 *.py[cod]

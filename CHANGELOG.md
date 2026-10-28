@@ -4,6 +4,54 @@
 
 v0.2.0 为 2026-10-27 启动的能力批次，代码合并与验收由 Lead 统一复核；尚未通过验收的接口与命令在对应位置单独注明。
 
+## [0.6.1] - 2026-10-28（进行中，未打 tag）
+
+v0.6.1 是「审计整改」批次：针对 v0.6.0 的三份独立安全审查（MCP 接入层 / HTTP 与鉴权 / 对话与数据层，见 `.review/`）修复 P0/P1 与高价值 P2。演示形态与接口语义保持兼容：默认 `DEMO_MODE=1`、端口与前端流程不变，新增行为只在「跨会话审批、重复决策、越界请求、恶意网页跨域」等异常路径生效。
+
+### Added
+
+- HTTP 边界（backend/server.py）：`CORS_ALLOW_ORIGINS`（默认 `http://127.0.0.1:8000,http://localhost:8000`）Origin 白名单 + `Vary: Origin`；Host 头校验（127.0.0.1 / localhost / ::1 ∪ `HOST_ALLOW`，防 DNS rebinding）；请求体 512 KiB 上限（413 PAYLOAD_TOO_LARGE）；JSON 解析失败 400 BAD_JSON；`limit` clamp 1..200 且非法整数 400；未预期异常只回 500 INTERNAL_ERROR（细节写 stderr）；可选 `API_TOKEN`（`X-ZeroStep-Token`，默认空=关闭）。
+- db.totp_secrets 表（user_id PK / secret / fails / locked_until / last_counter / created_at）与 approvals.params_digest 列；`db._migrate` 用 PRAGMA 自动补列/补表，旧库无需迁移脚本。
+- mcp_registry.load() 改为「内置 fx/risk + MCP_SERVERS 合并」；`_write_tokens` 驼峰/分隔符分词，`looks_write_tool` 覆盖 bank_transfer / funds.transfer / bankTransfer / remit / wire / buy / sell / trade / repay。
+- mcp_client.`_redact`：status/discover 的 url 去 userinfo、query 中 token/key/secret/sign/auth 打码，last_error/error 同步脱敏；成功返回不再硬编码 `read_only=True`。
+- 测试：scripts/mcp_gateway_e2e.py 新增 gw-18（tools=[] 且无 write_tools 时 bank_transfer 被拒、服务端 write_calls 不增）、gw-19（配置 MCP_SERVERS 后 fx/risk 仍在且真实可用）；scripts/security_factor_e2e.py 新增 sec-idor-1（跨会话审批 403、审批仍 pending、余额不变）与 sec-idor-2（二次 approve 409、只扣一次、approval_granted 仅 1 条），总用例 53 → 55。
+- 文档：docs/mcp.md 新增 11.7；docs/api.md 升 v1.10（§0 通用约定重写 + 审批绑定/CAS 错误码）；docs/security.md §4 重写 TOTP、新增 §9.1 v0.6.1 边界加固表并更新已知限制；README 新增 v0.6.1 节；`.env.example` 新增 HTTP 边界配置块。
+
+### Changed
+
+- 审批单记录参数摘要：`approvals.create` 写入 `params_digest`（归一化 JSON 的 SHA-256），`engine.resume` 比对「审批时的 steps」与 checkpoint 待执行 steps，不一致 400 APPROVAL_PARAMS_MISMATCH 且不执行任何工具。
+- `approvals.mark` 返回是否命中（CAS），engine.resume 的 reject / approve 分支未命中即 409 APPROVAL_ALREADY_DECIDED，且不再写 approval_granted。
+- 资金函数（create_transfer / undo_transfer / purchase_wealth / undo_purchase / redeem_wealth / card_spend）改为 `BEGIN IMMEDIATE` 单事务 + 条件扣款（普通账户 `balance_cents>=?`，信用卡 `balance_cents+credit_limit_cents>=?`），rowcount≠1 回滚并抛 INSUFFICIENT_FUNDS；撤销类改 ±amount 重读余额，transfers/holdings 用 CAS 防重复入账。
+- TOTP 密钥改为每用户 `secrets.token_bytes(20)` 随机并持久化；`verify_code`/`current_code` 增加可选 `conn`，签名向后兼容。
+- plugins._status_of：探测跑过但缺 probe 行 → degraded；探测整体未跑（mcp_rows 为空）保留 enabled（兼容 plugin_e2e plg-10）。
+- 演示接口（/api/demo/{totp,sms,face}、/api/admin/reset）只接受 127.0.0.1/::1（403 DEMO_LOCAL_ONLY）；`DEMO_MODE` 默认值保持不变，启动日志提示「演示模式：二次因子接口仅本机可用」。
+- VERSION 0.6.0 → 0.6.1；frontend/sw.js 的 PWA VERSION 同步 0.6.1；README 版本引用与实测口径同步。
+
+### Fixed
+
+- 修 IDOR：审批单只能由创建它的会话提交（旧实现只按 approval_id 查，任何会话拿到 ID 即可批准）。
+- 修「审批 A 执行 B」：审批参数摘要绑定 checkpoint steps。
+- 修 TOTP 可复算：旧实现 `sha256("zerostep:"+user_id)` 派生，知道 user_id 即可离线算出 6 位码；现密钥随机不可推导，且 `hmac.compare_digest` 常量时间比较、连续 5 次失败锁 60 秒。
+- 修 money 读-改-写竞态：并发转账可同时读到旧余额导致双花 / 余额转负。
+- 修 MCP 写闸漏判：`tools=[]` 且未配置 write_tools 时白名单整段跳过，bank_transfer / funds_transfer / bankTransfer 被真实转发（实测服务端 calls=1、write_calls=1）；现逐工具分词判写，被判写即零转发。
+- 修 MCP_SERVERS 替换内置 fx/risk：配置外部服务后 risk_screen 变「未知工具」，转账前反欺诈静默放行、插件页仍谎报 enabled；现合并注册表 + probe 行缺失判 degraded。
+- 修 `/api/mcp/status` 泄露内部端点与错误原文：url / last_error 脱敏。
+- 修 `limit=-1` 全表、`int()` 非法参数 500、`str(exc)` 回显内部细节、恶意网页跨域可读响应/代发写请求。
+- 修演示因子接口可被同网段调用：限定本机回环。
+
+### Security
+
+- 威胁模型补充：本机回环 + 浏览器恶意页面是主要攻击面；`DEMO_MODE=1` + `/api/demo/*` 仍在，但只对本机开放；生产部署应设 `DEMO_MODE=0`、配置 `API_TOKEN` 并把 `CORS_ALLOW_ORIGINS` 收到实际前端域名。
+- 保留风险（已在 docs/security.md 记录）：无真实登录、TOTP 窗口内可重放、审批摘要非签名、SQLite 单进程、MCP 写闸为启发式。
+
+### 验证
+
+- `py -3 scripts/mcp_gateway_e2e.py` 19/19 PASS；`scripts/mcp_e2e.py` 7/7；`scripts/plugin_e2e.py` 17/17。
+- `security_factor_e2e.py` 55/55（含 sec-idor-1 403、sec-idor-2 409）；`smoke18.py` 18 轮审计链 valid；`run_tasks.py` 56/56。
+- 其余回归见 README「v0.6.1」节的实测口径。
+
+---
+
 ## [0.6.0] - 2026-10-28（进行中，未打 tag）
 
 v0.6.0 是「MCP 通用接入」批次：把 v0.2.0 只服务 fx/risk 的 MCP 客户端升级为通用网关，支持多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE 响应，并提供银行开放平台演示服务验证链路。MCP 依然只读：资金边界、审批、TOTP、撤销窗口、审计哈希链与既有接口字段都不变。

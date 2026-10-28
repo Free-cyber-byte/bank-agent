@@ -1,13 +1,18 @@
-# ZeroStep API 契约（v1.9）
+# ZeroStep API 契约（v1.10）
 
-v1.9（2026-10-28）新增 v0.6.0 的 MCP 通用接入字段：/api/mcp/status 每个服务新增 label / transport / auth{type,configured,token_cached} / session / read_only，顶层可选 config_error；配了 MCP_SERVERS 时 /api/plugins 额外出现 mcp-<name>（纯增量，无破坏性变更）；v1.8（2026-10-28）新增 v0.5.1 的 /api/session wealth 字段与 accounts.kind 字段口径（§1，纯增量，无破坏性变更）；v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 spending_insights 与 detect_subscriptions 的结果结构（§4）、insight 意图与 insight_card 事件、/api/chat 的 answer_start / answer_delta / answer_end 事件序（含 stream_text=false 降级）、POST /api/turn/cancel 与 answer_cancelled 审计（§2、§5、§7）；v1.6 的 v0.4.1 多因子强验证与会话锁定（审批 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 与 security_lock 事件）、v1.5 的预约与调度、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页均保持不变。
+v1.10（2026-10-28）对应 v0.6.1：不新增业务接口，收口 HTTP 边界与审批语义——CORS 由 `*` 改为 Origin 白名单、Host 校验、请求体 512 KiB 上限（413）、`limit` clamp 1..200（400）、可选 API_TOKEN（401）、演示因子接口只接受本机连接（403 DEMO_LOCAL_ONLY）、审批绑定会话与原子 CAS（§0、§2）；v1.9（2026-10-28）新增 v0.6.0 的 MCP 通用接入字段：/api/mcp/status 每个服务新增 label / transport / auth{type,configured,token_cached} / session / read_only，顶层可选 config_error；配了 MCP_SERVERS 时 /api/plugins 额外出现 mcp-<name>（纯增量，无破坏性变更）；v1.8（2026-10-28）新增 v0.5.1 的 /api/session wealth 字段与 accounts.kind 字段口径（§1，纯增量，无破坏性变更）；v1.7（2026-10-28）新增 v0.5.0 的消费洞察与逐字流式：只读工具 spending_insights 与 detect_subscriptions 的结果结构（§4）、insight 意图与 insight_card 事件、/api/chat 的 answer_start / answer_delta / answer_end 事件序（含 stream_text=false 降级）、POST /api/turn/cancel 与 answer_cancelled 审计（§2、§5、§7）；v1.6 的 v0.4.1 多因子强验证与会话锁定（审批 factors、POST /api/approval 的 method、GET /api/demo/sms、POST /api/demo/face、status=locked 与 security_lock 事件）、v1.5 的预约与调度、v1.4 的主动触达、v1.3 的 LLM 状态、v1.2 的插件注册表与分页均保持不变。
 
 零依赖 Python 标准库实现。所有接口返回 JSON（UTF-8），金额单位一律为「分」（整数），前端负责格式化。
 
 ## 0. 通用约定
 
 - Base URL: http://127.0.0.1:8000
-- 认证：演示模式，无登录；用 session_id 区分会话。
+- 认证：默认演示模式无登录，用 session_id 区分会话；设置 `API_TOKEN` 后，除 GET /api/health 外所有请求必须带 `X-ZeroStep-Token`，不匹配返回 401 {"error":{"code":"UNAUTHORIZED",...}}。
+- 浏览器边界（v0.6.1）：响应不再固定 `Access-Control-Allow-Origin: *`，只有 Origin 在 `CORS_ALLOW_ORIGINS`（默认 http://127.0.0.1:8000,http://localhost:8000）内才回显该 Origin 并带 `Vary: Origin`；OPTIONS 预检只对允许的 Origin 返回 200。带未授权 Origin 的写请求直接 403 CORS_ORIGIN_DENIED；Host 头主机名不在 {127.0.0.1, localhost, ::1} ∪ `HOST_ALLOW` 内返回 403 HOST_DENIED（防 DNS rebinding）。
+- 请求体上限 512 KiB：所有 POST 在路由前按 `Content-Length` 校验（覆盖不读 body 的接口），超限 413 {"error":{"code":"PAYLOAD_TOO_LARGE",...}}；分块传输（Transfer-Encoding: chunked）无法预知大小，直接 411 LENGTH_REQUIRED；JSON 解析失败 400 BAD_JSON。
+- `limit` 参数统一 clamp 到 1..200，非法整数 400 BAD_REQUEST（不再把 `-1` 当全表或让 int() 抛出 500）。
+- 未预期异常只返回 500 {"error":{"code":"INTERNAL_ERROR","message":"服务器内部错误"}}，异常细节只写 stderr 日志，不回给客户端。
+- 演示接口（GET /api/demo/totp、GET /api/demo/sms、POST /api/demo/face、POST /api/admin/reset）只接受本机回环连接（127.0.0.1 / ::1），其它来源 403 DEMO_LOCAL_ONLY；`DEMO_MODE=0` 时仍返回 403 DEMO_MODE_DISABLED。
 - 错误返回：HTTP 4xx/5xx，body 为 { "error": { "code": "CODE", "message": "中文说明" } }；code 为机器可读常量（如 BAD_REQUEST / INVALID_OTP / INVALID_SMS / INVALID_FACE / INVALID_METHOD / APPROVAL_EXPIRED / DEMO_MODE_DISABLED / BAD_MODE / NOT_FOUND / SKILL_NOT_FOUND / INVALID_BODY / PLUGIN_NOT_FOUND / PLUGIN_CORE_LOCKED）。
 - 例外：少数内部异常兜底为 { "ok": false, "error": "服务不可用" }（无 code 层），见对应接口说明。
 - 金额：amount_cents 整数，单位分；展示为 ¥1,234.56。
@@ -219,6 +224,11 @@ approval 对象（非流式响应的 approval 与 SSE 的 approval_required 为�
   - method 不是三个值之一返回 400 INVALID_METHOD。
 - 因子校验失败时审批单保持 pending，可在 TTL 内换因子重试。
 - 审批过期（默认 300 秒）返回 410 {"error":{"code":"APPROVAL_EXPIRED","message":"..."}}；已决策返回 409 APPROVAL_ALREADY_DECIDED。
+- v0.6.1 审批绑定（对应审查 P1）：
+  - 审批单只能由创建它的 session_id 提交，跨会话提交返回 403 APPROVAL_SESSION_MISMATCH，审批单仍保持 pending、余额不变。
+  - 决策是原子 CAS（`UPDATE ... WHERE status='pending'`）：同一 approval_id 第二次提交返回 409 APPROVAL_ALREADY_DECIDED，不会重复执行、也不会重复写 approval_granted。
+  - 审批单记录了参数摘要 `params_digest`（数据库列，旧库启动时自动补）：参数被篡改返回 400 APPROVAL_PARAMS_MISMATCH；恢复执行前还会比对「审批时的 steps」与 checkpoint 里待执行的 steps，不一致同样 400 且不执行任何工具（防「审批 A 执行 B」）。
+  - 动态码连续错误 5 次锁定 60 秒，期间返回 400 INVALID_OTP（文案不变）；演示接口 GET /api/demo/totp 仍返回当前真实码（v0.6.1 起密钥为每用户随机、不可由 user_id 推导）。
 返回结构与 /api/chat stream=false 相同，status 为 ok / blocked。
 
 ### POST /api/undo

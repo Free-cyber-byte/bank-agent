@@ -348,6 +348,17 @@ def _card_status(db_path, card_id="card_002"):
     return str(rows[0]["status"]) if rows else ""
 
 
+def _balance_cents(db_path, account_id):
+    rows = _db(db_path, "SELECT balance_cents FROM accounts WHERE account_id=?", (account_id,))
+    return int(rows[0]["balance_cents"]) if rows else None
+
+
+def _checking_account(db_path, user_id=DEFAULT_USER):
+    rows = _db(db_path, "SELECT account_id FROM accounts WHERE user_id=? AND kind='checking' ORDER BY account_id LIMIT 1",
+               (user_id,))
+    return str(rows[0]["account_id"]) if rows else ""
+
+
 def _all_chat_approvals(port, session_id, text):
     """发一条消息；若进入审批返回 (first, approval_id)，否则 (first, '')。"""
     status, payload, _ = _chat(port, session_id, text)
@@ -654,6 +665,45 @@ def scenario_method(app, c):
           status == 409 and _code(again) == "APPROVAL_ALREADY_DECIDED",
           "http=%s %s" % (status, _short(again)))
     return {"session_id": sid, "approval_id": approval_id}
+
+
+# ---------------------------------------------------------------- 场景：审批单归属（IDOR）/ 二次决策
+
+
+def scenario_idor(app, c):
+    """审批单绑定会话：跨会话提交必须被拒；同一 approval_id 只能执行一次资金动作。"""
+    port = app.port
+    sid_a = _session_new(port)
+    sid_b = _session_new(port)
+    _, approval_id = _all_chat_approvals(port, sid_a, "给妈妈转 800 元")
+    account_id = _checking_account(app.db_path)
+    before = _balance_cents(app.db_path, account_id)
+
+    status_b, mismatch, _ = _approve(port, sid_b, approval_id)
+    rows = _db(app.db_path, "SELECT status FROM approvals WHERE approval_id=?", (approval_id,))
+    still_pending = bool(rows) and str(rows[0]["status"]) == "pending"
+    after_mismatch = _balance_cents(app.db_path, account_id)
+    c.add("sec-idor-1", "跨会话提交他人审批单 → 403 APPROVAL_SESSION_MISMATCH，审批单仍 pending 且资金未变动",
+          status_b == 403 and _code(mismatch) == "APPROVAL_SESSION_MISMATCH" and still_pending
+          and before is not None and after_mismatch == before,
+          "http=%s %s approval_status=%r balance=%r->%r"
+          % (status_b, _code(mismatch), [r.get("status") for r in rows], before, after_mismatch))
+
+    status_ok, done, _ = _approve(port, sid_a, approval_id)
+    after_ok = _balance_cents(app.db_path, account_id)
+    status_again, again, _ = _approve(port, sid_a, approval_id)
+    after_again = _balance_cents(app.db_path, account_id)
+    granted = [e for e in _entries(_audit(port))
+               if str(e.get("event_type") or "") == "approval_granted"
+               and str(e.get("approval_id") or "") == approval_id]
+    expected_after = (before - 80000) if before is not None else None
+    c.add("sec-idor-2", "同一 approval_id 二次 approve → 409 APPROVAL_ALREADY_DECIDED，资金只扣一次且 approval_granted 仅 1 条",
+          status_ok == 200 and _status(done) == "ok" and status_again == 409
+          and _code(again) == "APPROVAL_ALREADY_DECIDED" and after_ok == expected_after
+          and after_again == expected_after and len(granted) == 1,
+          "first=%s/%r second=%s/%s balance=%r->%r->%r granted=%d"
+          % (status_ok, _status(done), status_again, _code(again), before, after_ok, after_again, len(granted)))
+    return {"session_id": sid_a, "approval_id": approval_id}
 
 
 # ---------------------------------------------------------------- 场景：人脸因子
@@ -965,6 +1015,7 @@ def main():
             ("env", scenario_env),
             ("red", scenario_red),
             ("method", scenario_method),
+            ("idor", scenario_idor),
             ("face", scenario_face),
             ("sms", scenario_sms),
             ("totp", scenario_totp),
