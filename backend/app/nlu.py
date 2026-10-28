@@ -364,6 +364,10 @@ def parse(text: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     if is_greeting:
         return {"name": "greeting", "confidence": 0.9, "source": "rule", "slots": {}}
 
+    # v0.5.0 消费洞察：只读分析意图，先于「省钱→预算」「订阅→订阅查询」等粗粒度分支判定
+    if re.search(r"(洞察|花费分析|最近.{0,4}(花钱|花费)|钱都花哪|能省|省钱|有什么可以省|订阅.{0,6}烧钱|账单洞察)", t):
+        return {"name": "insight", "confidence": 0.9, "source": "rule", "slots": slots}
+
     # ---- v0.4.0 新能力：先于粗粒度旧分支判定，避免被「转账/理财/卡片」抢走 ----
     run_at = extract_schedule(t)
     if run_at:

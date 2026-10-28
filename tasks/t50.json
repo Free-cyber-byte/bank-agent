@@ -1,0 +1,26 @@
+{
+  "id": "t50",
+  "title": "消费洞察零写操作（只读建议）",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看消费洞察"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "expected_tools": [
+      "spending_insights"
+    ],
+    "insight_checks": [
+      "readonly",
+      "audit_readonly",
+      "savings_kinds"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "洞察只允许单步只读 spending_insights：计划与实际执行都只含该工具，前后账户总余额不变；审计中不得出现 approval_required/turn_blocked/undo_done 等写事件，tool_start/tool_end 只允许 spending_insights。"
+}

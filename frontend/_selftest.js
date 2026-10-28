@@ -441,6 +441,7 @@ const PUSH_CALLS = [];
 let pushMode = 'delivered';
 let tasksMode = 'paged';
 let chatScript = null;
+let chatFailAfter = null;
 function sseChunks(events) {
   const parts = events.map(function (e) { return 'event: ' + e.event + '\ndata: ' + JSON.stringify(e.data) + '\n\n'; });
   return parts;
@@ -466,6 +467,7 @@ function makeFetch() {
           getReader: function () {
             return {
               read: function () {
+                if (chatFailAfter != null && idx >= chatFailAfter) return Promise.reject(new Error('network down'));
                 if (idx >= chunks.length) return Promise.resolve({ done: true });
                 return Promise.resolve({ done: false, value: enc(chunks[idx++]) });
               }
@@ -519,6 +521,7 @@ function makeFetch() {
     if (u.indexOf('/api/channel/status') === 0) return json(FIX.channel);
     if (u.indexOf('/api/health') === 0) return json(FIX.health);
     if (u.indexOf('/api/audit') === 0) return json(FIX.audit);
+    if (u.indexOf('/api/turn/cancel') === 0) return json({ cancelled: true, emitted_chunks: 1 });
     if (u.indexOf('/api/chat') === 0) return sse(sseChunks(chatScript || []));
     if (u.indexOf('/api/approval') === 0) return json(FIX.approvalResult || { status: 'ok', reply: '已完成。' });
     if (u.indexOf('/api/demo/totp') === 0) return json({ code: '123456', expires_in: 30 });
@@ -1111,6 +1114,146 @@ function one(sel) { return doc.querySelector(sel); }
   ok('锁定期间输入与发送禁用', one('#input').disabled === true && one('#btnSend').disabled === true && ZS.lockedNow() === true);
   await sleep(1700);
   ok('倒计时结束自动恢复', one('#lockBar').hidden === true && one('#input').disabled === false && one('#btnSend').disabled === false && ZS.lockedNow() === false, one('#lockBarText').textContent);
+
+  console.log('== v0.5.0 逐字流式回答 ==');
+  ZS.state.currentTurn = null;
+  ZS.setBusy(false);
+  ZS.handleEvent({ event: 'answer_start', data: { turn_id: 'tr_9', thread_id: 'th_9', chars: 42 } });
+  await sleep(10);
+  function lastStream() { const els = getEls('.result--stream'); return els[els.length - 1] || null; }
+  let bubble = lastStream();
+  ok('answer_start 建占位气泡并带 is-typing', !!bubble && bubble.classList.contains('is-typing'));
+  ok('占位气泡尾部有闪烁光标', !!(bubble && bubble.querySelector('.answer__caret')));
+  ok('answer_start 后按钮变「停止」', one('#btnSend').textContent === '停止' && one('#btnSend').classList.contains('is-stop'), one('#btnSend').textContent);
+  ok('流式期间停止按钮可点击', one('#btnSend').disabled === false);
+  ZS.state.busy = true;
+  ZS.handleEvent({ event: 'answer_delta', data: { turn_id: 'tr_9', i: 0, text: '近 1 个月你一共支出 ' } });
+  ZS.handleEvent({ event: 'answer_delta', data: { turn_id: 'tr_9', i: 2, text: '，最多的是「居住」。' } });
+  await sleep(10);
+  ok('先到的 i=2 不会插到 i=1 前面', bubble.querySelector('.answer__body').textContent === '近 1 个月你一共支出 ', bubble.textContent);
+  ZS.handleEvent({ event: 'answer_delta', data: { turn_id: 'tr_9', i: 1, text: '**¥16,712.31**' } });
+  await sleep(10);
+  const joined = bubble.querySelector('.answer__body').textContent;
+  ok('按 i 顺序累积全部分块', joined === '近 1 个月你一共支出 **¥16,712.31**，最多的是「居住」。', joined);
+  ZS.handleEvent({ event: 'answer_end', data: { turn_id: 'tr_9', chunks: 3, elapsed_ms: 36, cancelled: false } });
+  await sleep(10);
+  ok('answer_end 去掉 is-typing 与光标', !bubble.classList.contains('is-typing') && !bubble.querySelector('.answer__caret'), bubble.className);
+  ok('流式收尾后 markdown 加粗被解析（无字面 **）', bubble.innerHTML.indexOf('<strong>') >= 0 && bubble.innerHTML.indexOf('**') === -1, bubble.innerHTML.slice(0, 100));
+  ok('answer_end 后按钮恢复「发送」', one('#btnSend').textContent === '发送' && !one('#btnSend').classList.contains('is-stop'), one('#btnSend').textContent);
+  ok('answer_end 记录分块数与耗时', bubble.getAttribute('data-chunks') === '3' && bubble.getAttribute('data-elapsed') === '36');
+
+  console.log('== v0.5.0 停止按钮 / 取消 ==');
+  ZS.state.currentTurn = null;
+  ZS.setBusy(true);
+  ZS.handleEvent({ event: 'answer_start', data: { turn_id: 'tr_11', thread_id: 'th_11' } });
+  ZS.handleEvent({ event: 'answer_delta', data: { turn_id: 'tr_11', i: 0, text: '第一段' } });
+  await sleep(10);
+  ok('流式中按钮文案=停止且未禁用', one('#btnSend').textContent === '停止' && one('#btnSend').disabled === false, one('#btnSend').textContent);
+  one('#btnSend').click();
+  await sleep(60);
+  const cancelCall = CALLS[CALLS.length - 1] || {};
+  ok('点击停止 POST /api/turn/cancel 带 thread_id', /\/api\/turn\/cancel/.test(cancelCall.url || '') && /th_11/.test(cancelCall.body || ''), (cancelCall.url || '') + ' ' + (cancelCall.body || ''));
+  ZS.handleEvent({ event: 'answer_end', data: { turn_id: 'tr_11', chunks: 1, elapsed_ms: 18, cancelled: true } });
+  await sleep(10);
+  bubble = lastStream();
+  ok('取消后气泡标 is-cancelled 并注「已停止输出」', bubble.classList.contains('is-cancelled') && /已停止输出/.test(bubble.textContent), bubble.textContent);
+
+  ZS.handleEvent({ event: 'note', data: { text: '已停止输出' } });
+  await sleep(10);
+  ok('取消后补发 note「已停止输出」只渲染一次', (bubble.textContent.match(/已停止输出/g) || []).length === 1 && !ZS.state.currentTurn.noteEl, '残留 ' + (bubble.textContent.match(/已停止输出/g) || []).length + ' 次');
+
+  console.log('== v0.5.0 note 正常渲染（非取消）==');
+  ZS.state.currentTurn = null;
+  ZS.handleEvent({ event: 'intent', data: { name: 'query_bills', confidence: 0.9, source: 'rule', slots: {} } });
+  ZS.handleEvent({ event: 'note', data: { text: '这是一条普通提示' } });
+  await sleep(10);
+  ok('普通 note 正常渲染为 turn__note', !!ZS.state.currentTurn.noteEl && ZS.state.currentTurn.noteEl.textContent === '这是一条普通提示', ZS.state.currentTurn.noteEl ? ZS.state.currentTurn.noteEl.textContent : 'null');
+  ZS.setBusy(false);
+  await sleep(10);
+  ok('取消收尾后按钮恢复发送', one('#btnSend').textContent === '发送' && !one('#btnSend').classList.contains('is-stop'), one('#btnSend').textContent);
+
+  console.log('== v0.5.0 降级路径（无 answer_delta）==');
+  ZS.state.currentTurn = null;
+  ZS.setBusy(false);
+  ZS.handleEvent({ event: 'answer_start', data: { turn_id: 'tr_10', chars: 20 } });
+  await sleep(10);
+  ZS.handleEvent({ event: 'message', data: { delta: '未收到分块时的整段回答：本月支出 **¥16,712.31**。' } });
+  ZS.handleEvent({ event: 'answer_end', data: { turn_id: 'tr_10', chunks: 0, elapsed_ms: 0, cancelled: false } });
+  await sleep(10);
+  bubble = lastStream();
+  ok('降级：整段 message 显示在同一气泡', /本月支出/.test(bubble.textContent) && /16,712\.31/.test(bubble.textContent), bubble.textContent.slice(0, 80));
+  ok('降级：整段仍是加粗解析', bubble.innerHTML.indexOf('<strong>') >= 0);
+  ok('降级：本轮只有一个回复气泡（无重复）', ZS.state.currentTurn.root.querySelectorAll('.result').length === 1, String(ZS.state.currentTurn.root.querySelectorAll('.result').length));
+
+  console.log('== v0.5.0 消费洞察卡 ==');
+  ZS.state.currentTurn = null;
+  ZS.handleEvent({ event: 'insight_card', data: {
+    as_of: '2026-10-28', window: { months: 1 },
+    totals: { out_cents: 1671231, in_cents: 2500001, prev_out_cents: 1490000, delta_pct: 12, potential_save_monthly_cents: 5800 },
+    top_categories: [{ category: '居住', cents: 478600, pct: 29, prev_cents: 460000, delta_pct: 4 }],
+    savings: [
+      { id: 'sv1', kind: 'subscription', title: '视频会员自动续费', monthly_cents: 3800, yearly_cents: 45600, detail: '连续 4 个月扣费，可取消', action: { kind: 'subscription_cancel', merchant: '爱奇艺' } },
+      { id: 'sv2', kind: 'category', title: '餐饮支出偏高', monthly_cents: 2000, yearly_cents: 24000, detail: '比上月多 ¥300.00', action: { kind: 'query_bills', category: '餐饮' } }
+    ] } });
+  await sleep(20);
+  let card = getEls('.insight')[getEls('.insight').length - 1];
+  ok('洞察卡标题「本月的三件事」', !!card && /本月的三件事/.test(card.textContent), card ? card.textContent.slice(0, 60) : 'null');
+  ok('三个数字：环比 +12% / 最大分类 居住 / 可省 ¥58.00', !!card && /\+12%/.test(card.textContent) && /居住/.test(card.textContent) && /¥58\.00/.test(card.textContent), card ? card.textContent.slice(0, 160) : 'null');
+  ok('savings 两条 + 每条去处理按钮', !!card && card.querySelectorAll('.insight__save').length === 2 && card.querySelectorAll('.insight__go').length === 2);
+  ok('洞察卡标注只读', !!card && /只读洞察/.test(card.textContent));
+
+  console.log('== v0.5.0 洞察卡 XSS 转义 ==');
+  ZS.state.currentTurn = null;
+  ZS.handleEvent({ event: 'insight_card', data: {
+    totals: { delta_pct: -3, potential_save_monthly_cents: 100 },
+    top_categories: [{ category: '<img src=x onerror=alert(1)>', pct: 10 }],
+    savings: [{ id: 'sv9', title: '<script>alert(2)</script>', monthly_cents: 100, detail: '"><b>x</b>', action: { kind: 'subscription_cancel', merchant: '<svg onload=alert(3)>' } }]
+  } });
+  await sleep(20);
+  const xssCard = getEls('.insight')[getEls('.insight').length - 1];
+  ok('XSS：分类名被转义为文本（无真实 img 节点）', xssCard.querySelectorAll('img').length === 0 && xssCard.innerHTML.indexOf('&lt;img') >= 0 && xssCard.textContent.indexOf('onerror') >= 0, xssCard.innerHTML.slice(0, 160));
+  ok('XSS：savings 标题与 detail 被转义', xssCard.innerHTML.indexOf('<script') === -1 && xssCard.innerHTML.indexOf('<b>x</b>') === -1);
+  ok('XSS：去处理文案兜底为纯文本', xssCard.querySelectorAll('.insight__go').length === 0 || xssCard.innerHTML.indexOf('<svg') === -1);
+
+  console.log('== v0.5.0 洞察卡一键处理 ==');
+  ZS.state.currentTurn = null;
+  ZS.handleEvent({ event: 'insight_card', data: {
+    totals: { delta_pct: 5, potential_save_monthly_cents: 3800 },
+    top_categories: [{ category: '居住', pct: 29 }],
+    savings: [{ id: 'sv1', title: '视频会员自动续费', monthly_cents: 3800, detail: '可取消', action: { kind: 'subscription_cancel', merchant: '爱奇艺' } }]
+  } });
+  await sleep(20);
+  card = getEls('.insight')[getEls('.insight').length - 1];
+  chatScript = [{ event: 'message', data: { delta: '已进入取消订阅流程。' } }, { event: 'done', data: { status: 'ok' } }];
+  card.querySelector('.insight__go').click();
+  await sleep(150);
+  const goCalls = CALLS.filter(function (c) { return c.url.indexOf('/api/chat') === 0; });
+  const goCall = goCalls[goCalls.length - 1] || {};
+  let goBody = {};
+  try { goBody = JSON.parse(goCall.body); } catch (e) {}
+  ok('点「去处理」发出「取消 爱奇艺 订阅」', /\/api\/chat/.test(goCall.url || '') && goBody.text === '取消 爱奇艺 订阅', JSON.stringify(goBody));
+  const meEls = getEls('.chat__me');
+  ok('一键处理复用对话流（用户消息可见）', /取消 爱奇艺 订阅/.test(meEls[meEls.length - 1].textContent), meEls[meEls.length - 1].textContent);
+  ok('洞察卡在对话视图内', ZS.state.view === 'chat' && one('#view-chat').classList.contains('is-on'));
+  ZS.showView('home');
+  await sleep(20);
+
+  console.log('== v0.5.0 流式中断（网络错误）==');
+  ZS.state.currentTurn = null;
+  chatFailAfter = 2;
+  chatScript = [
+    { event: 'answer_start', data: { turn_id: 't99', thread_id: 'th_99', chars: 20 } },
+    { event: 'answer_delta', data: { turn_id: 't99', i: 0, text: '先输出一半' } }
+  ];
+  ZS.sendText('测试流式中断');
+  await sleep(260);
+  chatFailAfter = null;
+  const brokenEls = getEls('.result--stream');
+  const broken = brokenEls[brokenEls.length - 1];
+  ok('流式中断：去掉 is-typing 与光标', !!broken && !broken.classList.contains('is-typing') && !broken.querySelector('.answer__caret'));
+  ok('流式中断：已输出文本保留', !!broken && /先输出一半/.test(broken.textContent), broken ? broken.textContent.slice(0, 80) : 'null');
+  ok('流式中断：按钮恢复「发送」且可点', ZS.dom.btnSend.textContent === '发送' && !ZS.dom.btnSend.classList.contains('is-stop') && ZS.dom.btnSend.disabled === false);
+
   if (process.env.ZS_DUMP_CLASSES) {
     const seen = {};
     walk(doc.body, function (el) {

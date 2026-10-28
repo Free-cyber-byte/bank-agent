@@ -1,0 +1,25 @@
+{
+  "id": "t48",
+  "title": "消费洞察环比符号与数值正确",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看钱都花哪了"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "insight_checks": [
+      "delta_sign",
+      "top_delta_sign"
+    ],
+    "reply_contains": [
+      "比上期"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "totals.delta_pct 必须与独立 SQL 重算的上一窗口（now-60~now-30 天）出账环比完全一致且符号正确；每个 top_categories.delta_pct 同样与独立重算一致；回复含「比上期」。"
+}

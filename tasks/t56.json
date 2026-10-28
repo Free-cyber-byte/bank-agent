@@ -1,0 +1,37 @@
+{
+  "id": "t56",
+  "title": "LLM 模式可解析消费洞察意图（本地桩模型）",
+  "category": "insight",
+  "user_id": "u001",
+  "env": {
+    "DEEPSEEK_API_KEY": "sk-qa-mock-v050",
+    "ZEROSTEP_DISABLE_LLM": "0"
+  },
+  "mock_llm": {
+    "intent": "insight",
+    "confidence": 0.97,
+    "slots": {}
+  },
+  "turns": [
+    "我最近的开销都去了哪里，帮我总结一下"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "expected_intent_source": "llm",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "expected_tools": [
+      "spending_insights"
+    ],
+    "insight_checks": [
+      "totals_match"
+    ],
+    "reply_contains": [
+      "近 30 天"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "该问法规则回退是 query_bills；开启模型链路（本地预置 raw 返回，不连外网）后 intent 必须为 insight 且 intent.source=llm，计划只含 spending_insights，洞察统计仍与 mock_core 直算一致。"
+}

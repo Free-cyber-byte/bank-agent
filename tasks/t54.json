@@ -1,0 +1,25 @@
+{
+  "id": "t54",
+  "title": "流式阶段中途取消返回 cancelled 并补发 answer_end",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看这个月的消费洞察"
+  ],
+  "stream": {
+    "case": "cancel",
+    "delay_ms": 40,
+    "checks": [
+      "audit_cancelled"
+    ]
+  },
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "先对不存在的 thread_id 取消 → 200 {cancelled:false, reason:not_streaming}；收到 answer_start 且至少 2 个 delta 后取消 → 200 {cancelled:true, emitted_chunks}；answer_end.cancelled=true 且 chunks==delta 数==emitted_chunks，0<chunks<总块数，note 含「已停止输出」，仍有 done、无 error；已发 delta 是完整回答的前缀；审计恰好 1 条 answer_cancelled（tool=stream）且链 valid。"
+}

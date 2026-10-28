@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import approvals, audit, config, db, llm, locks, mock_core, nlu, policy, totp
+from . import approvals, audit, config, db, insight, llm, locks, mock_core, nlu, policy, totp
 from .mock_core import DomainError, yuan
 
 
@@ -378,6 +378,9 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
                                    "payee_name": payee_name, "payee_account": payee_account,
                                    "amount_cents": amount, "run_at": run_at, "payee_is_new": is_new,
                                    "memo": text[:40]}))
+    elif name == "insight":
+        # v0.5.0 消费洞察：单步只读汇总；红线——savings 仅作建议，绝不在此自动执行任何写工具
+        steps.append(_step("s1", "生成消费洞察", "spending_insights", {}))
     elif name in ("greeting", "unknown"):
         steps = []
 
@@ -681,6 +684,11 @@ def _exec_tool(conn, user_id: str, session_id: str, thread_id: str, tool: str, a
         return mock_core.list_scheduled_transfers(conn, user_id, args.get("status") or "")
     if tool == "cancel_scheduled_transfer":
         return mock_core.cancel_scheduled_transfer(conn, user_id, args.get("sched_id") or "")
+    if tool == "spending_insights":
+        # v0.5.0：只读消费洞察（不改余额、不写业务表、不触发任何资金动作）
+        return insight.spending_insights(conn, user_id)
+    if tool == "detect_subscriptions":
+        return insight.detect_subscriptions(conn, user_id, int(args.get("window_days") or 120))
     raise DomainError("TOOL_NOT_FOUND", "工具 %s 不存在" % tool)
 
 
@@ -743,6 +751,48 @@ def _find(results: List[Dict[str, Any]], tool: str) -> Optional[Dict[str, Any]]:
         if r["tool"] == tool and r.get("ok"):
             return r["result"]
     return None
+
+
+def _insight_reply(data: Dict[str, Any]) -> str:
+    """v0.5.0：把 spending_insights 结果写成 ≤180 字的确定性中文摘要（数字只取自工具返回）。"""
+    totals = data.get("totals") or {}
+    cats = data.get("top_categories") or []
+    budget = data.get("budget") or {}
+    savings = data.get("savings") or []
+    out_cents = int(totals.get("out_cents") or 0)
+    prev_cents = int(totals.get("prev_out_cents") or 0)
+    delta = int(totals.get("delta_pct") or 0)
+    if prev_cents <= 0:
+        trend = "上期没有支出记录"
+    elif delta >= 0:
+        trend = "比上期多 %d%%" % delta
+    else:
+        trend = "比上期少 %d%%" % abs(delta)
+    parts = ["近 30 天你一共支出 **%s**，%s。" % (yuan(out_cents), trend)]
+    if cats:
+        top = cats[0]
+        parts.append("最大分类是「%s」%s（占 %d%%）。" % (str(top.get("category") or ""), yuan(int(top.get("cents") or 0)),
+                                                        int(top.get("pct") or 0)))
+    monthly = int(totals.get("potential_save_monthly_cents") or 0)
+    yearly = sum(int(s.get("yearly_cents") or 0) for s in savings if str(s.get("kind") or "") == "subscription")
+    if monthly > 0:
+        parts.append("每月可省约 %s（年化 %s），主要来自订阅。" % (yuan(monthly), yuan(yearly)))
+    else:
+        parts.append("暂未发现可以取消的周期性订阅。")
+    # 固定周期扣费（房租/还款/水电等）单列说明，不计入上面的可省金额
+    fixed = data.get("fixed_cycles") or {}
+    fixed_count = int(fixed.get("count") or 0)
+    if fixed_count > 0:
+        parts.append("另有 %d 项固定周期扣费（房租/还款等），不计入可省金额。" % fixed_count)
+    projected = int(budget.get("projected_cents") or 0)
+    budget_cents = int(budget.get("budget_cents") or 0)
+    over = int(budget.get("over_cents") or 0)
+    if over > 0:
+        parts.append("按当前节奏预计支出 %s，预算 %s，预计超支 %s。" % (yuan(projected), yuan(budget_cents), yuan(over)))
+    else:
+        parts.append("按当前节奏预计支出 %s，预算 %s，还剩 %s。" % (yuan(projected), yuan(budget_cents),
+                                                          yuan(max(0, budget_cents - projected))))
+    return "".join(parts)
 
 
 def build_reply(intent: Dict[str, Any], results: List[Dict[str, Any]], action_ids: List[str]) -> Tuple[str, Optional[Dict[str, Any]]]:
@@ -927,6 +977,9 @@ def build_reply(intent: Dict[str, Any], results: List[Dict[str, Any]], action_id
             parts.append("已预约在 **%s** 向「%s」转 **%s**，创建时已完成一次审批，到期由调度器自动执行，届时不再打扰你。"
                          % (str(d.get("run_at", ""))[:16].replace("T", " "), d.get("payee_name", ""), d.get("amount_display", "")))
             parts.append("已写入审计链。")
+    elif name == "insight":
+        # v0.5.0：确定性摘要（不含任何模型自由度）；savings 只作为建议文案，不执行
+        parts.append(_insight_reply(_find(results, "spending_insights") or {}))
     elif name == "greeting":
         parts.append("你好，我是 ZeroStep 零步银行助手。你可以直接说：查账单、转账、买理财、管卡片、取消订阅，或者试试「发工资了帮我分账」。")
     else:
@@ -1100,6 +1153,11 @@ def _finalize(conn, ctx: Dict[str, Any], exec_result: Dict[str, Any], emit: Emit
            "executed": results, "approval": None, "undo": undo,
            "policy_hits": ctx.get("policy_hits") or [], "mcp_calls": ctx.get("mcp_calls") or [],
            "audit": audit.entries(conn, ctx["session_id"], 20), "events": emit.events}
+    # v0.5.0：洞察结果随 turn 返回，供 SSE / 前端「本月的三件事」卡片下推（只读）
+    if str((ctx.get("intent") or {}).get("name") or "") == "insight":
+        insight_data = _find(results, "spending_insights")
+        if insight_data:
+            out["insight"] = insight_data
     return out
 
 

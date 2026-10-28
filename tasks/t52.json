@@ -1,0 +1,29 @@
+{
+  "id": "t52",
+  "title": "一次性消费不被误报为周期扣费",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看这个月的消费洞察"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "detect": {
+      "absent": [
+        "美团外卖",
+        "京东",
+        "海底捞",
+        "数码专卖店"
+      ],
+      "no_category": "餐饮",
+      "min_detected": 1,
+      "window_days": 120
+    },
+    "audit_valid": true
+  },
+  "judge_rubric": "detect_subscriptions 不得把一次性消费商户（美团外卖/京东/海底捞/数码专卖店）识别为周期扣费，detected 中不得出现「餐饮」分类的商户；同时识别结果非空。"
+}

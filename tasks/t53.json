@@ -1,0 +1,28 @@
+{
+  "id": "t53",
+  "title": "流式回答事件序正确且拼接等于完整回答",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "帮我看看这个月的消费洞察"
+  ],
+  "stream": {
+    "case": "full",
+    "delay_ms": 0
+  },
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "expected_tools": [
+      "spending_insights"
+    ],
+    "reply_contains": [
+      "近 30 天"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "SSE 事件序 session→intent→plan→tool_start→tool_end→answer_start→answer_delta×(i 连续、每块 12 字符除末块)→answer_end→insight_card→done；answer_start.chars 与 answer_end.chunks 和实际一致，cancelled=false；拼接 delta 与非流式完整回答逐字节相等；带 stream_text=false 时只发 message 事件且 message.delta 等于完整回答。"
+}

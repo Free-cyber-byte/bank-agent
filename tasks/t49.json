@@ -1,0 +1,26 @@
+{
+  "id": "t49",
+  "title": "可省金额等于订阅年化之和除以 12",
+  "category": "insight",
+  "user_id": "u001",
+  "turns": [
+    "有什么可以省的钱吗"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "insight",
+    "plan_tools": [
+      "spending_insights"
+    ],
+    "insight_checks": [
+      "potential_formula",
+      "savings_kinds"
+    ],
+    "reply_contains": [
+      "每月可省约",
+      "年化"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "totals.potential_save_monthly_cents 必须等于 savings 中 subscription 的 monthly_cents 之和，且等于其 yearly_cents 之和除以 12；每条 savings 的 yearly_cents == monthly_cents×12，action.kind 只能是 subscription_cancel/query_bills。"
+}

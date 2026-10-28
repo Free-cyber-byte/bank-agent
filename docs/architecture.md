@@ -33,7 +33,7 @@
 
 ## 3. 一次对话的六阶段流水线
 
-入口是 engine.run_turn(conn, session_id, text, sink)（engine.py:1106）。它先取会话、创建 Emitter，然后严格按下列顺序推进。
+入口是 engine.run_turn(conn, session_id, text, sink)（engine.py:1164）。它先取会话、创建 Emitter，然后严格按下列顺序推进。
 
 数据流（模型只在中间一段出现）：
 
@@ -65,7 +65,7 @@
 
 | 阶段 | 真实函数 | 输入 → 输出 | 失败/短路分支 | 关键事件与审计 |
 | --- | --- | --- | --- | --- |
-| 0 锁定检查 | locks.info(conn, session_id)（engine.py:1111） | 会话 → {locked, locked_until, remaining_s} | 已锁则 return status=locked，不进入后续阶段 | 事件 message + security_lock；审计 turn_locked（tool=security_lock，high） |
+| 0 锁定检查 | locks.info(conn, session_id)（engine.py:1169） | 会话 → {locked, locked_until, remaining_s} | 已锁则 return status=locked，不进入后续阶段 | 事件 message + security_lock；审计 turn_locked（tool=security_lock，high） |
 | 1 意图解析 | llm.parse(text, ctx_doc) → nlu.parse 或模型 | 文本 + 上下文 → intent{name, confidence, source, slots, model, latency_ms, reason} | intent.name 为 attack 时立即 return blocked，并记一次安全事件计数 | 事件 intent（含 source）；审计 attack_blocked |
 | 2 计划生成 | engine.build_plan(conn, user_id, intent, text) | intent → {steps, edges, planner_block} | planner_block 非空时 return blocked | 事件 plan；审计 turn_blocked（tool=planner） |
 | 3 策略门 | policy.evaluate(conn, user_id, steps, intent) | steps → {risk_level, requires_approval, challenge, blocked, reasons, summary} | blocked 非空时 return blocked | 事件 tool_end（step_id=gate）；审计 turn_blocked（tool=policy_gate） |
@@ -76,7 +76,7 @@
 
 会话状态机有四态：ok（完成）、awaiting_approval（挂起等审批）、blocked（拒绝或执行失败）、locked（v0.4.1：会话因连续可疑操作被临时锁定）。resume 恢复成功后回到 ok/blocked。
 
-v0.4.1 在阶段 1 之前多了一步「锁定检查」：run_turn 入口先读 session_locks（engine.py:1111），已锁则直接返回 status=locked、code=SESSION_LOCKED，不解析、不建计划、不执行任何工具。
+v0.4.1 在阶段 1 之前多了一步「锁定检查」：run_turn 入口先读 session_locks（engine.py:1169），已锁则直接返回 status=locked、code=SESSION_LOCKED，不解析、不建计划、不执行任何工具。
 
 ### 阶段 1：意图解析（llm.parse，三模式分派）
 
@@ -519,10 +519,10 @@ v0.4.1 把「红色动作只能输动态码」扩展为「红色动作可三选�
 
 ### 12.2 会话异常锁定
 
-    run_turn（engine.py:1106）
+    run_turn（engine.py:1164）
         │
         ▼
-    locks.info(conn, session_id)（:1111）
+    locks.info(conn, session_id)（:1169）
         ├─ 已锁 → 回复「会话因连续可疑指令已被临时锁定，请在 N 秒后再试。锁定期间不会执行任何资金动作。」
         │          审计 turn_locked（tool=security_lock，risk high），返回 status=locked
         └─ 未锁 → 继续
@@ -566,3 +566,118 @@ v0.4.1 把「红色动作只能输动态码」扩展为「红色动作可三选�
 
 
 ---
+
+## 13. 消费洞察与逐字流式（v0.5.0）
+
+v0.5.0 加了两件互不干扰的事：一是只读的消费洞察（新增 insight 意图与两个 LOW 工具），二是把最终回答改成逐个字块下发的流式输出，并允许中途停止。六阶段流水线的顺序、三级授权、审批 TTL 300 秒、撤销窗口 60 秒与审计哈希链都不变；新增的取消只作用于「输出」，不作用于「已经执行的工具」。
+
+### 13.1 洞察链路（只读，不改账）
+
+    run_turn（engine.py:1164）
+        │
+        ├─ 阶段 0 锁定检查 → 阶段 1 parse_intent
+        │     规则：洞察 / 花费分析 / 钱都花哪 / 能省 / 订阅在烧钱（nlu.py:367-369）
+        │     模型：ALLOWED_INTENTS 含 insight
+        ▼
+    build_plan（engine.py:381-383）
+        │   insight 固定单步：_step("s1", "生成消费洞察", "spending_insights", {})
+        ▼
+    policy_gate（policy.py:20-24）
+        │   spending_insights / detect_subscriptions 都在 LOW_TOOLS：不确认、不审批
+        │   计划里没有任何写工具，因此不会进入 approval_required 分支
+        ▼
+    act（engine.py:687-691 → insight.spending_insights）
+        │   只读 SQL 聚合：近 30 天收支、上期环比、分类 Top5、异常、预算预测、可省建议
+        ▼
+    verify → respond（engine.py:756-795、982）
+        │   _insight_reply 生成不超过 180 字的确定性摘要（实测 178 字）
+        │   摘要里的数字全部取自工具返回，不在回复层重算
+        ▼
+    _finalize（engine.py:1157-1160）
+        │   out["insight"] = spending_insights 的完整结果（savings 数组只作建议）
+        ▼
+    响应体 insight 字段 + SSE insight_card 事件（server.py:448-450）
+
+以演示种子为例，一次洞察会得到：近 30 天支出 24,484.70 元、比上期多 48%、最大分类「购物」11,506.71 元（占 47%）、每月可省约 255.00 元（年化 3,060.00 元）、预计支出 25,300.86 元对预算 12,100.00 元（预计超支 13,200.86 元）。
+
+**洞察只读，savings 不自动执行**：`savings` 每一项都带 action 对象（订阅类为 {kind: subscription_cancel, merchant}，分类优化类为 {kind: query_bills, category}），它只描述「可以做什么」，不携带工具调用；engine 不会把 savings 再送进计划，审批与幂等键也不会因此产生。t50 用「审计里不得出现写事件」把这条口径钉住：计划、执行、审计三层都只有 spending_insights。
+
+### 13.2 订阅识别链路
+
+    detect_subscriptions(conn, user_id, window_days=120)（insight.py:162，默认窗口 120 天）
+        │
+        ├─ 按商户归一（去掉编号、空格等噪声）
+        ├─ 同一商户至少 3 次、相邻间隔落在 25–35 天
+        ├─ 相邻金额差不超过 10%
+        ├─ confidence = min(60 + 10 × (次数 - 2), 90)
+        ▼
+    逐项标注：registered（是否已登记订阅）、sub_id、category、subscription_like
+        │   subscription_like = (category == "订阅") 或 命中已登记订阅
+        ▼
+    分流两条：
+        ├─ subscription_like=true → 进 savings，计入可省金额（年化 = 月 × 12）
+        └─ 固定周期（房租 / 还款 / 水电 / 通讯）→ 进 fixed_cycles 单列，不计入可省
+
+演示种子实测：识别出 10 项周期扣费。其中 5 项为订阅（爱奇艺 VIP 25 元、网易云音乐 15 元、iCloud 200G 6 元、健身私教 199 元、财经周刊 10 元），合计可省 255 元/月、年化 3,060 元；另 5 项为固定周期（房东王姐房租 4,500 元、信用卡还款 3,000 元、储蓄转账 2,000 元、国家电网 286 元、中国移动 99 元），合计 9,885 元/月，单独说明、不当作「可省」。
+
+**为什么固定周期要单列**：房租和还款不是「取消就省钱」的东西，把它们算进可省会直接把洞察变成误导。分流规则也解释了 contract 里 potential_save_monthly_cents 的口径——它只累加 subscription 类 savings，所以恒等于订阅月费之和，也恒等于订阅年化 ÷ 12。
+
+### 13.3 逐字流式输出链路
+
+    POST /api/chat（stream 分支，server.py:266-274）
+        │  stream_text 不为 false 时走流式；为 false 时退回旧的整段 message
+        ▼
+    _stream_chat（server.py:374-467）
+        │  先发 session / intent / plan / tool_start / tool_end
+        ▼
+    answer_start {turn_id, thread_id, chars}（:418）
+        │
+        ▼
+    answer_delta {turn_id, i, text} × n（:428，每块 12 字符；末块可短）
+        │  块间 sleep，时长取 ZS_STREAM_DELAY_MS，默认 18ms（:54-55、:430-431）
+        ▼
+    answer_end {turn_id, chunks, elapsed_ms, cancelled}（:435-437）
+        │
+        ▼
+    insight_card {insight: {...}}（:448-450，仅 insight 意图）
+        ▼
+    done {status, thread_id, undo, approval, turn_id}（:451-453）
+        ▼
+    finally 清 _STREAMS（:455 起），thread_id 不再可取消
+
+- **块大小与延时都是演示值**：12 字符让 178 字的洞察约 15 块，18ms 让整段回答在半秒到一秒内播完；测试把 ZS_STREAM_DELAY_MS 设为 0 以获得确定性。
+- **拼接口径**：delta 按 i 顺序拼接应等于完整回答，answer_end.chunks 等于 delta 条数，answer_start.chars 等于回答总字符数——这三条是 e2e 的硬断言。
+- **兼容路径**：`stream_text: false` 时不发 answer_* 与 insight_card，只发整段 message，老客户端不用改；不传或传 true 一律逐字流式。
+- **前端职责**：前端只负责追加文本与在中断时丢弃未到片段，不参与内容生成；样式与交互见 [design-system.md](design-system.md)。
+
+### 13.4 取消链路（只停输出，不改账）
+
+    POST /api/turn/cancel {thread_id}（server.py:250-265）
+        │
+        ├─ body 不是 JSON 对象 → 400 BAD_REQUEST「请求体必须是 JSON 对象」
+        ├─ thread_id 不在 _STREAMS → 200 {cancelled:false, reason:"not_streaming"}
+        └─ 正在流式 → 置 stop 标记 → 200 {cancelled:true, emitted_chunks:n}
+                │
+                ▼
+    _stream_chat 循环发现 stop（:421-425）
+                │  停止后续 answer_delta，已发出的片段不回撤
+                ▼
+    补发 answer_end {cancelled:true}（:435-437）+ note {text:"已停止输出"}（:440）
+                │  insight_card 与 done 照常下发
+                ▼
+    审计 answer_cancelled：tool=stream，risk=low，
+      args {thread_id, emitted_chunks, chars_total}，result {cancelled:true}（:442-445）
+
+**取消不撤销已执行工具**：取消只写一个审计事件、只终止文本输出，已经发生的 tool_end、账务写入与幂等键都保留；t55 用「取消前后余额与支出合计不变、tool_end 仍在、仍有 insight_card」来验证这一点。**为什么这样设计**：如果取消能回滚，用户就有机会在「看到一半」时制造半笔交易或试探策略边界，审计也无法区分「真取消」与「恶意中断」。
+
+重复取消不需要特殊处理：首次取消后流式阶段结束，同一 thread_id 再次取消按 not_streaming 返回（此时 _STREAMS 已清空）。
+
+### 13.5 边界与已知限制
+
+- 洞察是启发式分析：订阅识别依赖「间隔 25–35 天 + 金额差 ≤10%」，改价、跨月缺记录或一次性消费会被漏报或误报；结论只是参考，不构成财务建议。
+- 流式的 12 字符与 18ms 是演示参数，不是性能指标；真实网络下需配合代理缓冲与前端丢弃策略调整。
+- 取消只覆盖逐字输出阶段；审批挂起时的「取消」走撤销窗口（60 秒）与 approvals 的既有语义，两者不共用接口。
+- 洞察卡的数据来自同一份 tool_result；如果未来改成流式边算边发，需要重新定义 insight_card 与 answer_end 的先后顺序。
+
+**接口字段见** [api.md](api.md) §2 流式小节与 §4 v0.5.0 工具段，只读与取消口径见 [security.md](security.md) §2、§9、§10，用例见 [evaluation.md](evaluation.md) §3.4 与 §5 v0.5.0 表。
+
