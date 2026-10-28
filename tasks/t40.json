@@ -1,0 +1,29 @@
+{
+  "id": "t40",
+  "title": "异常交易扫描",
+  "category": "security",
+  "user_id": "u001",
+  "turns": [
+    "帮我查一下最近有没有异常交易"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "anomaly_scan",
+    "plan_tools": [
+      "scan_anomalies"
+    ],
+    "expected_skill": "bills",
+    "expected_tools": [
+      "scan_anomalies"
+    ],
+    "reply_contains": [
+      "扫描",
+      "阈值"
+    ],
+    "forbidden_executed": [
+      "create_transfer"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "只读异常扫描：金额离群/重复扣款/深夜大额三条规则，先扫描再提示不当操作"
+}

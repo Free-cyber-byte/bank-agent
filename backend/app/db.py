@@ -40,6 +40,11 @@ CREATE TABLE IF NOT EXISTS cards (
     status TEXT NOT NULL DEFAULT 'active', daily_limit_cents INTEGER NOT NULL DEFAULT 0,
     single_limit_cents INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS card_txns (
+    txn_id TEXT PRIMARY KEY, card_id TEXT NOT NULL, user_id TEXT NOT NULL, ts TEXT NOT NULL,
+    amount_cents INTEGER NOT NULL, merchant TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'success'
+);
+CREATE INDEX IF NOT EXISTS idx_card_txn_ts ON card_txns(card_id, ts);
 CREATE TABLE IF NOT EXISTS subscriptions (
     sub_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, merchant TEXT NOT NULL, amount_cents INTEGER NOT NULL,
     cycle TEXT NOT NULL DEFAULT 'monthly', next_charge TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'active',
@@ -47,7 +52,8 @@ CREATE TABLE IF NOT EXISTS subscriptions (
 );
 CREATE TABLE IF NOT EXISTS payees (
     payee_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, name TEXT NOT NULL, bank TEXT NOT NULL,
-    account_no TEXT NOT NULL, created_at TEXT NOT NULL, is_new INTEGER NOT NULL DEFAULT 0
+    account_no TEXT NOT NULL, created_at TEXT NOT NULL, is_new INTEGER NOT NULL DEFAULT 0,
+    phone TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS transfers (
     transfer_id TEXT PRIMARY KEY, session_id TEXT NOT NULL, thread_id TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -81,9 +87,31 @@ CREATE TABLE IF NOT EXISTS reminders (
     reminder_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, title TEXT NOT NULL, remind_at TEXT NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS scheduled_transfers (
+    sched_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, session_id TEXT NOT NULL DEFAULT '',
+    thread_id TEXT NOT NULL DEFAULT '', from_account_id TEXT NOT NULL, payee_name TEXT NOT NULL,
+    payee_account TEXT NOT NULL DEFAULT '', amount_cents INTEGER NOT NULL, memo TEXT NOT NULL DEFAULT '',
+    run_at TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending', transfer_id TEXT NOT NULL DEFAULT '',
+    approval_id TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, executed_at TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS session_locks (
+    session_id TEXT PRIMARY KEY, user_id TEXT NOT NULL, locked_until TEXT NOT NULL,
+    reason TEXT NOT NULL, created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sched_run ON scheduled_transfers(status, run_at);
 CREATE INDEX IF NOT EXISTS idx_txn_ts ON transactions(ts);
 CREATE INDEX IF NOT EXISTS idx_txn_account ON transactions(account_id);
 """
+
+# v0.4.0 数据层种子版本：payees.phone / card_txns / scheduled_transfers 需要重建演示库。
+# config.SEED_VERSION 由 Lead 同步维护；这里取两者中较新的值，旧库启动时会自动重建（演示语义）。
+SEED_VERSION = "2026.10.29"
+
+
+def seed_version() -> str:
+    """当前应写入 meta 的种子版本：数据层常量与 config.SEED_VERSION 取较新者。"""
+    cfg = str(getattr(config, "SEED_VERSION", "") or "")
+    return cfg if cfg > SEED_VERSION else SEED_VERSION
 
 
 def now_iso() -> str:
@@ -102,23 +130,45 @@ def connect(path: Path = None) -> sqlite3.Connection:
 
 def init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """兼容旧库：CREATE TABLE IF NOT EXISTS 不会给已有表补列，这里补 payees.phone。"""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(payees)").fetchall()}
+    if cols and "phone" not in cols:
+        conn.execute("ALTER TABLE payees ADD COLUMN phone TEXT NOT NULL DEFAULT ''")
+
+
 def seed_if_needed(conn: sqlite3.Connection) -> bool:
+    target = seed_version()
     cur = conn.execute("SELECT value FROM meta WHERE key='seed_version'").fetchone()
-    if cur and cur["value"] == config.SEED_VERSION:
+    if cur and cur["value"] == target:
         return False
+    if cur:
+        # 种子版本升级：演示库按「重置演示」语义清表重建，否则主键冲突且新种子不生效
+        _clear_tables(conn)
     seed(conn)
     return True
 
 
 # 重置时要清空的表（先子表后主表，与外键顺序无关：PRAGMA foreign_keys=OFF 期间执行）
 RESET_TABLES = [
-    "audit", "events", "checkpoints", "sessions", "approvals", "transfers", "reminders",
-    "subscriptions", "cards", "payees", "wealth_holdings", "wealth_products",
-    "budgets", "transactions", "accounts", "users", "meta",
+    "audit", "events", "checkpoints", "sessions", "session_locks", "approvals", "transfers", "reminders",
+    "scheduled_transfers", "subscriptions", "cards", "card_txns", "payees", "wealth_holdings",
+    "wealth_products", "budgets", "transactions", "accounts", "users", "meta",
 ]
+
+
+def _clear_tables(conn: sqlite3.Connection) -> None:
+    """清空所有业务表（含 sqlite_sequence），不删库文件，供重置与种子升级共用。"""
+    conn.execute("PRAGMA foreign_keys=OFF")
+    for table in RESET_TABLES:
+        conn.execute("DELETE FROM " + table)
+    conn.execute("DELETE FROM sqlite_sequence WHERE name='audit'")
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys=ON")
 
 
 def reset_demo(conn: sqlite3.Connection = None) -> None:
@@ -132,12 +182,7 @@ def reset_demo(conn: sqlite3.Connection = None) -> None:
     if own:
         conn = connect()
         init_schema(conn)
-    conn.execute("PRAGMA foreign_keys=OFF")
-    for table in RESET_TABLES:
-        conn.execute("DELETE FROM " + table)
-    conn.execute("DELETE FROM sqlite_sequence WHERE name='audit'")
-    conn.commit()
-    conn.execute("PRAGMA foreign_keys=ON")
+    _clear_tables(conn)
     seed(conn)
     if own:
         conn.close()
@@ -176,13 +221,13 @@ def seed(conn: sqlite3.Connection) -> None:
         conn.execute("INSERT INTO accounts (account_id,user_id,kind,name,number_masked,balance_cents,credit_limit_cents,currency,created_at) VALUES (?,?,?,?,?,?,?,?,?)", a + (ts0,))
 
     payees = [
-        ("p_001", "u001", "妈妈", "招商银行", "6214 **** 6621", ts0, 0),
-        ("p_002", "u001", "房东王姐", "建设银行", "6217 **** 0033", ts0, 0),
-        ("p_003", "u001", "李明", "工商银行", "6222 **** 7788", ts0, 0),
-        ("p_101", "u002", "学校缴费处", "中国银行", "4563 **** 8890", ts0, 0),
-        ("p_201", "u003", "工资代发", "招商银行", "6225 **** 1120", ts0, 0),
+        ("p_001", "u001", "妈妈", "招商银行", "6214 **** 6621", "13800001111", ts0, 0),
+        ("p_002", "u001", "房东王姐", "建设银行", "6217 **** 0033", "13900002222", ts0, 0),
+        ("p_003", "u001", "李明", "工商银行", "6222 **** 7788", "13700003333", ts0, 0),
+        ("p_101", "u002", "学校缴费处", "中国银行", "4563 **** 8890", "", ts0, 0),
+        ("p_201", "u003", "工资代发", "招商银行", "6225 **** 1120", "", ts0, 0),
     ]
-    conn.executemany("INSERT INTO payees VALUES (?,?,?,?,?,?,?)", payees)
+    conn.executemany("INSERT INTO payees (payee_id,user_id,name,bank,account_no,phone,created_at,is_new) VALUES (?,?,?,?,?,?,?,?)", payees)
 
     cards = [
         ("card_001", "u001", "debit", "**** 8821", "active", 2000000, 2000000, ts0),
@@ -271,5 +316,24 @@ def seed(conn: sqlite3.Connection) -> None:
         tid += 1
         _txn(conn, "T%05d" % tid, acc, "u002", today.replace(hour=10).isoformat(timespec="seconds"), direction, amt, cat, cp, memo, 800000)
 
-    conn.execute("INSERT OR REPLACE INTO meta VALUES ('seed_version', ?)", (config.SEED_VERSION,))
+    # ---- v0.4.0 演示用异常交易（确定性：固定写在随机流水之后，不参与 rnd 循环） ----
+    # 让「异常交易识别」演示有真命中：深夜大额 / 重复扣款 / 金额离群各至少 1 条。
+    # 注意：这里只插流水，不动 accounts 表余额（余额是固定种子值，避免影响余额类用例）。
+    # 1) 深夜大额：3 天前 02:30，¥860.00（> ¥500 且落在 0-5 点 → late_night_large）
+    late_ts = (today - timedelta(days=3)).replace(hour=2, minute=30).isoformat(timespec="seconds")
+    _txn(conn, "DEMO_ANOMALY_001", "acc_001", "u001", late_ts, "out", 86000, "购物",
+         "夜间便利店", "深夜购物", 1286050)
+    # 2) 重复扣款：10 天前「美团外卖」同额 ¥128.00 两笔，相隔 5 小时（→ duplicate_charge）
+    dup_day = (today - timedelta(days=10)).replace(hour=12, minute=0)
+    _txn(conn, "DEMO_ANOMALY_002", "acc_001", "u001", dup_day.isoformat(timespec="seconds"),
+         "out", 12800, "餐饮", "美团外卖", "午餐外卖", 1286050)
+    _txn(conn, "DEMO_ANOMALY_003", "acc_001", "u001",
+         (dup_day + timedelta(hours=5)).isoformat(timespec="seconds"),
+         "out", 12800, "餐饮", "美团外卖", "疑似重复扣款", 1286050)
+    # 3) 金额离群：6 天前单笔 ¥6,800.00（> 历史 P99 阈值 ¥4,500.00 → amount_outlier）
+    outlier_ts = (today - timedelta(days=6)).replace(hour=15, minute=20).isoformat(timespec="seconds")
+    _txn(conn, "DEMO_ANOMALY_004", "acc_001", "u001", outlier_ts, "out", 680000, "购物",
+         "数码专卖店", "数码购机", 1286050)
+
+    conn.execute("INSERT OR REPLACE INTO meta VALUES ('seed_version', ?)", (seed_version(),))
     conn.commit()

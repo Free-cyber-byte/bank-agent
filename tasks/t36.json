@@ -1,0 +1,26 @@
+{
+  "id": "t36",
+  "title": "账单查询+跨场景提醒",
+  "category": "cross",
+  "user_id": "u001",
+  "turns": [
+    "看看我这个月的账单",
+    "提醒我下个月妈妈生日，提前准备礼物"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "query_bills",
+    "plan_tools": [
+      "get_bill_summary"
+    ],
+    "expected_tools": [
+      "get_bill_summary",
+      "create_reminder"
+    ],
+    "reply_contains": [
+      "已创建提醒"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "先正确查账单，再识别生日提醒类跨场景并创建提醒，两步均写审计链"
+}

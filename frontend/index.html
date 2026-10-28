@@ -1,261 +1,496 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <meta name="color-scheme" content="light" />
-  <meta name="theme-color" content="#F5F4EF" />
-  <title>账户工作台 · ZeroStep 零步银行</title>
-  <link rel="stylesheet" href="styles.css" />
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0B5FD0">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="ZeroStep">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/assets/icons/apple-touch-icon.png">
+<meta name="color-scheme" content="light dark">
+<title>ZeroStep 零步银行 · 对话即操作</title>
+<link rel="stylesheet" href="styles.css">
 </head>
-<body>
-  <div class="app" id="device">
-    <header class="topbar">
-      <div class="brand">
-        <span class="brand__mark" aria-hidden="true">
-          <svg viewBox="0 0 24 24" width="20" height="20" focusable="false">
-            <circle cx="12" cy="12" r="9.2" fill="none" stroke="currentColor" stroke-width="1.5" />
-            <ellipse cx="12" cy="12" rx="3.6" ry="5.2" fill="none" stroke="currentColor" stroke-width="1.5" />
-          </svg>
-        </span>
-        <span class="brand__name">ZeroStep</span>
-        <span class="brand__rule" aria-hidden="true"></span>
-        <span class="brand__sub">零步银行</span>
-      </div>
+<body data-view="home" data-theme="light" data-trace="on">
 
-      <div class="topbar__acct">
-        <span class="topbar__acct-label">账户</span>
-        <span class="topbar__acct-name" id="userName">张伟</span>
-        <span class="topbar__acct-tag" id="riskTag">稳健型</span>
-      </div>
+<!-- ===== 顶栏 ===== -->
+<header class="topbar">
+  <div class="brand" data-v="a" id="brand">
+    <span class="brand__mark" aria-hidden="true">
+      <svg viewBox="0 0 24 24"><path d="M7.2 7h9.6L7.2 17h9.6"/></svg>
+    </span>
+    <span class="brand__name">ZeroStep</span>
+    <span class="brand__cn">零步银行</span>
+  </div>
 
-      <div class="topbar__right">
-        <div class="seg" id="modeSeg" role="group" aria-label="推理模式">
-          <button class="seg__btn is-active" id="modeRule" type="button" data-mode="rule" aria-pressed="true">规则</button>
-          <button class="seg__btn" id="modeAuto" type="button" data-mode="auto" aria-pressed="false">自动</button>
-          <button class="seg__btn" id="modeLlm" type="button" data-mode="llm" aria-pressed="false">模型</button>
+  <div class="topbar__page" id="pageTitle" aria-live="polite">工作台</div>
+
+  <nav class="topnav" id="topNav" aria-label="主导航">
+    <button class="topnav__btn is-on" type="button" data-nav="home">工作台</button>
+    <button class="topnav__btn" type="button" data-nav="skills">技能</button>
+    <button class="topnav__btn" type="button" data-nav="plugins">插件</button>
+    <button class="topnav__btn" type="button" data-nav="services">外部服务</button>
+    <button class="topnav__btn" type="button" data-nav="settings">设置</button>
+  </nav>
+
+  <div class="topbar__mid">
+    <div class="seg" id="modeSeg" role="group" aria-label="解析模式">
+      <button class="seg__btn" type="button" id="modeRule" data-mode="rule">规则</button>
+      <button class="seg__btn is-on" type="button" id="modeAuto" data-mode="auto">自动</button>
+      <button class="seg__btn" type="button" id="modeLlm" data-mode="llm">模型</button>
+    </div>
+    <span class="seg__hint" id="modeHint">有 Key 走模型，无 Key 回落规则</span>
+  </div>
+
+  <div class="topbar__right">
+    <span class="effective" id="modeBadge" title="推理模式"><i class="effective__dot"></i><span class="effective__text">实际：规则</span></span>
+    <button class="btn-text" type="button" id="btnAudit">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>审计
+    </button>
+    <button class="icon-btn" type="button" id="btnMore" aria-label="更多">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="5" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="12" cy="19" r="1.4"/></svg>
+    </button>
+    <div class="avatar" id="userName" title="张伟">张</div>
+  </div>
+</header>
+
+<div class="shell" id="device">
+  <!-- ===== 左栏 ===== -->
+  <aside class="rail">
+    <section class="acct" aria-label="账户总览">
+      <div class="acct__head">
+        <span class="acct__eyebrow">可用余额</span>
+        <span class="acct__tag" id="acctTag">演示账户</span>
+      </div>
+      <div class="acct__bal">
+        <span class="cur">¥</span><span class="digits" id="acctTotal">--</span>
+      </div>
+      <div class="acct__foot" id="acctDelta"><span>正在读取账户…</span></div>
+      <div class="acct__list" id="acctList"></div>
+      <div class="acct__bar" id="acctMix" aria-hidden="true"></div>
+    </section>
+
+    <section class="rail__block">
+      <div class="rail__head">
+        <span class="eyebrow">快捷指令</span>
+        <button class="link" type="button" id="btnTasksRefresh">换一批</button>
+      </div>
+      <div class="chips" id="chips"></div>
+    </section>
+
+    <div class="rail__foot">
+      演示环境 · 资金操作分级授权<br>全流程 SHA-256 哈希链审计
+    </div>
+  </aside>
+
+  <!-- ===== 中区 ===== -->
+  <main class="stage">
+    <div class="lockbar" id="lockBar" role="alert" hidden>
+      <span class="lockbar__dot" aria-hidden="true"></span>
+      <span class="lockbar__text" id="lockBarText">会话已临时锁定</span>
+    </div>
+    <div class="stage__scroll" id="stageScroll">
+      <div class="stage__view is-on" id="view-home">
+        <div class="hero reveal" style="--d:10ms">
+          <div class="eyebrow hero__eyebrow">账户工作台</div>
+          <h1>今天要办什么？</h1>
+          <p class="hero__sub">一句话说清业务与金额。ZeroStep 拆出执行步骤、标注风险等级，再由确定性工具逐步执行。</p>
         </div>
-        <span class="effective" id="modeBadge" title="实际生效的推理模式">
-          <i class="effective__dot" aria-hidden="true"></i>
-          <span class="effective__text">实际：规则</span>
-        </span>
-        <button class="tb-btn" id="btnAudit" type="button" title="审计哈希链">审计</button>
-        <button class="tb-btn" id="btnMore" type="button" aria-haspopup="true" aria-expanded="false">更多</button>
-        <span class="topbar__clock" id="statusTime">--:--</span>
-      </div>
-    </header>
 
-    <div class="workbench">
-      <aside class="rail" id="sidebar" aria-label="账户与快捷任务">
-        <section class="acct" id="welcome">
-          <div class="acct__head">
-            <h2 class="acct__title">账户总览</h2>
-            <span class="acct__hi">你好，<b id="welcomeName">张伟</b></span>
-          </div>
-          <div class="acct__hero">
-            <span class="acct__hero-label">人民币可用余额</span>
-            <div class="acct__hero-num" id="acctTotal">¥--</div>
-            <p class="acct__hero-note" id="acctDelta">正在读取账户…</p>
-          </div>
-          <div class="acct__mix" id="acctMix" aria-label="资产构成"></div>
-          <div class="acct__list" id="welcomeAssets">
-            <span class="acct__empty">正在读取账户…</span>
-          </div>
-          <ul class="legend" aria-label="风险分级图例">
-            <li><i class="legend__dot legend__dot--green" aria-hidden="true"></i><span>绿 · 自动执行</span></li>
-            <li><i class="legend__dot legend__dot--amber" aria-hidden="true"></i><span>黄 · 需确认</span></li>
-            <li><i class="legend__dot legend__dot--red" aria-hidden="true"></i><span>红 · 动态码</span></li>
-          </ul>
-        </section>
+        <div class="legend reveal" style="--d:70ms">
+          <span class="legend__item"><i class="legend__dot legend__dot--green"></i>绿 · 纯查询自动执行</span>
+          <span class="legend__item"><i class="legend__dot legend__dot--yellow"></i>黄 · 小额操作需确认</span>
+          <span class="legend__item"><i class="legend__dot legend__dot--red"></i>红 · 大额与敏感操作需动态码</span>
+        </div>
 
-        <section class="rail__block">
-          <div class="rail__block-head">
-            <h2 class="rail__title">快捷任务</h2>
-            <span class="rail__hint">点击直接发送</span>
+        <div class="samples reveal" style="--d:110ms" id="samples">
+          <span class="samples__label">试着说</span>
+        </div>
+
+        <section class="overview reveal" style="--d:150ms">
+          <div class="ov__head">
+            <span class="eyebrow">它怎么工作</span>
+            <span class="ov__note">模型只负责听懂，执行与风控是确定性代码</span>
           </div>
-          <div class="tasks" id="chips" aria-label="快捷任务" hidden></div>
-        </section>
-
-        <p class="rail__foot">演示环境 · 资金操作分级授权 · 全流程哈希链审计</p>
-      </aside>
-
-      <main class="stream">
-        <div class="chat" id="chat" aria-live="polite" aria-label="业务办理流水">
-          <div class="empty" id="chatEmpty">
-            <div class="desk">
-              <p class="desk__kicker">业务台</p>
-              <h1 class="desk__title">今天要办什么？</h1>
-              <p class="desk__lead">一句话说清业务与金额。ZeroStep 会拆出执行步骤、标注风险等级，再由确定性工具逐步执行。</p>
-              <p class="desk__hint">在下方输入框直接描述，或选择一项示例</p>
-              <div class="desk__examples">
-                <button class="desk__card" type="button" data-text="查一下这个月支出最多的三类">
-                  <span class="desk__card-cat">账单</span>
-                  <span class="desk__card-title">查本月支出前三类</span>
-                  <span class="desk__card-sub">汇总账单 · 自动执行</span>
-                </button>
-                <button class="desk__card" type="button" data-text="给妈妈转 8 元">
-                  <span class="desk__card-cat">转账</span>
-                  <span class="desk__card-title">给妈妈转 8 元</span>
-                  <span class="desk__card-sub">小额转账 · 需你确认</span>
-                </button>
-                <button class="desk__card" type="button" data-text="帮我看看有没有正在自动续费的订阅">
-                  <span class="desk__card-cat">订阅</span>
-                  <span class="desk__card-title">查自动续费订阅</span>
-                  <span class="desk__card-sub">订阅列表 · 自动执行</span>
-                </button>
-              </div>
-              <div class="desk__caps">
-                <div class="cap">
-                  <span class="cap__n">01</span>
-                  <span class="cap__body"><b>听懂</b><span>规则或模型抽取意图与槽位，原句可复核</span></span>
-                </div>
-                <div class="cap">
-                  <span class="cap__n">02</span>
-                  <span class="cap__body"><b>分级授权</b><span>绿色自动 · 黄色确认 · 红色动态码</span></span>
-                </div>
-                <div class="cap">
-                  <span class="cap__n">03</span>
-                  <span class="cap__body"><b>可审计</b><span>每一步写入哈希链，可导出 JSONL</span></span>
-                </div>
-              </div>
+          <div class="ov__grid ov__grid--steps">
+            <div>
+              <span class="ov__k">听懂</span>
+              <span class="ov__v ov__v--sm">意图 + 槽位</span>
+              <span class="ov__d">规则或模型抽取，原句可复核</span>
+            </div>
+            <div>
+              <span class="ov__k">分级授权</span>
+              <span class="ov__v ov__v--sm">绿 / 黄 / 红</span>
+              <span class="ov__d">查询自动执行，动钱必须你确认</span>
+            </div>
+            <div>
+              <span class="ov__k">可审计</span>
+              <span class="ov__v ov__v--sm">SHA-256 链</span>
+              <span class="ov__d">每一步写入哈希链，可导出 JSONL</span>
             </div>
           </div>
-        </div>
+        </section>
+      </div>
 
-        <div class="errorbar" id="errorBar" role="alert" hidden>
-          <span class="errorbar__text" id="errorText">网络异常</span>
-          <button class="errorbar__btn" id="errorRetry" type="button">重试</button>
-          <button class="errorbar__close" id="errorClose" type="button" aria-label="关闭提示">×</button>
+      <div class="stage__view" id="view-chat">
+        <div class="chat" id="chat">
+          <div class="chat__empty" id="chatEmpty">还没有对话。说一句话，例如「查一下这个月支出最多的三类」。</div>
         </div>
+      </div>
+    </div>
 
-        <footer class="composer">
-          <div class="composer__box">
-            <textarea class="composer__input" id="input" rows="1" maxlength="500" placeholder="描述你要办理的业务，例如：给妈妈转 8 元" aria-label="输入业务指令"></textarea>
-            <button class="icon-btn" id="btnMic" type="button" aria-label="语音输入" title="语音输入">
-              <svg viewBox="0 0 20 20" width="16" height="16" focusable="false">
-                <rect x="7.4" y="2.2" width="5.2" height="9.2" rx="2.6" fill="none" stroke="currentColor" stroke-width="1.5" />
-                <path d="M4.8 9.4a5.2 5.2 0 0 0 10.4 0M10 14.8v2.6M7.4 17.4h5.2" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" />
-              </svg>
+    <div class="stage__foot">
+      <div class="errbar" id="errorBar" hidden>
+        <span class="errbar__dot" aria-hidden="true"></span>
+        <span class="errbar__text" id="errorText">网络异常</span>
+        <button class="errbar__btn" type="button" id="errorRetry">重试</button>
+        <button class="icon-btn errbar__close" type="button" id="errorClose" aria-label="关闭提示">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+      <div class="composer">
+        <textarea id="input" rows="1" placeholder="描述你要办理的业务，例如：给妈妈转 8 元" aria-label="输入业务需求"></textarea>
+        <div class="composer__bar">
+          <div class="composer__left">
+            <button class="icon-btn" type="button" id="btnMic" aria-label="语音输入">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a3 3 0 0 1 3 3v5a3 3 0 0 1-6 0V7a3 3 0 0 1 3-3z"/><path d="M5.5 11.5a6.5 6.5 0 0 0 13 0M12 18v2.5"/></svg>
             </button>
-            <button class="send-btn" id="btnSend" type="button">发送</button>
+            <span class="composer__hint">Enter 发送 · Shift+Enter 换行</span>
           </div>
-          <p class="composer__hint">资金类操作需分级授权 · 执行结果写入哈希链 · 演示数据</p>
-        </footer>
-      </main>
-
-      <aside class="trace" id="tracePanel" aria-label="本次执行轨迹">
-        <div class="trace__head">
-          <h2 class="trace__title">本次执行轨迹</h2>
-          <button class="trace__toggle" id="btnTraceToggle" type="button" aria-expanded="true">收起</button>
+          <button class="btn-primary" type="button" id="btnSend">
+            发送
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+          </button>
         </div>
-        <p class="trace__meta" id="traceMeta">还没有执行记录 · 发送指令后逐步显示</p>
-        <ol class="trace__list" id="traceList"></ol>
-        <p class="trace__foot">工具调用由确定性代码执行，结果写入审计链。</p>
-      </aside>
-    </div>
-
-    <button class="pending" id="pendingPill" type="button" hidden>
-      <i class="pending__dot" aria-hidden="true"></i>
-      <span>待授权操作</span>
-      <span class="pending__time" id="pendingPillTime">04:59</span>
-    </button>
-
-    <div class="overlay" id="approvalSheet" hidden>
-      <div class="overlay__backdrop" data-close="approval"></div>
-      <div class="dialog ap" id="approvalPanel" role="dialog" aria-modal="true" aria-labelledby="apTitle">
-        <div class="ap__top">
-          <span class="riskbadge riskbadge--medium" id="apRisk">中风险 · 需确认</span>
-          <span class="ap__countdown" id="apCountdown">05:00</span>
-        </div>
-        <div class="ap__amount" id="apAmount">¥0.00</div>
-        <h2 class="ap__title" id="apTitle">操作授权</h2>
-        <dl class="ap__rows" id="apRows"></dl>
-        <div class="ap__conflicts" id="apConflicts" hidden>
-          <p class="ap__conflicts-title">以下信息前后不一致，请核对后再确认</p>
-          <ul class="ap__conflict-list" id="apConflictList"></ul>
-        </div>
-        <div class="ap__source" id="apSource"></div>
-        <div class="ap__section">
-          <h3 class="ap__h3">为什么需要你确认</h3>
-          <ul class="ap__reasons" id="apReasons"></ul>
-        </div>
-        <div class="ap__section">
-          <h3 class="ap__h3">执行后</h3>
-          <p class="ap__preview" id="apPreview"></p>
-        </div>
-        <div class="ap__otp" id="apOtp" hidden>
-          <h3 class="ap__h3">动态验证码<span class="muted">（6 位，演示环境）</span></h3>
-          <div class="otp" id="otpCells">
-            <input class="otp__cell" id="otp0" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1" aria-label="验证码第 1 位" />
-            <input class="otp__cell" id="otp1" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 2 位" />
-            <input class="otp__cell" id="otp2" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 3 位" />
-            <input class="otp__cell" id="otp3" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 4 位" />
-            <input class="otp__cell" id="otp4" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 5 位" />
-            <input class="otp__cell" id="otp5" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 6 位" />
-          </div>
-          <div class="keypad" id="otpKeypad">
-            <button class="keypad__key" type="button" data-key="1">1</button>
-            <button class="keypad__key" type="button" data-key="2">2</button>
-            <button class="keypad__key" type="button" data-key="3">3</button>
-            <button class="keypad__key" type="button" data-key="4">4</button>
-            <button class="keypad__key" type="button" data-key="5">5</button>
-            <button class="keypad__key" type="button" data-key="6">6</button>
-            <button class="keypad__key" type="button" data-key="7">7</button>
-            <button class="keypad__key" type="button" data-key="8">8</button>
-            <button class="keypad__key" type="button" data-key="9">9</button>
-            <button class="keypad__key keypad__key--ghost" type="button" data-key="clear">清空</button>
-            <button class="keypad__key" type="button" data-key="0">0</button>
-            <button class="keypad__key keypad__key--ghost" type="button" data-key="del" aria-label="删除一位">删除</button>
-          </div>
-          <button class="linkbtn" id="btnDemoTotp" type="button">获取演示验证码</button>
-        </div>
-        <p class="ap__error" id="apError" hidden></p>
-        <div class="ap__actions">
-          <button class="btn btn--ghost" id="btnReject" type="button">拒绝</button>
-          <button class="btn btn--primary" id="btnApprove" type="button">确认执行</button>
-        </div>
-        <p class="ap__foot">确认环节不经过模型 · 审批绑定单次 nonce 且限时有效，过期或重复提交均无效</p>
       </div>
     </div>
+  </main>
 
-    <div class="overlay" id="auditSheet" hidden>
-      <div class="overlay__backdrop" data-close="audit"></div>
-      <div class="drawer" role="dialog" aria-modal="true" aria-labelledby="auditTitle">
-        <div class="drawer__head">
-          <h2 class="drawer__title" id="auditTitle">审计哈希链</h2>
-          <div class="drawer__head-actions">
-            <button class="linkbtn" id="btnAuditExport" type="button">导出 audit.log</button>
-            <button class="linkbtn" id="btnAuditRefresh" type="button">刷新</button>
-            <button class="linkbtn" id="btnAuditClose" type="button">关闭</button>
-          </div>
-        </div>
-        <div class="audit__summary">
-          <span class="chainbadge" id="auditValid">链校验：—</span>
-          <span class="muted" id="auditMeta">共 0 条</span>
-        </div>
-        <ul class="auditlist" id="auditList"></ul>
-        <p class="audit__foot muted">hash = sha256(prev_hash + canonical_json(条目))，实时重算校验；点击条目展开完整哈希。导出为 JSONL，文件名为 audit.log。</p>
+  <!-- ===== 右栏：执行轨迹 ===== -->
+  <aside class="trace" id="tracePanel">
+    <div class="trace__head">
+      <span class="trace__title">本次执行轨迹</span>
+      <button class="trace__toggle" type="button" id="btnTraceToggle" aria-expanded="true">收起</button>
+    </div>
+    <div class="trace__meta" id="traceMeta">还没有执行记录</div>
+    <div class="trace__body" id="traceBody">
+      <div class="tl" id="traceList">
+        <div class="trace__empty">发出指令后，每一步工具调用逐条显示，并同步写入审计链。</div>
       </div>
     </div>
+    <div class="trace__foot">工具调用由确定性代码执行，结果写入哈希链。</div>
+  </aside>
+</div>
 
-    <div class="menu" id="moreMenu" hidden>
-      <button class="menu__item" type="button" data-action="reset">重置演示数据</button>
-      <button class="menu__item" type="button" data-action="health">查看 API 健康</button>
-      <button class="menu__item" type="button" data-action="about">关于 ZeroStep</button>
+<!-- ===== 技能页 ===== -->
+<section class="screen" id="scr-skills">
+  <div class="screen__head">
+    <div>
+      <div class="eyebrow screen__eyebrow">技能</div>
+      <h1 class="screen__h1">六类业务，同一套执行底座</h1>
+      <p class="screen__sub">每个技能都是确定性工具，输入输出有严格 schema；模型只负责选技能和填槽位，不负责动钱。</p>
     </div>
-
-    <div class="overlay" id="modal" hidden>
-      <div class="overlay__backdrop" data-close="modal"></div>
-      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
-        <h2 class="modal-card__title" id="modalTitle"></h2>
-        <div class="modal-card__body" id="modalBody"></div>
-        <div class="modal-card__actions" id="modalActions"></div>
-      </div>
+    <div class="screen__acts">
+      <button class="btn-text" type="button" id="btnSkillsRefresh">刷新</button>
+      <button class="btn-secondary" type="button" data-nav="home">返回工作台</button>
     </div>
-
-    <div class="toasts" id="toasts" aria-live="polite"></div>
   </div>
-  <noscript><p class="noscript">该演示需要启用 JavaScript。</p></noscript>
-  <script src="app.js" defer></script>
+  <div class="grid3" id="skillsGrid"></div>
+  <div class="infobar" id="skillsInfoBar" hidden></div>
+</section>
+
+<!-- ===== 插件页 ===== -->
+<section class="screen" id="scr-plugins">
+  <div class="screen__head">
+    <div>
+      <div class="eyebrow screen__eyebrow">插件</div>
+      <h1 class="screen__h1">能力按插件注册，可单独启停</h1>
+      <p class="screen__sub">模型、外部服务、技能与渠道都以插件形式挂载；停用只收起对应能力，风险分级与哈希链审计不受影响。</p>
+    </div>
+    <div class="screen__acts">
+      <button class="btn-text" type="button" id="btnPluginsRefresh">刷新</button>
+      <button class="btn-secondary" type="button" data-nav="home">返回工作台</button>
+    </div>
+  </div>
+  <div class="plugins__summary">
+    <span class="plugins__count" id="pluginsSummary">共 0 个插件</span>
+    <span class="plugins__legend">开关即时生效，由服务端持久化；核心插件锁定不可停用</span>
+  </div>
+  <div class="errbar plugins__errbar" id="pluginsError" hidden>
+    <span class="errbar__dot" aria-hidden="true"></span>
+    <span class="errbar__text" id="pluginsErrorText">切换失败，请稍后重试</span>
+    <button class="icon-btn errbar__close" type="button" id="pluginsErrorClose" aria-label="关闭提示">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+    </button>
+  </div>
+  <div class="infobar" id="pluginsInfoBar" hidden></div>
+  <div class="pluggrid" id="pluginsGrid"></div>
+</section>
+
+<!-- ===== 外部服务页 ===== -->
+<section class="screen" id="scr-services">
+  <div class="screen__head">
+    <div>
+      <div class="eyebrow screen__eyebrow">外部服务 · MCP</div>
+      <h1 class="screen__h1">只读外部能力，全部可降级</h1>
+      <p class="screen__sub">外部服务只提供只读数据（汇率、反欺诈评分）；全部不可用时，内置工具仍能完成六类业务。</p>
+    </div>
+    <div class="screen__acts">
+      <button class="btn-text" type="button" id="btnServicesRefresh">刷新</button>
+      <button class="btn-secondary" type="button" data-nav="home">返回工作台</button>
+    </div>
+  </div>
+  <div class="infobar infobar--off" id="servicesInfoBar" hidden></div>
+  <div class="grid2" id="servicesGrid"></div>
+</section>
+
+<!-- ===== 设置页 ===== -->
+<section class="screen" id="scr-settings">
+  <div class="screen__head">
+    <div>
+      <div class="eyebrow screen__eyebrow">设置</div>
+      <h1 class="screen__h1">渠道与运行时</h1>
+      <p class="screen__sub">对外渠道为只读展示：Webhook 地址可复制，令牌始终打码；下方为演示环境的运行时信息。</p>
+    </div>
+    <div class="screen__acts">
+      <button class="btn-text" type="button" id="btnChannelRefresh">刷新</button>
+      <button class="btn-secondary" type="button" data-nav="home">返回工作台</button>
+    </div>
+  </div>
+  <div class="grid2">
+    <div class="scard scard--wide" id="llmCard">
+      <div class="scard__top"><span class="scard__t">模型接入</span><span class="tag" id="llmTag">读取中</span></div>
+      <div class="scard__tool">/api/llm/status</div>
+      <div class="kvlist" id="llmInfo">
+        <div class="kvrow"><span class="k">厂商</span><span class="v mono" id="llmProvider">—</span></div>
+        <div class="kvrow"><span class="k">模型</span><span class="v mono" id="llmModel">—</span></div>
+        <div class="kvrow"><span class="k">接口域名</span><span class="v mono" id="llmHost">—</span></div>
+        <div class="kvrow"><span class="k">Key 状态</span><span class="v mono" id="llmKey">—</span></div>
+        <div class="kvrow"><span class="k">实际解析</span><span class="v mono" id="llmEffective">—</span></div>
+        <div class="kvrow"><span class="k">熔断状态</span><span class="v mono" id="llmBreaker">—</span></div>
+      </div>
+      <div class="kvlist" id="llmStats" hidden>
+        <div class="kvrow"><span class="k">用量统计</span><span class="v mono" id="llmStatsText">—</span></div>
+      </div>
+      <div class="llmtest">
+        <button class="btn-secondary" type="button" id="btnLlmTest">测试连接</button>
+        <span class="llmtest__result" id="llmTestResult" role="status" hidden></span>
+      </div>
+      <p class="scard__note" id="llmNote">测试连接只发送一句极短提示词，消耗少量 token；Key 始终打码显示。</p>
+    </div>
+    <div class="scard scard--wide">
+      <div class="scard__top"><span class="scard__t">服务渠道</span><span class="tag" id="channelTag">读取中</span></div>
+      <div class="scard__tool">channel</div>
+      <div class="kvlist" id="channelInfo">
+        <div class="kvrow"><span class="k">渠道状态</span><span class="v mono" id="channelEnabled">—</span></div>
+        <div class="kvrow"><span class="k">监听端口</span><span class="v mono" id="channelPort">—</span></div>
+        <div class="kvrow"><span class="k">访问令牌</span><span class="v mono" id="channelToken">—</span></div>
+        <div class="kvrow"><span class="k">活动会话</span><span class="v mono" id="channelSessions">—</span></div>
+      </div>
+      <p class="scard__note" id="channelNote">令牌始终打码显示，页面不提供任何写操作。</p>
+    </div>
+
+    <div class="scard scard--wide" id="pushCard">
+      <div class="scard__top"><span class="scard__t">模拟推送</span><span class="tag tag--muted" id="pushTag">未触发</span></div>
+      <div class="scard__tool">POST /api/push</div>
+      <div class="push" id="pushKinds" role="group" aria-label="推送类型">
+        <button class="push__kind is-on" type="button" data-push="subscription">订阅扣费</button>
+        <button class="push__kind" type="button" data-push="large_txn">大额支出</button>
+        <button class="push__kind" type="button" data-push="repayment">还款到期</button>
+      </div>
+      <div class="push__row">
+        <button class="btn-secondary" type="button" id="btnPushPreview">模拟推送</button>
+        <span class="push__status" id="pushStatus" role="status" hidden></span>
+      </div>
+      <div class="push__result" id="pushResult" hidden>
+        <div class="push__body">
+          <div class="push__title" id="pushTitle"></div>
+          <div class="push__text" id="pushText"></div>
+        </div>
+        <div class="push__meta mono" id="pushMeta"></div>
+      </div>
+      <p class="scard__note" id="pushNote">演示环境：不会真的发短信，只走渠道适配器的投递路径；推送结果同时写入审计。</p>
+    </div>
+    <div class="scard">
+      <div class="scard__top"><span class="scard__t">运行时</span><span class="tag" id="healthTag">读取中</span></div>
+      <div class="scard__tool">/api/health</div>
+      <div class="kvlist" id="healthInfo">
+        <div class="kvrow"><span class="k">版本</span><span class="v mono" id="healthVersion">—</span></div>
+        <div class="kvrow"><span class="k">演示模式</span><span class="v mono" id="healthDemo">—</span></div>
+        <div class="kvrow"><span class="k">解析模式</span><span class="v mono" id="healthMode">—</span></div>
+        <div class="kvrow"><span class="k">当前会话</span><span class="v mono" id="healthSession">—</span></div>
+      </div>
+      <div class="scard__acts">
+        <button class="btn-secondary" type="button" data-action="health">健康详情</button>
+        <button class="btn-secondary" type="button" data-action="reset">重置演示</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ===== 审批弹层 ===== -->
+<div class="scrim" id="approvalSheet" hidden>
+  <div class="dlg" id="approvalPanel" role="dialog" aria-modal="true" aria-labelledby="apTitle">
+    <div class="dlg__stamp" aria-hidden="true">已执行</div>
+    <div class="dlg__top">
+      <span class="risk" id="apRisk">中风险 · 需确认</span>
+      <span class="dlg__timer" id="apCountdown" role="timer">05:00</span>
+    </div>
+    <div class="dlg__amt" id="apAmount"><span class="cur">¥</span>0.00</div>
+    <div class="dlg__for" id="apTitle">操作授权</div>
+    <div class="dlg__rows" id="apRows"></div>
+    <div class="dlg__source" id="apSource"></div>
+    <div class="dlg__conflicts" id="apConflicts" hidden>
+      <h4>原话与抽取不一致</h4>
+      <ul id="apConflictList"></ul>
+    </div>
+    <div class="dlg__factors" id="dlgFactors" hidden>
+      <h4>本次校验方式</h4>
+      <div class="factors" role="group" aria-label="校验方式">
+        <button class="factor is-on" type="button" id="dlgFactorTotp" data-factor="totp" aria-pressed="true">动态验证码</button>
+        <button class="factor" type="button" id="dlgFactorSms" data-factor="sms" aria-pressed="false">短信验证码</button>
+        <button class="factor" type="button" id="dlgFactorFace" data-factor="face" aria-pressed="false">人脸确认</button>
+      </div>
+    </div>
+    <div class="dlg__otp" id="apOtp" hidden>
+      <div class="dlg__otp-head">
+        <span id="apOtpLabel">6 位动态验证码</span>
+        <button class="link" type="button" id="btnDemoTotp">获取演示验证码</button>
+        <button class="link" type="button" id="dlgSmsSend" hidden>获取短信验证码</button>
+      </div>
+      <p class="dlg__smscode mono" id="dlgSmsCode" hidden></p>
+      <div class="otp" id="otpCells">
+        <input class="otp__cell" type="text" inputmode="numeric" autocomplete="one-time-code" maxlength="1" aria-label="验证码第 1 位">
+        <input class="otp__cell" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 2 位">
+        <input class="otp__cell" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 3 位">
+        <input class="otp__cell" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 4 位">
+        <input class="otp__cell" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 5 位">
+        <input class="otp__cell" type="text" inputmode="numeric" maxlength="1" aria-label="验证码第 6 位">
+      </div>
+      <div class="keypad" id="otpKeypad">
+        <button class="keypad__key" type="button" data-key="1">1</button>
+        <button class="keypad__key" type="button" data-key="2">2</button>
+        <button class="keypad__key" type="button" data-key="3">3</button>
+        <button class="keypad__key" type="button" data-key="4">4</button>
+        <button class="keypad__key" type="button" data-key="5">5</button>
+        <button class="keypad__key" type="button" data-key="6">6</button>
+        <button class="keypad__key" type="button" data-key="7">7</button>
+        <button class="keypad__key" type="button" data-key="8">8</button>
+        <button class="keypad__key" type="button" data-key="9">9</button>
+        <button class="keypad__key keypad__key--ghost" type="button" data-key="clear">清空</button>
+        <button class="keypad__key" type="button" data-key="0">0</button>
+        <button class="keypad__key keypad__key--ghost" type="button" data-key="del">删除</button>
+      </div>
+    </div>
+    <div class="dlg__face" id="dlgFace" hidden>
+      <button class="btn-secondary" type="button" id="dlgFaceScan">开始人脸确认</button>
+      <div class="face__state" id="dlgFaceState">点击开始，模拟一次人脸确认</div>
+      <div class="face__token mono" id="dlgFaceToken" hidden></div>
+    </div>
+    <div class="field-error" id="apError" hidden></div>
+    <div class="dlg__rules" id="apReasons"></div>
+    <div class="dlg__preview" id="apPreview"></div>
+    <div class="dlg__foot">
+      <p class="dlg__note">确认环节不经过模型。审批绑定单次 nonce，限时有效，过期或重复提交均无效。</p>
+      <div class="dlg__btns">
+        <button class="btn-secondary" type="button" id="btnReject">拒绝</button>
+        <button class="btn-primary" type="button" id="btnApprove">确认执行</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== 审计抽屉 ===== -->
+<aside class="drawer" id="auditSheet" hidden>
+  <div class="drawer__head">
+    <span class="drawer__title" id="auditTitle">审计哈希链</span>
+    <div class="drawer__acts">
+      <button class="btn-text" type="button" id="btnAuditExport">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v11M8 11l4 4 4-4M5 19h14"/></svg>导出 audit.log
+      </button>
+      <button class="icon-btn" type="button" id="btnAuditRefresh" aria-label="刷新">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.6-5.9M20 4v4h-4"/></svg>
+      </button>
+      <button class="icon-btn" type="button" id="btnAuditClose" aria-label="关闭">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+  </div>
+  <div class="chk">
+    <div class="chk__left">
+      <span class="badge badge--wait" id="auditValid" role="status">校验中</span>
+      <span id="auditMeta">共 0 条</span>
+    </div>
+    <span>链式校验 · 可导出</span>
+  </div>
+  <div class="arows" id="auditList"></div>
+  <div class="drawer__foot">hash = sha256(prev_hash + canonical_json(条目))，实时重算校验；点击条目展开完整哈希，导出为 JSONL，文件名 audit.log。</div>
+</aside>
+
+<!-- ===== 更多菜单 ===== -->
+<div class="menu" id="moreMenu" hidden>
+  <button class="menu__item menu__item--nav" type="button" data-nav="skills">技能</button>
+  <button class="menu__item menu__item--nav" type="button" data-nav="plugins">插件</button>
+  <button class="menu__item menu__item--nav" type="button" data-nav="services">外部服务</button>
+  <button class="menu__item menu__item--nav" type="button" data-nav="settings">设置</button>
+  <div class="menu__sep"></div>
+  <div class="menu__modewrap" id="menuModeWrap">
+    <div class="menu__label">解析模式</div>
+    <div class="menu__seg" role="group" aria-label="解析模式（手机）">
+      <button class="menu__segbtn" type="button" data-mode="rule">规则</button>
+      <button class="menu__segbtn is-on" type="button" data-mode="auto">自动</button>
+      <button class="menu__segbtn" type="button" data-mode="llm">模型</button>
+    </div>
+    <div class="menu__hint">自动 = 有 Key 走模型，无 Key 回落规则</div>
+  </div>
+  <div class="menu__sep"></div>
+  <button class="menu__item" type="button" data-action="health">API 健康</button>
+  <button class="menu__item" type="button" data-action="reset">重置演示</button>
+  <button class="menu__item" type="button" data-action="about">关于 ZeroStep</button>
+</div>
+
+<!-- ===== 通用弹窗 ===== -->
+<div class="modal" id="modal" hidden>
+  <div class="modal__card" role="dialog" aria-modal="true">
+    <h3 class="modal__title" id="modalTitle"></h3>
+    <div class="modal__body" id="modalBody"></div>
+    <div class="modal__actions" id="modalActions"></div>
+  </div>
+</div>
+
+<!-- ===== 待授权胶囊 / 轻提示 ===== -->
+<button class="pending-pill" type="button" id="pendingPill" hidden>
+  <span class="pending-pill__dot" aria-hidden="true"></span>
+  <span>待授权操作</span>
+  <span class="pending-pill__time" id="pendingPillTime">--:--</span>
+</button>
+
+<!-- ===== 底部 tab（≤720px 显示） ===== -->
+<nav class="tabbar" id="tabbar" aria-label="底部导航">
+  <button class="tabbar__btn is-on" type="button" data-nav="home" aria-label="工作台">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20H4z"/><path d="M9.5 20v-5h5v5"/></svg>
+    <span>工作台</span>
+  </button>
+  <button class="tabbar__btn" type="button" data-nav="skills" aria-label="技能">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 9.3l5-.7z"/></svg>
+    <span>技能</span>
+  </button>
+  <button class="tabbar__btn" type="button" data-nav="plugins" aria-label="插件">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 4v3M15 4v3M7 7h10v6a5 5 0 0 1-10 0z"/><path d="M12 18v3"/></svg>
+    <span>插件</span>
+  </button>
+  <button class="tabbar__btn" type="button" data-nav="settings" aria-label="设置">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M4.2 7.5l2.2 1.2M17.6 15.3l2.2 1.2M4.2 16.5l2.2-1.2M17.6 8.7l2.2-1.2"/></svg>
+    <span>设置</span>
+  </button>
+</nav>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<noscript><div class="noscript">本页面需要启用 JavaScript 才能使用。</div></noscript>
+<script src="app.js" defer></script>
 </body>
 </html>

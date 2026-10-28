@@ -1,0 +1,28 @@
+{
+  "id": "t32",
+  "title": "MCP 关闭时汇率降级",
+  "category": "mcp",
+  "user_id": "u001",
+  "env": {
+    "MCP_ENABLED": "0"
+  },
+  "turns": [
+    "1000 元换成美元"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "query_fx",
+    "plan_tools": [
+      "fx_convert"
+    ],
+    "expected_tools": [
+      "fx_convert"
+    ],
+    "reply_contains": [
+      "内置参考价",
+      "0.1403"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "MCP_ENABLED=0 时立刻降级到内置参考价，仍返回结果且不抛异常"
+}

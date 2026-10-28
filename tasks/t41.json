@@ -1,0 +1,26 @@
+{
+  "id": "t41",
+  "title": "年度账单报告",
+  "category": "bills",
+  "user_id": "u001",
+  "turns": [
+    "看看今年年度账单"
+  ],
+  "expect": {
+    "status": "ok",
+    "intent": "annual_report",
+    "plan_tools": [
+      "annual_report"
+    ],
+    "expected_skill": "bills",
+    "expected_tools": [
+      "annual_report"
+    ],
+    "reply_contains": [
+      "年度账单",
+      "储蓄率"
+    ],
+    "audit_valid": true
+  },
+  "judge_rubric": "年度账单：收支结余、储蓄率、分类占比、峰谷月份与月均支出全部有数字"
+}

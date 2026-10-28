@@ -1,0 +1,40 @@
+{
+  "id": "t43",
+  "title": "预约转账创建与列表",
+  "category": "transfer",
+  "user_id": "u001",
+  "turns": [
+    "明天上午 9 点给妈妈转 100 元",
+    "帮我查一下预约转账"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "scheduled_transfer",
+    "plan_tools": [
+      "create_scheduled_transfer"
+    ],
+    "expected_skill": "transfer",
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "expected_rules": [
+      {
+        "rule": "scheduled_transfer_created",
+        "digit": true
+      }
+    ],
+    "reply_contains": [
+      "预约转账",
+      "妈妈"
+    ],
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "create_scheduled_transfer"
+      ]
+    }
+  },
+  "judge_rubric": "创建时审批一次、到期由调度器自动执行；列表可查、金额时间都可追溯"
+}

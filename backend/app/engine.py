@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import approvals, audit, config, db, llm, mock_core, nlu, policy, totp
+from . import approvals, audit, config, db, llm, locks, mock_core, nlu, policy, totp
 from .mock_core import DomainError, yuan
 
 
@@ -103,6 +103,9 @@ def serialize_approval(ap: Dict[str, Any], preview: str = "", title: str = "") -
         "payer_account_masked": params.get("payer_account_masked", ""),
         "source": params.get("source", "rule"), "source_detail": params.get("source_detail", ""),
         "conflicts": params.get("conflicts", []),
+        "hits": params.get("hits", []),
+        # v0.4.1：红色动作可选的强验证因子（totp / sms / face），前端据此渲染选择器
+        "factors": params.get("factors", []),
     }
 
 
@@ -117,9 +120,31 @@ def _account_of(conn, user_id: str, kind: str) -> Optional[Dict[str, Any]]:
     return dict(row) if row else None
 
 
+def _mask_phone(phone: str) -> str:
+    p = str(phone or "")
+    return "手机号 ****" + p[-4:] if len(p) >= 4 else "手机号 ****"
+
+
 def _resolve_payee(conn, user_id: str, slots: Dict[str, Any]) -> Tuple[Optional[Dict[str, Any]], bool]:
     payees = mock_core.list_payees(conn, user_id)
     name = slots.get("payee_name") or ""
+    phone = str(slots.get("payee_phone") or "").strip()
+    if phone:
+        # 手机号优先：命中通讯录里的手机号才算熟客，否则按新收款人处理（policy 会升级到高风险）
+        try:
+            hit = mock_core.find_payee_by_phone(conn, user_id, phone)
+        except Exception:  # noqa: BLE001 - 数据层未就绪时退化为本地匹配
+            hit = None
+        if hit:
+            return hit, False
+        for p in payees:
+            if str(p.get("phone") or "") == phone:
+                return p, False
+        if name:
+            for p in payees:
+                if p["name"] == name or name in p["name"]:
+                    return p, False
+        return None, True
     for p in payees:
         if name and (p["name"] == name or name in p["name"]):
             return p, False
@@ -161,6 +186,12 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
         pname = slots.get("product_name") or prods.get(pid, "")
         steps.append(_step("s1", "申购「%s」%s" % (pname or "理财产品", yuan(amount)), "purchase_wealth",
                            {"product_id": pid, "amount_cents": amount, "product_name": pname}))
+    elif name == "query_fx":
+        frm = str(slots.get("from_currency") or "CNY").upper()
+        to = str(slots.get("to_currency") or "USD").upper()
+        amount = int(slots.get("amount_cents") or 0)
+        steps.append(_step("s1", "查询 %s→%s 汇率" % (frm, to), "fx_convert",
+                           {"from_currency": frm, "to_currency": to, "amount_cents": amount}))
     elif name == "card_query":
         steps.append(_step("s1", "查看银行卡列表", "list_cards", {}))
     elif name == "card_apply":
@@ -187,8 +218,12 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
     elif name == "transfer":
         payee, is_new = _resolve_payee(conn, user_id, slots)
         amount = int(slots.get("amount_cents") or 0)
-        payee_name = payee["name"] if payee else slots.get("payee_name")
+        phone = str(slots.get("payee_phone") or "").strip()
+        payee_name = payee["name"] if payee else (slots.get("payee_name") or (_mask_phone(phone) if phone else None))
         payee_account = (payee["account_no"] if payee else slots.get("payee_account")) or ""
+        if phone and not payee_account:
+            # 手机号转账：账号即手机号，掩码后作为对手方信息，避免被 policy 误判为「缺账户」
+            payee_account = _mask_phone(phone)
         steps.append(_step("s1", "校验收款人信息", "get_payees", {}))
         steps.append(_step("s2", "向「%s」转账 %s" % (payee_name or "未知收款人", yuan(amount)), "create_transfer", {
             "from_account_id": from_acc["account_id"] if from_acc else None, "payee_name": payee_name,
@@ -262,6 +297,87 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
                     "from_account_id": from_acc["account_id"] if from_acc else None,
                     "payee_name": slots.get("payee_name"), "payee_account": slots.get("payee_account") or "",
                     "amount_cents": amount, "payee_is_new": True, "internal": False}))
+    elif name == "wealth_redeem":
+        amount = int(slots.get("amount_cents") or 0)
+        info = mock_core.list_wealth(conn, user_id)
+        holdings = info.get("holdings") or []
+        holding = None
+        if slots.get("holding_id"):
+            holding = next((h for h in holdings if h.get("holding_id") == slots["holding_id"]), None)
+        if holding is None and slots.get("product_id"):
+            holding = next((h for h in holdings if h.get("product_id") == slots["product_id"]), None)
+        if holding is None and holdings:
+            holding = holdings[0]
+        pname = (holding or {}).get("name") or slots.get("product_name") or ""
+        if amount <= 0 and holding:
+            amount = int(holding.get("amount_cents") or 0)
+        steps.append(_step("s1", "赎回「%s」%s" % (pname or "理财产品", yuan(amount)), "redeem_wealth",
+                           {"product_id": (holding or {}).get("product_id") or slots.get("product_id") or "",
+                            "holding_id": (holding or {}).get("holding_id") or "",
+                            "amount_cents": amount, "product_name": pname}))
+    elif name == "card_limit":
+        row = None
+        if slots.get("card_id"):
+            row = conn.execute("SELECT * FROM cards WHERE card_id=? AND user_id=?", (slots["card_id"], user_id)).fetchone()
+        if row is None:
+            row = conn.execute("SELECT * FROM cards WHERE user_id=? AND kind='credit' ORDER BY card_id LIMIT 1", (user_id,)).fetchone()
+        if row is None:
+            row = conn.execute("SELECT * FROM cards WHERE user_id=? ORDER BY card_id LIMIT 1", (user_id,)).fetchone()
+        d = slots.get("daily_limit_cents")
+        s = slots.get("single_limit_cents")
+        steps.append(_step("s1", "调整银行卡限额", "set_card_limit",
+                           {"card_id": row["card_id"] if row else None,
+                            "card_last4": row["number_masked"] if row else "",
+                            "daily_limit_cents": int(d) if d is not None else None,
+                            "single_limit_cents": int(s) if s is not None else None}))
+    elif name == "card_spend":
+        amount = int(slots.get("amount_cents") or 0)
+        kind_hint = "virtual" if ("虚拟卡" in text) else ("debit" if ("储蓄卡" in text or "借记卡" in text) else "credit")
+        row = conn.execute("SELECT * FROM cards WHERE user_id=? AND kind=? ORDER BY card_id LIMIT 1", (user_id, kind_hint)).fetchone()
+        if row is None:
+            row = conn.execute("SELECT * FROM cards WHERE user_id=? AND status='active' ORDER BY card_id LIMIT 1", (user_id,)).fetchone()
+        merchant = "演示商户"
+        m = re.search(r"在(.{1,12}?)(?:消费|刷卡|刷了|买东西)", text)
+        if m:
+            merchant = m.group(1).strip() or merchant
+        steps.append(_step("s1", "在「%s」刷卡消费 %s" % (merchant, yuan(amount)), "card_spend",
+                           {"card_id": row["card_id"] if row else None,
+                            "card_last4": row["number_masked"] if row else "",
+                            "amount_cents": amount, "merchant": merchant}))
+    elif name == "anomaly_scan":
+        steps.append(_step("s1", "扫描近 30 天异常交易", "scan_anomalies", {"days": 30}))
+    elif name == "annual_report":
+        steps.append(_step("s1", "生成 %d 年度账单报告" % int(slots.get("year") or datetime.now().year), "annual_report",
+                           {"year": int(slots.get("year") or datetime.now().year)}))
+    elif name == "scheduled_transfer":
+        op = str(slots.get("op") or "create")
+        if op == "list":
+            steps.append(_step("s1", "查看预约转账", "list_scheduled_transfers", {"status": ""}))
+        elif op == "cancel":
+            sched_id = slots.get("sched_id") or ""
+            if not sched_id:
+                try:
+                    data = mock_core.list_scheduled_transfers(conn, user_id, "pending") or {}
+                    items = data.get("items") or []
+                    sched_id = str(items[0].get("sched_id") or "") if items else ""
+                except Exception:  # noqa: BLE001 - 数据层异常时按未找到处理
+                    sched_id = ""
+            steps.append(_step("s1", "取消预约转账", "cancel_scheduled_transfer", {"sched_id": sched_id}))
+        else:
+            payee, is_new = _resolve_payee(conn, user_id, slots)
+            amount = int(slots.get("amount_cents") or 0)
+            phone = str(slots.get("payee_phone") or "").strip()
+            payee_name = payee["name"] if payee else (slots.get("payee_name") or (_mask_phone(phone) if phone else None))
+            payee_account = (payee["account_no"] if payee else slots.get("payee_account")) or ""
+            if phone and not payee_account:
+                payee_account = _mask_phone(phone)
+            run_at = slots.get("run_at") or ""
+            steps.append(_step("s1", "预约 %s 向「%s」转 %s" % (run_at or "未来", payee_name or "未知收款人", yuan(amount)),
+                               "create_scheduled_transfer", {
+                                   "from_account_id": from_acc["account_id"] if from_acc else None,
+                                   "payee_name": payee_name, "payee_account": payee_account,
+                                   "amount_cents": amount, "run_at": run_at, "payee_is_new": is_new,
+                                   "memo": text[:40]}))
     elif name in ("greeting", "unknown"):
         steps = []
 
@@ -274,6 +390,18 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
         planner_block = {"code": "AMOUNT_REQUIRED", "message": "请告诉我申购金额"}
     if name == "transfer" and not slots.get("amount_cents"):
         planner_block = {"code": "AMOUNT_REQUIRED", "message": "请告诉我转账金额"}
+    if name == "card_limit" and slots.get("daily_limit_cents") is None and slots.get("single_limit_cents") is None:
+        planner_block = {"code": "LIMIT_REQUIRED", "message": "请告诉我新的限额，例如「日累计限额 5000 元」或「单笔限额 2000 元」"}
+    if name == "card_spend" and not slots.get("amount_cents"):
+        planner_block = {"code": "AMOUNT_REQUIRED", "message": "请告诉我刷卡金额，例如「用信用卡消费 300 元」"}
+    if name == "scheduled_transfer":
+        op = str(slots.get("op") or "create")
+        if op == "create" and not slots.get("amount_cents"):
+            planner_block = {"code": "AMOUNT_REQUIRED", "message": "请告诉我预约转账金额"}
+        elif op == "create" and not slots.get("run_at"):
+            planner_block = {"code": "TIME_REQUIRED", "message": "请告诉我什么时候转，例如「明天上午 9 点给妈妈转 100 元」"}
+        elif op == "cancel" and not (steps and steps[0]["args"].get("sched_id")):
+            planner_block = {"code": "SCHEDULED_NOT_FOUND", "message": "没有找到可以取消的预约转账"}
     if name not in ("greeting", "unknown") and not steps and not planner_block:
         planner_block = {"code": "NO_STEP", "message": "我没有理解到可执行的银行操作"}
 
@@ -322,7 +450,173 @@ def _sanitize_untrusted(obj: Any, hit: str) -> Any:
     return obj
 
 
-def _exec_tool(conn, user_id: str, session_id: str, thread_id: str, tool: str, args: Dict[str, Any], idem: str) -> Dict[str, Any]:
+# ---------------- 外部只读服务 / 技能（延迟导入，缺失即降级） ----------------
+
+def _mcp_client():
+    """外部 MCP 客户端：模块缺失或加载失败时返回 None，主流程照常运行。"""
+    try:
+        from . import mcp_client
+        return mcp_client
+    except Exception:
+        return None
+
+
+def _skills_mod():
+    try:
+        from . import skills
+        return skills
+    except Exception:
+        return None
+
+
+def _plugin_enabled(plugin_id: str) -> bool:
+    """插件开关：模块缺失或读取失败一律视为启用，保证停用插件前的默认行为不变。"""
+    try:
+        from . import plugins
+        return bool(plugins.is_enabled(plugin_id))
+    except Exception:  # noqa: BLE001 - 插件表异常绝不能改变既有安全行为
+        return True
+
+
+def _fx_rate_table() -> Dict[str, float]:
+    table = dict(getattr(config, "MCP_FX_FALLBACK_RATE", {}) or {})
+    table.setdefault("CNY", 1.0)
+    return table
+
+
+def _fx_fallback(from_cur: str, to_cur: str, amount_cents: int) -> Dict[str, Any]:
+    """内置参考价：1 CNY = rate 目标币。外部不可用时用它兜底，只算参考值、不动钱。"""
+    rates = _fx_rate_table()
+    if to_cur not in rates or from_cur not in rates:
+        return {"ok": False, "source": "fallback", "from": from_cur, "to": to_cur,
+                "error": "内置参考价不支持该币种", "as_of": db.now_iso()}
+    amount = amount_cents / 100.0
+    cny = amount / rates[from_cur]
+    rate = rates[to_cur] / rates[from_cur]
+    converted = cny * rates[to_cur]
+    return {"ok": True, "source": "fallback", "from": from_cur, "to": to_cur,
+            "amount": round(amount, 2), "rate": round(rate, 6),
+            "converted": round(converted, 2) if amount_cents > 0 else 0.0,
+            "as_of": db.now_iso()}
+
+
+def _run_fx_convert(conn, session_id: str, args: Dict[str, Any]) -> Dict[str, Any]:
+    """汇率换算：优先外部 fx_convert（只读），失败/关闭时回退内置参考价。"""
+    from_cur = str(args.get("from_currency") or "CNY").upper()
+    to_cur = str(args.get("to_currency") or "USD").upper()
+    amount_cents = int(args.get("amount_cents") or 0)
+    # 纯汇率查询（用户没给金额）时以 1 元作为探针金额,只为换取 rate; 回复里不展示折算金额。
+    probe_cents = amount_cents if amount_cents > 0 else 100
+    if not _plugin_enabled("mcp-fx"):
+        # 插件被停用：不发任何外部请求，直接按内置参考价估算，审计里 source 记 disabled
+        data = _fx_fallback(from_cur, to_cur, amount_cents)
+        if isinstance(data, dict):
+            data["source"] = "disabled"
+            data["plugin_disabled"] = True
+        audit.append(conn, "mcp_call", session_id=session_id, tool="fx_convert",
+                     args={"from": from_cur, "to": to_cur, "amount_cents": amount_cents},
+                     result={"source": "disabled", "rate": (data or {}).get("rate")}, risk_level="low")
+        return data
+    client = _mcp_client()
+    if client is not None and getattr(config, "MCP_ENABLED", False):
+        try:
+            # 契约（external/fx_server.py）：{"base","quote","amount_cents"}，返回 {rate, converted_cents, base, quote, ts}
+            raw = client.call_tool("fx_convert", {"base": from_cur, "quote": to_cur, "amount_cents": probe_cents})
+            payload = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else {}
+            if isinstance(raw, dict) and raw.get("ok") and isinstance(payload, dict) and payload.get("rate") is not None:
+                rate = float(payload["rate"])
+                converted_cents = payload.get("converted_cents")
+                converted = float(converted_cents) / 100.0 if converted_cents is not None else round(amount_cents / 100.0 * rate, 2)
+                data = {"ok": True, "source": "external",
+                        "from": str(payload.get("base") or from_cur).upper(),
+                        "to": str(payload.get("quote") or to_cur).upper(),
+                        "amount": round(amount_cents / 100.0, 2), "rate": round(rate, 6),
+                        "converted": round(converted, 2) if amount_cents > 0 else 0.0,
+                        "as_of": payload.get("ts") or db.now_iso()}
+                audit.append(conn, "mcp_call", session_id=session_id, tool="fx_convert",
+                             args={"base": from_cur, "quote": to_cur, "amount_cents": probe_cents,
+                                   "probe": amount_cents <= 0},
+                             result={"source": "external", "rate": data["rate"]}, risk_level="low")
+                return data
+            err = str((raw or {}).get("error") or "外部汇率服务返回异常")[:120] if isinstance(raw, dict) else "外部汇率服务返回异常"
+            audit.append(conn, "mcp_fallback", session_id=session_id, tool="fx_convert",
+                         args={"base": from_cur, "quote": to_cur, "amount_cents": probe_cents,
+                               "probe": amount_cents <= 0},
+                         result={"error": err}, risk_level="low")
+        except Exception as exc:  # noqa: BLE001 - 外部服务不可用必须降级，不能阻断查询
+            audit.append(conn, "mcp_fallback", session_id=session_id, tool="fx_convert",
+                         args={"base": from_cur, "quote": to_cur}, result={"error": str(exc)[:120]}, risk_level="low")
+    data = _fx_fallback(from_cur, to_cur, amount_cents)
+    audit.append(conn, "mcp_call", session_id=session_id, tool="fx_convert",
+                 args={"from": from_cur, "to": to_cur, "amount_cents": amount_cents},
+                 result={"source": "fallback", "rate": data.get("rate")}, risk_level="low")
+    return data
+
+
+def _run_risk_screen(conn, ctx: Dict[str, Any], step: Dict[str, Any]) -> Dict[str, Any]:
+    """转账前反欺诈预检：外部只读服务；不可用时返回 skipped，不阻断正常转账。"""
+    args = step.get("args") or {}
+    out = {"tool": "risk_screen", "ok": False, "source": "skipped",
+           "payee_name": args.get("payee_name") or "", "amount_cents": int(args.get("amount_cents") or 0)}
+    if not _plugin_enabled("mcp-risk"):
+        # 插件被停用：跳过外部核查（只减少外部依赖，不放松 policy 自身的安全规则）
+        out.update({"ok": False, "source": "disabled",
+                    "reason": "外部反欺诈核查未执行（插件已停用）"})
+        audit.append(conn, "mcp_call", session_id=ctx.get("session_id", ""), tool="risk_screen",
+                     args={"payee_name": out["payee_name"], "amount_cents": out["amount_cents"]},
+                     result={"source": "disabled", "ok": False,
+                             "reason": "外部反欺诈核查未执行（插件已停用）"}, risk_level="medium")
+        return out
+    client = _mcp_client()
+    if client is None or not getattr(config, "MCP_ENABLED", False):
+        return out
+    try:
+        # 契约（external/risk_server.py）：{"payee_name","payee_account_tail","amount_cents"}
+        # 返回 {hit, list_name, score, reasons, payee_name, payee_account_tail, amount_cents, ts}
+        raw = client.call_tool("risk_screen", {"payee_name": out["payee_name"],
+                                               "payee_account_tail": str(args.get("payee_account") or "")[-4:],
+                                               "amount_cents": out["amount_cents"]})
+        payload = raw.get("data") if isinstance(raw, dict) and isinstance(raw.get("data"), dict) else {}
+        if isinstance(raw, dict) and raw.get("ok") and isinstance(payload, dict):
+            out.update({"ok": True, "source": "external",
+                        "hit": bool(payload.get("hit")),
+                        "score": int(payload.get("score") or 0),
+                        "list_name": str(payload.get("list_name") or ""),
+                        "reasons": [str(r) for r in (payload.get("reasons") or [])][:5],
+                        "data": payload})
+        else:
+            err = str((raw or {}).get("error") or "外部风控服务返回异常")[:120] if isinstance(raw, dict) else "外部风控服务返回异常"
+            out.update({"ok": False, "source": "degraded", "error": err})
+    except Exception as exc:  # noqa: BLE001
+        out.update({"ok": False, "source": "fallback", "error": str(exc)[:120]})
+    audit.append(conn, "mcp_call", session_id=ctx.get("session_id", ""), tool="risk_screen",
+                 args={"payee_name": out["payee_name"], "amount_cents": out["amount_cents"]},
+                 result={"source": out["source"], "ok": out["ok"]}, risk_level="medium")
+    return out
+
+
+def _pre_execute_guard(conn, ctx: Dict[str, Any], step: Dict[str, Any]) -> None:
+    """真实动钱之前的外部风控闸门：外部判定高风险/命中名单时直接拦截（只加严，不放松）。"""
+    if step.get("tool") != "create_transfer":
+        return
+    screening = _run_risk_screen(conn, ctx, step)
+    ctx.setdefault("mcp_calls", []).append(screening)
+    if str(screening.get("source") or "") == "disabled":
+        # 外部核查被插件停用：不拦截，但要在回复里备注（policy 安全规则仍然生效）
+        ctx["risk_plugin_disabled"] = True
+        return
+    payload = screening.get("data") or {}
+    level = str(payload.get("risk_level") or payload.get("riskLevel") or "").lower()
+    score = int(payload.get("score") or 0)
+    threshold = int(getattr(config, "MCP_RISK_BLOCK_SCORE", 60))
+    if screening.get("ok") and (payload.get("blocked") or payload.get("blocked_reason") or level == "high"):
+        raise DomainError("RISK_BLOCKED", "反欺诈服务判定该笔转账风险过高，已拦截，未发生资金变动")
+    if screening.get("ok") and (payload.get("list_name") or score >= threshold):
+        raise DomainError("RISK_BLOCKED", "反欺诈服务命中风险名单（风险分 %d，阈值 %d），已拦截，未发生资金变动" % (score, threshold))
+
+
+def _exec_tool(conn, user_id: str, session_id: str, thread_id: str, tool: str, args: Dict[str, Any], idem: str,
+               approval_id: str = "") -> Dict[str, Any]:
     if tool == "get_accounts":
         return {"accounts": mock_core.list_accounts(conn, user_id), "total_cents": mock_core.account_total(conn, user_id)}
     if tool == "get_recent_transactions":
@@ -342,6 +636,8 @@ def _exec_tool(conn, user_id: str, session_id: str, thread_id: str, tool: str, a
         return {"cards": mock_core.list_cards(conn, user_id)}
     if tool == "list_subscriptions":
         return mock_core.list_subscriptions(conn, user_id)
+    if tool == "fx_convert":
+        return _run_fx_convert(conn, session_id, args)
     if tool == "create_transfer":
         return mock_core.create_transfer(conn, user_id, session_id, thread_id, args.get("from_account_id"),
                                          args.get("payee_name"), args.get("payee_account") or "", int(args.get("amount_cents") or 0),
@@ -358,6 +654,33 @@ def _exec_tool(conn, user_id: str, session_id: str, thread_id: str, tool: str, a
         return mock_core.cancel_subscription(conn, user_id, args.get("sub_id") or "", args.get("merchant") or "")
     if tool == "create_reminder":
         return mock_core.create_reminder(conn, user_id, args.get("title") or "提醒", args.get("remind_at") or "")
+    if tool == "redeem_wealth":
+        return mock_core.redeem_wealth(conn, user_id, session_id, thread_id,
+                                       product_id=args.get("product_id") or "", amount_cents=int(args.get("amount_cents") or 0),
+                                       holding_id=args.get("holding_id") or "")
+    if tool == "set_card_limit":
+        d = args.get("daily_limit_cents")
+        s = args.get("single_limit_cents")
+        return mock_core.set_card_limit(conn, user_id, card_id=args.get("card_id") or "",
+                                        daily_limit_cents=(int(d) if d is not None else None),
+                                        single_limit_cents=(int(s) if s is not None else None))
+    if tool == "card_spend":
+        return mock_core.card_spend(conn, user_id, session_id, thread_id, card_id=args.get("card_id") or "",
+                                    amount_cents=int(args.get("amount_cents") or 0), merchant=args.get("merchant") or "")
+    if tool == "scan_anomalies":
+        return mock_core.scan_anomalies(conn, user_id, int(args.get("days") or 30))
+    if tool == "annual_report":
+        return mock_core.annual_report(conn, user_id, int(args.get("year") or 0))
+    if tool == "create_scheduled_transfer":
+        return mock_core.create_scheduled_transfer(
+            conn, user_id, session_id, thread_id, args.get("from_account_id") or "",
+            args.get("payee_name") or "", args.get("payee_account") or "",
+            int(args.get("amount_cents") or 0), args.get("run_at") or "",
+            memo=args.get("memo") or "", approval_id=approval_id)
+    if tool == "list_scheduled_transfers":
+        return mock_core.list_scheduled_transfers(conn, user_id, args.get("status") or "")
+    if tool == "cancel_scheduled_transfer":
+        return mock_core.cancel_scheduled_transfer(conn, user_id, args.get("sched_id") or "")
     raise DomainError("TOOL_NOT_FOUND", "工具 %s 不存在" % tool)
 
 
@@ -373,7 +696,9 @@ def execute_steps(conn, ctx: Dict[str, Any], emit: Emitter) -> Dict[str, Any]:
         t0 = time.time()
         idem = "idem_%s_%s_%s" % (ctx["thread_id"], ctx.get("turn_key") or "t0", step["step_id"])
         try:
-            result = _exec_tool(conn, user_id, ctx["session_id"], ctx["thread_id"], step["tool"], step["args"], idem)
+            _pre_execute_guard(conn, ctx, step)
+            result = _exec_tool(conn, user_id, ctx["session_id"], ctx["thread_id"], step["tool"], step["args"], idem,
+                                approval_id=str(ctx.get("approval_id") or ""))
             latency = int((time.time() - t0) * 1000)
             hit = _scan_untrusted(result)
             if hit:
@@ -510,6 +835,98 @@ def build_reply(intent: Dict[str, Any], results: List[Dict[str, Any]], action_id
         parts.append("全部动作已写入审计链。")
         if action_ids:
             undo = {"action_id": action_ids[0], "kind": "transfer"}
+    elif name == "query_fx":
+        d = _find(results, "fx_convert") or {}
+        frm = str(d.get("from") or slots.get("from_currency") or "CNY").upper()
+        to = str(d.get("to") or slots.get("to_currency") or "USD").upper()
+        rate = d.get("rate")
+        amount = float(d.get("amount") or 0)
+        converted = float(d.get("converted") or 0)
+        disabled = str(d.get("source") or "") == "disabled"
+        if rate is None:
+            prefix = "汇率插件已停用，" if disabled else ""
+            parts.append(prefix + "暂时查不到 %s 对 %s 的汇率，请稍后再试。" % (frm, to))
+        else:
+            rate_txt = ("%.6f" % float(rate)).rstrip("0").rstrip(".")
+            pair = "%s %s ≈ %s %s，" % ("{:,.2f}".format(amount), frm, "{:,.2f}".format(converted), to) if amount > 0 else ""
+            as_of = str(d.get("as_of") or "")[:19].replace("T", " ")
+            if disabled:
+                parts.append("汇率插件已停用，按内置参考价 %s 估算：%s1 %s = %s %s。" % (rate_txt, pair, frm, rate_txt, to))
+            elif d.get("source") == "external":
+                parts.append("按外部实时汇率（fx_convert）：%s1 %s = %s %s，报价时间 %s。" % (pair, frm, rate_txt, to, as_of))
+            else:
+                parts.append("外部汇率服务暂不可用，按内置参考价 %s 估算：%s1 %s = %s %s。" % (rate_txt, pair, frm, rate_txt, to))
+            parts.append("仅供参考，汇价随市场波动，实际成交价以柜面为准。")
+    elif name == "wealth_redeem":
+        d = _find(results, "redeem_wealth") or {}
+        parts.append("已赎回「%s」%s，资金已回到活期账户，余额变为 **%s**。"
+                     % (d.get("product_name", ""), d.get("amount_display", ""), d.get("balance_after_display", "")))
+        parts.append("已写入审计链。")
+    elif name == "card_limit":
+        d = _find(results, "set_card_limit") or {}
+        after = d.get("after") or {}
+        parts.append("已调整卡 %s 的限额：日累计 %s，单笔 %s，调整后立即生效。"
+                     % (d.get("number_masked", ""),
+                        yuan(int(after.get("daily_limit_cents") or 0)),
+                        yuan(int(after.get("single_limit_cents") or 0))))
+        parts.append("已写入审计链，可随时再改回。")
+    elif name == "card_spend":
+        d = _find(results, "card_spend") or {}
+        parts.append("已在「%s」用它消费 **%s**，今天已用 %s / 日限额 %s，剩余可用 %s。"
+                     % (d.get("merchant", ""), d.get("amount_display", ""),
+                        yuan(int(d.get("daily_used_cents") or 0)), yuan(int(d.get("daily_limit_cents") or 0)),
+                        yuan(int(d.get("remaining_cents") or 0))))
+        parts.append("已写入审计链。")
+    elif name == "anomaly_scan":
+        d = _find(results, "scan_anomalies") or {}
+        items = d.get("anomalies") or []
+        scanned = int(d.get("scanned_count") or 0)
+        days = int(d.get("days") or 30)
+        if not items:
+            parts.append("我扫描了近 %d 天共 %d 笔交易，**没有发现异常交易**。单笔异常阈值 %s，超过即会提示。"
+                         % (days, scanned, yuan(int(d.get("threshold_cents") or 0))))
+        else:
+            parts.append("我扫描了近 %d 天共 %d 笔交易，发现 **%d 笔可疑**（单笔异常阈值 %s，P99 %s）："
+                         % (days, scanned, len(items), yuan(int(d.get("threshold_cents") or 0)), yuan(int(d.get("p99_cents") or 0))))
+            for a in items[:6]:
+                rule = str(a.get("rule") or "")
+                parts.append("· %s %s 在「%s」%s（%s；规则 %s）" % (str(a.get("ts", ""))[:10], a.get("amount_display", ""),
+                                                             a.get("counterparty", ""), a.get("detail", ""),
+                                                             a.get("level", ""), rule or "未命名"))
+            parts.append("如确认不是你本人操作，建议立刻冻结卡片并联系银行。")
+    elif name == "annual_report":
+        d = _find(results, "annual_report") or {}
+        parts.append("%s 年度账单：收入 **%s**，支出 **%s**，结余 **%s**，储蓄率 %.1f%%，共 %d 笔交易。"
+                     % (d.get("year", ""), yuan(int(d.get("total_in_cents") or 0)), yuan(int(d.get("total_out_cents") or 0)),
+                        yuan(int(d.get("net_cents") or 0)), float(d.get("savings_rate") or 0) * 100, int(d.get("txn_count") or 0)))
+        cats = d.get("by_category") or []
+        if cats:
+            parts.append("花得最多的三类：" + "、".join("%s %s（%.0f%%）" % (c.get("category", ""), yuan(int(c.get("amount_cents") or 0)),
+                                                                  float(c.get("ratio") or 0) * 100) for c in cats[:3]) + "。")
+        peak = d.get("peak_month") or {}
+        if peak.get("month"):
+            parts.append("支出最高的月份是 %s（%s）。" % (str(peak.get("month")), yuan(int(peak.get("out_cents") or 0))))
+        parts.append("月均支出 %s。" % yuan(int(d.get("avg_monthly_out_cents") or 0)))
+    elif name == "scheduled_transfer":
+        op = str(slots.get("op") or "create")
+        if op == "list":
+            d = _find(results, "list_scheduled_transfers") or {}
+            items = d.get("items") or []
+            if not items:
+                parts.append("你当前**没有**预约中的转账。")
+            else:
+                parts.append("你有 %d 笔预约转账：" % len(items))
+                for s in items[:6]:
+                    parts.append("· %s 向「%s」%s（%s）" % (str(s.get("run_at", ""))[:16].replace("T", " "),
+                                                          s.get("payee_name", ""), s.get("amount_display", ""), s.get("status", "")))
+        elif op == "cancel":
+            d = _find(results, "cancel_scheduled_transfer") or {}
+            parts.append("已取消预约转账 %s，这笔资金不会变动。已写入审计链。" % (d.get("sched_id", "")))
+        else:
+            d = _find(results, "create_scheduled_transfer") or {}
+            parts.append("已预约在 **%s** 向「%s」转 **%s**，创建时已完成一次审批，到期由调度器自动执行，届时不再打扰你。"
+                         % (str(d.get("run_at", ""))[:16].replace("T", " "), d.get("payee_name", ""), d.get("amount_display", "")))
+            parts.append("已写入审计链。")
     elif name == "greeting":
         parts.append("你好，我是 ZeroStep 零步银行助手。你可以直接说：查账单、转账、买理财、管卡片、取消订阅，或者试试「发工资了帮我分账」。")
     else:
@@ -541,6 +958,31 @@ def _approval_preview(conn, user_id: str, steps: List[Dict[str, Any]]) -> Tuple[
         elif s["tool"] == "repay_credit":
             amount += int(s["args"].get("amount_cents") or 0)
             counterparty = counterparty or "信用卡还款"
+        elif s["tool"] == "create_scheduled_transfer":
+            amount += int(s["args"].get("amount_cents") or 0)
+            counterparty = s["args"].get("payee_name") or counterparty
+            acc = conn.execute("SELECT * FROM accounts WHERE account_id=?", (s["args"].get("from_account_id"),)).fetchone()
+            if acc:
+                after = int(acc["balance_cents"]) - int(s["args"].get("amount_cents") or 0)
+                preview = "到期执行后「%s」余额将从 %s 变为 %s（当前不动账）" % (acc["name"], yuan(int(acc["balance_cents"])), yuan(after))
+        elif s["tool"] == "card_spend":
+            amount += int(s["args"].get("amount_cents") or 0)
+            counterparty = s["args"].get("merchant") or counterparty
+            preview = "执行后该卡将扣款 %s，商户「%s」" % (yuan(int(s["args"].get("amount_cents") or 0)), s["args"].get("merchant") or "")
+        elif s["tool"] == "redeem_wealth":
+            amount += int(s["args"].get("amount_cents") or 0)
+            counterparty = s["args"].get("product_name") or counterparty
+            preview = "执行后「%s」%s 回到活期账户" % (s["args"].get("product_name") or "理财", yuan(int(s["args"].get("amount_cents") or 0)))
+        elif s["tool"] == "set_card_limit":
+            d = s["args"].get("daily_limit_cents")
+            sg = s["args"].get("single_limit_cents")
+            bits = []
+            if d is not None:
+                bits.append("日累计 %s" % yuan(int(d)))
+            if sg is not None:
+                bits.append("单笔 %s" % yuan(int(sg)))
+            counterparty = counterparty or "银行卡限额"
+            preview = "执行后该卡限额改为：%s" % ("、".join(bits) or "未变化")
     return preview, amount, counterparty
 
 
@@ -556,6 +998,15 @@ def _approval_party_account(conn, steps: List[Dict[str, Any]]) -> str:
                 return row["number_masked"]
         if s["tool"] == "apply_virtual_card":
             return "虚拟卡（待生成）"
+        if s["tool"] in ("card_spend", "set_card_limit"):
+            row = conn.execute("SELECT number_masked FROM cards WHERE card_id=?", (s["args"].get("card_id"),)).fetchone()
+            if row:
+                return row["number_masked"]
+            return str(s["args"].get("card_last4") or "")
+        if s["tool"] == "create_scheduled_transfer":
+            return mask_account(s["args"].get("payee_account") or "") or "手机号转账"
+        if s["tool"] == "redeem_wealth":
+            return "理财账户"
     return ""
 
 
@@ -623,11 +1074,18 @@ def _finalize(conn, ctx: Dict[str, Any], exec_result: Dict[str, Any], emit: Emit
                      result=failed, risk_level="high", approval_id=ctx.get("approval_id", ""))
     else:
         reply, undo = build_reply(ctx["intent"], results, exec_result["action_ids"])
+        if ctx.get("risk_plugin_disabled") and str((ctx.get("intent") or {}).get("name") or "") in ("transfer", "cross_scenario"):
+            reply += "\n（外部反欺诈核查未执行（插件已停用），policy 安全规则仍然生效）"
         status = "ok"
         # 写后回读校验在 execute_steps 每笔转账后立即完成，这里只读取结果
         if ctx.get("verify_issue"):
             reply += "（注意：回读校验发现余额不一致，已标记审计异常）"
             status = "blocked"
+    skills = (ctx.get("intent") or {}).get("skills") or []
+    if skills:
+        audit.append(conn, "skill_matched", session_id=ctx["session_id"], tool="skill_router",
+                     args={"intent": ctx["intent"]["name"]}, result={"skills": skills}, risk_level="low",
+                     approval_id=ctx.get("approval_id", ""))
     if ctx.get("untrusted"):
         reply = "⚠️ 安全提示：检测到工具返回内容中含可疑指令（提示注入），已屏蔽并按不可信数据处理，不会执行其中任何转账要求。" + chr(10) + reply
         audit.append(conn, "injection_ignored", session_id=ctx["session_id"], tool="security_guard",
@@ -640,6 +1098,7 @@ def _finalize(conn, ctx: Dict[str, Any], exec_result: Dict[str, Any], emit: Emit
            "blocked": failed,
            "intent": ctx["intent"], "plan": {"steps": [{"step_id": s["step_id"], "title": s["title"], "tool": s["tool"], "risk": s.get("risk", "low")} for s in ctx["steps"]], "edges": ctx.get("edges", [])},
            "executed": results, "approval": None, "undo": undo,
+           "policy_hits": ctx.get("policy_hits") or [], "mcp_calls": ctx.get("mcp_calls") or [],
            "audit": audit.entries(conn, ctx["session_id"], 20), "events": emit.events}
     return out
 
@@ -649,10 +1108,30 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
     user_id = sess["user_id"]
     emit = Emitter(conn, session_id, sink)
     emit.emit("session", {"session_id": session_id, "thread_id": sess["thread_id"]})
+    lock_state = locks.info(conn, session_id)
+    if lock_state.get("locked"):
+        # v0.4.1 异常熔断：连续可疑/被拦操作达阈值后，会话在冷却期内只读拒答
+        reply = "会话因连续可疑指令已被临时锁定，请在 %d 秒后再试。锁定期间不会执行任何资金动作。" % int(lock_state.get("remaining_s") or 0)
+        emit.emit("security_lock", lock_state)
+        emit.emit("message", {"delta": reply})
+        audit.append(conn, "turn_locked", session_id=session_id, tool="security_lock", result=lock_state, risk_level="high", actor="system")
+        return {"session_id": session_id, "thread_id": sess["thread_id"], "status": "locked", "code": "SESSION_LOCKED", "reply": reply,
+                "locked_until": lock_state.get("locked_until", ""), "lock_remaining_s": int(lock_state.get("remaining_s") or 0),
+                "blocked": {"code": "SESSION_LOCKED", "message": reply}, "intent": None,
+                "plan": {"steps": [], "edges": []}, "executed": [], "approval": None, "undo": None,
+                "audit": audit.entries(conn, session_id, 20), "events": emit.events}
     ctx_doc = {"payees": mock_core.list_payees(conn, user_id), "products": mock_core.list_wealth(conn, user_id)["products"],
                "subscriptions": mock_core.list_subscriptions(conn, user_id)["subscriptions"], "cards": mock_core.list_cards(conn, user_id),
                "accounts": mock_core.list_accounts(conn, user_id), "risk_level": "稳健型"}
     intent = llm.parse(text, ctx_doc)
+    sk = _skills_mod()
+    if sk is not None:
+        try:
+            intent["skills"] = list(sk.match(intent) or [])
+        except Exception:  # noqa: BLE001 - 技能路由失败不影响主流程
+            intent["skills"] = []
+    else:
+        intent["skills"] = []
     emit.emit("intent", {"name": intent["name"], "confidence": intent["confidence"], "source": intent["source"], "slots": intent["slots"],
                          "model": intent.get("model", ""), "latency_ms": intent.get("latency_ms"), "reason": intent.get("reason", "")})
 
@@ -664,12 +1143,17 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
         emit.emit("plan", {"steps": [], "edges": []})
         emit.emit("tool_end", {"step_id": "guard", "tool": "security_guard", "ok": False, "error": blocked})
         audit.append(conn, "attack_blocked", session_id=session_id, tool="security_guard", args={"text": text}, result=blocked, risk_level="high")
+        security = locks.record_security_event(conn, session_id, user_id, "attack_blocked", blocked["message"])
         reply = _blocked_reply(blocked)
+        if security.get("just_locked"):
+            reply += "\n\n（%d 分钟内第 %d 次可疑操作，会话已临时锁定 %d 秒，期间不会执行任何资金动作。）" % (
+                int(security.get("window_s") or 600) // 60, int(security.get("count") or 0), int(security.get("remaining_s") or 0))
+            emit.emit("security_lock", security)
         emit.emit("message", {"delta": reply})
         audit.append(conn, "response", session_id=session_id, tool="respond", args={"intent": "attack"}, result={"status": "blocked"}, risk_level="high")
         return {"session_id": session_id, "thread_id": sess["thread_id"], "status": "blocked", "reply": reply, "blocked": blocked,
                 "intent": intent, "plan": {"steps": [], "edges": []}, "executed": [], "approval": None, "undo": None,
-                "audit": audit.entries(conn, session_id, 20), "events": emit.events}
+                "security": security, "audit": audit.entries(conn, session_id, 20), "events": emit.events}
 
     plan = build_plan(conn, user_id, intent, text)
     steps = plan["steps"]
@@ -684,11 +1168,16 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
     if plan["planner_block"]:
         blocked = plan["planner_block"]
         audit.append(conn, "turn_blocked", session_id=session_id, tool="planner", args={"text": text}, result=blocked, risk_level="medium")
+        security = locks.record_security_event(conn, session_id, user_id, "turn_blocked", blocked.get("message", ""))
         reply = _blocked_reply(blocked)
+        if security.get("just_locked"):
+            reply += "\n\n（%d 分钟内第 %d 次被拦操作，会话已临时锁定 %d 秒。）" % (
+                int(security.get("window_s") or 600) // 60, int(security.get("count") or 0), int(security.get("remaining_s") or 0))
+            emit.emit("security_lock", security)
         emit.emit("message", {"delta": reply})
         return {"session_id": session_id, "thread_id": sess["thread_id"], "status": "blocked", "reply": reply, "blocked": blocked,
                 "intent": intent, "plan": {"steps": [], "edges": []}, "executed": [], "approval": None, "undo": None,
-                "audit": audit.entries(conn, session_id, 20), "events": emit.events}
+                "security": security, "audit": audit.entries(conn, session_id, 20), "events": emit.events}
 
     if intent["name"] in ("greeting", "unknown"):
         reply, _undo = build_reply(intent, [], [])
@@ -698,16 +1187,27 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
                 "audit": audit.entries(conn, session_id, 20), "events": emit.events}
 
     evaluation = policy.evaluate(conn, user_id, steps, intent)
+    ctx["policy_hits"] = evaluation.get("hits") or []
+    audit.append(conn, "policy_evaluated", session_id=session_id, tool="policy_gate",
+                 args={"intent": intent["name"]}, result={"risk_level": evaluation["risk_level"],
+                 "requires_approval": evaluation["requires_approval"], "hits": ctx["policy_hits"]},
+                 risk_level=evaluation["risk_level"])
     for s in steps:
         s["risk"] = policy.max_risk(s.get("risk", "low"), evaluation["risk_level"] if evaluation["risk_level"] in ("low", "medium", "high") else "high")
     if evaluation["blocked"]:
         blocked = evaluation["blocked"]
         audit.append(conn, "turn_blocked", session_id=session_id, tool="policy_gate", args={"steps": steps}, result=blocked, risk_level="high")
+        security = locks.record_security_event(conn, session_id, user_id, "turn_blocked", blocked.get("message", ""))
         reply = _blocked_reply(blocked)
+        if security.get("just_locked"):
+            reply += "\n\n（%d 分钟内第 %d 次被拦操作，会话已临时锁定 %d 秒。）" % (
+                int(security.get("window_s") or 600) // 60, int(security.get("count") or 0), int(security.get("remaining_s") or 0))
+            emit.emit("security_lock", security)
         emit.emit("tool_end", {"step_id": "gate", "tool": "policy_gate", "ok": False, "error": blocked})
         emit.emit("message", {"delta": reply})
         return {"session_id": session_id, "thread_id": sess["thread_id"], "status": "blocked", "reply": reply, "blocked": blocked,
                 "intent": intent, "plan": {"steps": steps, "edges": plan["edges"]}, "executed": [], "approval": None, "undo": None,
+                "policy_hits": evaluation.get("hits") or [], "mcp_calls": [], "security": security,
                 "audit": audit.entries(conn, session_id, 20), "events": emit.events}
 
     if evaluation["requires_approval"]:
@@ -717,7 +1217,9 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
                   "source": intent.get("source", "rule"), "source_detail": intent.get("reason", ""),
                   "conflicts": _approval_conflicts(intent),
                   "counterparty_account_masked": _approval_party_account(conn, steps),
-                  "payer_account_masked": _approval_payer_account(conn, steps)}
+                  "payer_account_masked": _approval_payer_account(conn, steps),
+                  "hits": ctx.get("policy_hits") or [],
+                  "factors": ["totp", "sms", "face"] if evaluation["risk_level"] == "high" else []}
         ap = approvals.create(conn, session_id, sess["thread_id"], intent["name"], params, evaluation["risk_level"], evaluation["reasons"], evaluation["challenge"])
         ctx["approval_id"] = ap["approval_id"]
         ctx["status"] = "awaiting_approval"
@@ -727,18 +1229,26 @@ def run_turn(conn, session_id: str, text: str, sink: Optional[Callable[[str, Dic
         emit.emit("approval_required", typed)
         return {"session_id": session_id, "thread_id": sess["thread_id"], "status": "awaiting_approval", "reply": "", "intent": intent,
                 "plan": {"steps": steps, "edges": plan["edges"]}, "executed": [], "approval": typed, "undo": None,
+                "policy_hits": ctx.get("policy_hits") or [], "mcp_calls": [],
                 "audit": audit.entries(conn, session_id, 20), "events": emit.events}
 
     exec_result = execute_steps(conn, ctx, emit)
     return _finalize(conn, ctx, exec_result, emit)
 
 
-def resume(conn, session_id: str, approval_id: str, decision: str, code: str, sink=None) -> Dict[str, Any]:
+def resume(conn, session_id: str, approval_id: str, decision: str, code: str, method: str = "", sink=None) -> Dict[str, Any]:
+    """v0.4.1：method 指定强验证因子（totp / sms / face），缺省按 totp，保持旧调用方兼容。"""
     sess = get_session(conn, session_id)
-    ok, err, ap = approvals.check(conn, approval_id, decision, code, sess["user_id"])
+    try:
+        ok, err, ap = approvals.check(conn, approval_id, decision, code, sess["user_id"], method=method)
+    except TypeError:  # 旧版 approvals.check 不接受 method 时回退，避免升级顺序造成 500
+        ok, err, ap = approvals.check(conn, approval_id, decision, code, sess["user_id"])
     if not ok:
         status = 410 if err == "APPROVAL_EXPIRED" else (409 if err == "APPROVAL_ALREADY_DECIDED" else 400)
         raise EngineError(err, {"INVALID_OTP": "动态验证码不正确或已过期，请重新获取", "APPROVAL_EXPIRED": "审批已过期，请重新发起",
+                                "INVALID_SMS": "短信验证码不正确或已过期，请重新获取",
+                                "INVALID_FACE": "人脸确认已过期，请重新发起",
+                                "INVALID_METHOD": "不支持的校验方式，请选择动态码、短信或人脸",
                                 "APPROVAL_ALREADY_DECIDED": "该审批已处理过，不能重复提交"}.get(err, "审批处理失败"), status)
     emit = Emitter(conn, session_id, sink)
     ctx = _load_checkpoint(conn, ap["thread_id"])
@@ -754,7 +1264,10 @@ def resume(conn, session_id: str, approval_id: str, decision: str, code: str, si
                 "plan": {"steps": ctx.get("steps", []), "edges": ctx.get("edges", [])}, "executed": [], "approval": None, "undo": None,
                 "audit": audit.entries(conn, session_id, 20), "events": emit.events}
     approvals.mark(conn, approval_id, "approved")
-    audit.append(conn, "approval_granted", session_id=session_id, tool=ap["action"], args=ap["params"], result={"decision": "approve", "challenge": ap["challenge"]}, risk_level=ap["risk_level"], approval_id=approval_id)
+    used_method = (method or "totp") if ap["challenge"] == "totp" else "confirm"
+    audit.append(conn, "approval_granted", session_id=session_id, tool=ap["action"], args=ap["params"],
+                 result={"decision": "approve", "challenge": ap["challenge"], "method": used_method},
+                 risk_level=ap["risk_level"], approval_id=approval_id)
     ctx["approval_id"] = approval_id
     exec_result = execute_steps(conn, ctx, emit)
     return _finalize(conn, ctx, exec_result, emit)

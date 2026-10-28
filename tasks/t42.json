@@ -1,0 +1,42 @@
+{
+  "id": "t42",
+  "title": "按手机号转账（通讯录命中）",
+  "category": "transfer",
+  "user_id": "u001",
+  "turns": [
+    "给 13800001111 转 100 元"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "transfer",
+    "plan_tools": [
+      "get_payees",
+      "create_transfer"
+    ],
+    "expected_skill": "transfer",
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "expected_rules": [
+      {
+        "rule": "payee_known",
+        "digit": true
+      }
+    ],
+    "reply_contains": [
+      "妈妈",
+      "¥100.00"
+    ],
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "get_payees",
+        "create_transfer"
+      ],
+      "undo": true
+    }
+  },
+  "judge_rubric": "手机号作为收款人标识：命中通讯录即按熟人处理，未命中按新收款人走核验"
+}

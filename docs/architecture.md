@@ -20,9 +20,12 @@
 | 表现层 | frontend/index.html、app.js、styles.css | 原生单页应用，消费 SSE 事件流，渲染对话、审批弹层、TOTP 演示与审计面板 |
 | 接口层 | backend/server.py | 零依赖 http.server；REST + SSE；静态资源与路径穿越防护；统一错误体 {error:{code,message}} |
 | 编排层 | backend/app/engine.py | run_turn 六阶段编排、build_plan 计划生成、execute_steps 执行、_finalize 回复、resume 审批恢复、undo_action 撤销 |
-| 解析与安全层 | llm.py、nlu.py、policy.py、approvals.py、totp.py、audit.py | 解析（规则 / 模型 / 自动）、模型输出的严格校验与失败回退、意图与攻击识别、三级权限判定、审批单与 TTL、RFC 6238 动态口令、哈希链审计 |
-| 领域层 | backend/app/mock_core.py | 转账、理财、卡片、订阅、还款、提醒的模拟实现；金额一律整数分；DomainError 统一错误码 |
-| 存储层 | backend/app/db.py + SQLite | 建表、索引、WAL、确定性种子数据；17 张表覆盖账户、流水、审批、checkpoint、事件、审计 |
+| 解析与安全层 | llm.py、nlu.py、policy.py、approvals.py、totp.py、second_factor.py、locks.py、audit.py | 解析（规则 / 模型 / 自动）、模型输出的严格校验与失败回退、意图与攻击识别、三级权限判定、审批单与 TTL、RFC 6238 动态口令、短信 / 人脸因子、会话异常锁定、哈希链审计 |
+| 领域层 | backend/app/mock_core.py | 转账、理财申赎、卡限额与刷卡、预约、订阅、还款、提醒的模拟实现；金额一律整数分；DomainError 统一错误码 |
+| 调度层 | backend/app/scheduler.py | 后台线程每 5 秒检查到期预约，调用领域层执行并写审计；只决定「何时执行」，不判定能不能执行 |
+| 存储层 | backend/app/db.py + SQLite | 建表、索引、WAL、确定性种子数据；20 张表覆盖账户、流水、卡交易、预约、审批、checkpoint、事件、审计、会话锁 |
+| 能力注册层 | backend/app/plugins.py | 七个内置插件的注册表（core / mcp / model / skill / channel）、状态探测、启停与持久化；只决定能力是否可用，不参与资金判定 |
+| 渠道接入层 | backend/channels/server.py、wecom.py、wecom_crypto.py、backend/app/push.py | IM webhook 与企微回调的协议转换、验签解密、幂等与去重；主动触达的文案生成与投递。只搬运文本与确认状态，不解析意图、不判定风险 |
 
 依赖方向单向向下：编排层可以调用安全层与领域层，领域层不感知 HTTP 与自然语言，安全层只依赖存储层。
 
@@ -30,7 +33,7 @@
 
 ## 3. 一次对话的六阶段流水线
 
-入口是 engine.run_turn(conn, session_id, text, sink)（engine.py:647）。它先取会话、创建 Emitter，然后严格按下列顺序推进。
+入口是 engine.run_turn(conn, session_id, text, sink)（engine.py:1106）。它先取会话、创建 Emitter，然后严格按下列顺序推进。
 
 数据流（模型只在中间一段出现）：
 
@@ -62,19 +65,22 @@
 
 | 阶段 | 真实函数 | 输入 → 输出 | 失败/短路分支 | 关键事件与审计 |
 | --- | --- | --- | --- | --- |
-| 1 意图解析 | llm.parse(text, ctx_doc) → nlu.parse 或模型 | 文本 + 上下文 → intent{name, confidence, source, slots, model, latency_ms, reason} | intent.name 为 attack 时立即 return blocked | 事件 intent（含 source）；审计 attack_blocked |
+| 0 锁定检查 | locks.info(conn, session_id)（engine.py:1111） | 会话 → {locked, locked_until, remaining_s} | 已锁则 return status=locked，不进入后续阶段 | 事件 message + security_lock；审计 turn_locked（tool=security_lock，high） |
+| 1 意图解析 | llm.parse(text, ctx_doc) → nlu.parse 或模型 | 文本 + 上下文 → intent{name, confidence, source, slots, model, latency_ms, reason} | intent.name 为 attack 时立即 return blocked，并记一次安全事件计数 | 事件 intent（含 source）；审计 attack_blocked |
 | 2 计划生成 | engine.build_plan(conn, user_id, intent, text) | intent → {steps, edges, planner_block} | planner_block 非空时 return blocked | 事件 plan；审计 turn_blocked（tool=planner） |
 | 3 策略门 | policy.evaluate(conn, user_id, steps, intent) | steps → {risk_level, requires_approval, challenge, blocked, reasons, summary} | blocked 非空时 return blocked | 事件 tool_end（step_id=gate）；审计 turn_blocked（tool=policy_gate） |
-| 3.5 审批挂起 | approvals.create + _save_checkpoint | 高风险计划 → status=awaiting_approval | 不执行任何资金动作 | 事件 approval_required；审计 approval_required |
+| 3.5 审批挂起 | approvals.create + _save_checkpoint | 高风险计划 → status=awaiting_approval；HIGH 的 factors 为 [totp,sms,face] | 不执行任何资金动作 | 事件 approval_required；审计 approval_required |
 | 4 执行 | engine.execute_steps(conn, ctx, emit) → _exec_tool | ctx → {results, action_ids, failed} | DomainError 中断并 break | 事件 tool_start/tool_end；审计 tool_result、tool_error |
 | 5 校验 | mock_core.verify_balance（在 execute_steps 内） | 转账结果 → {ok, expected, actual} | 不一致置 ctx.verify_issue | 审计 verify_balance |
 | 6 回复 | engine.build_reply + engine._finalize | results → reply、undo、status | 执行失败或校验失败 → status=blocked | 事件 message；审计 response |
 
-会话状态机只有三态：ok（完成）、awaiting_approval（挂起等审批）、blocked（拒绝或执行失败）。resume 恢复成功后回到 ok/blocked。
+会话状态机有四态：ok（完成）、awaiting_approval（挂起等审批）、blocked（拒绝或执行失败）、locked（v0.4.1：会话因连续可疑操作被临时锁定）。resume 恢复成功后回到 ok/blocked。
+
+v0.4.1 在阶段 1 之前多了一步「锁定检查」：run_turn 入口先读 session_locks（engine.py:1111），已锁则直接返回 status=locked、code=SESSION_LOCKED，不解析、不建计划、不执行任何工具。
 
 ### 阶段 1：意图解析（llm.parse，三模式分派）
 
-run_turn 先组装上下文文档 ctx_doc：payees、products、subscriptions、cards、accounts，外加用户风险等级 fixed 为稳健型，然后调用 llm.parse(text, ctx_doc)（llm.py:457）。llm.py 是解析层的唯一入口，按当前模式分派：
+run_turn 先组装上下文文档 ctx_doc：payees、products、subscriptions、cards、accounts，外加用户风险等级 fixed 为稳健型，然后调用 llm.parse(text, ctx_doc)（llm.py:909）。llm.py 是解析层的唯一入口，按当前模式分派：
 
 | 模式 | 生效条件 | 实际解析 |
 | --- | --- | --- |
@@ -84,22 +90,40 @@ run_turn 先组装上下文文档 ctx_doc：payees、products、subscriptions、
 
 模式可在运行时通过 POST /api/llm/mode 切换（只影响当前进程，重启回到 auto），前端顶栏有对应分段控件。
 
-**共同前置：攻击检测在模型之前。** 无论哪种模式，非 rule 路径都先调用 nlu.detect_attack（nlu.py:51）：依次匹配越权访问、验证码钓鱼、提示注入、陌生收款人四类规则，命中即返回 name=attack、attack_type 与 source=rule，模型不会被调用。rule 路径则把 detect_attack 放在 nlu.parse 内部的第一步。
+**共同前置：攻击检测在模型之前。** 无论哪种模式，非 rule 路径都先调用 nlu.detect_attack（nlu.py:93）：依次匹配越权访问、验证码钓鱼、提示注入、陌生收款人四类规则，命中即返回 name=attack、attack_type 与 source=rule，模型不会被调用。rule 路径则把 detect_attack 放在 nlu.parse 内部的第一步。
 
-**规则路径**（nlu.parse，nlu.py:162）依次做：
+**规则路径**（nlu.parse，nlu.py:261）依次做：
 
 1. _normalize：全角转半角、统一小写与空白，避免用全角字符绕过规则。
 2. detect_attack：四类攻击规则，命中即返回 attack。
 3. 关键词/正则意图分类：问候、余额、账单、流水、预算、转账、理财申购、持仓、卡片、订阅、跨场景分账等。
 4. 槽位抽取：extract_amount（中文数字经 _cn_to_int 换算，金额统一转分）、extract_payee（在 payee 列表中做名/账号匹配，并判定 payee_is_new）、extract_months、extract_category。
-5. parse_cross（nlu.py:297）：跨场景语句拆成 allocations 列表（savings/wealth/credit/transfer/生日/预算），供 build_plan 展开。
+5. parse_cross（nlu.py:467）：跨场景语句拆成 allocations 列表（savings/wealth/credit/transfer/生日/预算），供 build_plan 展开。
 
-**模型路径**（llm.py）：
+**模型路径**（llm.py，v0.3.1 加固后）：
 
-1. call_model（llm.py:186）用标准库 urllib POST DEEPSEEK_BASE_URL + /chat/completions，默认模型 deepseek-flash，temperature=0、max_tokens=600、response_format=json_object，用户原话截断到 600 字。
-2. 系统提示只允许一份 JSON：intent（16 个预定义意图之一）、confidence、amount_yuan、payee_name、payee_account、from_kind、months、category、product_hint、sub_hint、card_hint、daily_limit_yuan、allocations、reminder、reason；未在原文出现的字段必须为 null，禁止猜测。
-3. _normalize（llm.py:337）做严格校验后才产出 intent：意图必须在白名单；金额经 _normalize_amount 校验（必须与原文数字等值，否则改用规则金额并标 amount_adjusted；超过 5 万元硬上限则截断并标 amount_clamped）；收款人经 _canon_payee / _match_payee 去代称并与通讯录匹配，账号必须 12–19 位且出现在原文；产品、订阅、卡必须命中真实种子数据；月份、品类、来源账户、日限额等枚举与区间越界一律回退规则值。
-4. 成功时 intent.source=llm，并带 model 与 latency_ms；调用失败（HTTP 错误、网络不可达、超时、非 JSON）时回退到规则解析结果，intent.source=fallback，附带 fallback_reason 与 latency_ms，同时写入 llm._last_error，可通过 GET /api/llm/status 查看。
+1. call_model（llm.py:526）先按剩余预算计算单次超时，再调用 _build_payload（llm.py:458）组装请求：model、messages、temperature=0、max_tokens=800、response_format=json_object、stream=false；默认再带 thinking={type:disabled} 关闭思考模式。
+2. messages[0].content 固定为 SYSTEM_PROMPT 原文（llm.py:115，2395 字符 / 4485 字节，进程内逐字节不变）；用户原话与命中的技能卡提示一起放进 messages[1] 的 user JSON：{utterance, skill_hint}。技能提示不拼进 system，保证 system 前缀稳定、可命中上下文缓存，降低输入费用。
+3. 单次 HTTP 超时 8 秒（DEEPSEEK_TIMEOUT），一次解析总预算 10 秒（DEEPSEEK_BUDGET，含重试等待）；单次超时取 min(8s, 剩余预算)。
+4. 只对可恢复错误重试 1 次（DEEPSEEK_RETRY）：429、5xx、网络超时、空 content、非 JSON；鉴权 401、参数 400/403/404/422、余额 402 立即失败，不重试。重试前等待 600ms（DEEPSEEK_RETRY_BACKOFF_MS），且剩余预算不足 2 秒时不再重试。
+5. 连续失败 3 次（DEEPSEEK_BREAKER_THRESHOLD）后熔断 60 秒（DEEPSEEK_BREAKER_COOLDOWN）：冷却期内 llm.parse 不发任何模型请求，直接走规则解析，intent.source=rule 且带 degraded=true 与 fallback_reason；冷却结束自动恢复。
+6. 错误统一映射为中文：ModelCallError 带 code、message、hint、retryable、kind；HTTP 401/402/404/429/5xx、网络超时、坏 JSON、空 content 都有对应中文说明与修复建议，写入 _last_error / _last_error_code / _last_error_hint，通过 GET /api/llm/status 暴露。
+7. 每次成功调用记录用量：prompt_tokens、completion_tokens、total_tokens、prompt_cache_hit_tokens、prompt_cache_miss_tokens，并按空闲时段单价估算 last_cost_yuan 与 total_cost_yuan，汇总在 stats（calls / ok / fail / retries / timeouts / empty / circuit_skipped / last_latency_ms / last_usage / last_cost_yuan / total_cost_yuan / total_tokens）。
+8. 系统提示只允许一份 JSON：intent（23 个预定义意图之一，含 v0.4.0 六类新意图）、confidence、amount_yuan、single_limit_yuan、year、merchant、schedule_hint、op、payee_name、payee_account、from_kind、months、category、product_hint、from_currency、to_currency、exchange_hint、sub_hint、card_hint、daily_limit_yuan、allocations、reminder、reason；未在原文出现的字段必须为 null，禁止猜测。
+9. _normalize（llm.py:710）做严格校验后才产出 intent：意图必须在白名单；金额经 _normalize_amount（llm.py:688）校验（必须与原文数字等值，否则改用规则金额并标 amount_adjusted；超过 5 万元硬上限则截断并标 amount_clamped）；收款人经 _canon_payee（llm.py:626）/ _match_payee（llm.py:647）去代称并与通讯录匹配，账号必须 12–19 位且出现在原文；产品、订阅、卡必须命中真实种子数据（_match_product llm.py:656、_match_sub llm.py:667、_match_card llm.py:679）；v0.4.0 另加单笔限额、年度、商户与预约 op/run_at 的清洗，金额、年份、商户必须能在原文找到出处；月份、品类、来源账户、日限额等枚举与区间越界一律回退规则值。
+10. 成功时 intent.source=llm，并带 model 与 latency_ms；调用失败（HTTP 错误、网络不可达、超时、空 content、非 JSON）时回退到规则解析结果，intent.source=fallback，附带 fallback_reason 与 latency_ms；熔断短路时 intent.source=rule 并带 degraded=true。三种来源都会写进事件与审计的 source 字段。
+
+**模型接入加固（v0.3.1）一览**：
+
+| 机制 | 默认值 | 作用 |
+| --- | --- | --- |
+| 关闭思考 | DEEPSEEK_THINKING=disabled | JSON 抽取不需要思维链；避免输出预算被推理占用、降低耗时与费用，并让 temperature=0 生效 |
+| 单次超时 | DEEPSEEK_TIMEOUT=8 秒 | 一次 HTTP 请求最多等 8 秒 |
+| 单轮预算 | DEEPSEEK_BUDGET=10 秒 | 含重试等待的总预算，超预算立即回退规则 |
+| 输出上限 | DEEPSEEK_MAX_TOKENS=800 | 给 JSON 留足空间，避免截断 |
+| 重试 | DEEPSEEK_RETRY=1，间隔 600ms | 只重试 429/5xx/网络/空 content/坏 JSON |
+| 熔断 | 连续 3 次失败，冷却 60 秒 | 冷却期内直接规则解析，不再打模型 |
+| 错误提示 | last_error_code / last_error_hint | 把 HTTP 码与修复建议翻译成中文给用户 |
 
 **模型与代码的边界**：
 
@@ -117,7 +141,7 @@ run_turn 先组装上下文文档 ctx_doc：payees、products、subscriptions、
 
 ### 阶段 2：计划生成（build_plan）
 
-build_plan（engine.py:138）把意图翻译成可执行的步骤列表：每步由 _step(step_id, title, tool, args, risk) 构造，含 step_id、title、tool、args、risk；edges 为线性依赖，steps[i] 指向 steps[i+1]。
+build_plan（engine.py:163）把意图翻译成可执行的步骤列表：每步由 _step(step_id, title, tool, args, risk) 构造，含 step_id、title、tool、args、risk；edges 为线性依赖，steps[i] 指向 steps[i+1]。
 
 计划阶段就做「不可能就拒绝」的判断：卡不存在（CARD_NOT_FOUND）、订阅不存在（SUBSCRIPTION_NOT_FOUND）、缺金额（AMOUNT_REQUIRED）、没有可用步骤（NO_STEP）都在这里返回 planner_block，避免把无效参数带进策略门。
 
@@ -125,7 +149,7 @@ greeting 与 unknown 意图直接生成回复早退，不进入策略门。
 
 ### 阶段 3：策略门（policy.evaluate）
 
-policy.evaluate（policy.py:26）是唯一对「钱」做判定的地方，输出五件事：整体风险等级 risk_level（low/medium/high）、是否需要审批 requires_approval、挑战类型 challenge（confirm 或 totp）、拒绝原因 blocked、人类可读的 reasons 与 summary。
+policy.evaluate（policy.py:73）是唯一对「钱」做判定的地方，输出五件事：整体风险等级 risk_level（low/medium/high）、是否需要审批 requires_approval、挑战类型 challenge（confirm 或 totp）、拒绝原因 blocked、人类可读的 reasons 与 summary。
 
 - 被拒绝：审计 turn_blocked、emit 一个 step_id=gate 的 tool_end、用 _blocked_reply 输出标准拦截文案，返回 blocked。
 - 需要审批：进入阶段 3.5。
@@ -137,11 +161,13 @@ policy.evaluate（policy.py:26）是唯一对「钱」做判定的地方，输�
 
 需要审批时依次执行：_approval_preview 生成人类可读的预览与金额、对手方 → approvals.create 写入审批单（approval_id 形如 ap_ 加 12 位十六进制，nonce 形如 n_ 加 16 位十六进制，expires_at = 创建时间 + 300 秒）→ ctx 记 approval_id 与 status=awaiting_approval → _save_checkpoint 把整份 ctx 以 thread_id 为键写入 checkpoints 表 → 审计 approval_required → emit approval_required → 返回 status=awaiting_approval。
 
+v0.4.1 起，风险等级为 high 的审批单参数里多了 factors = ["totp","sms","face"]（engine.py:1222），序列化后随 approval 对象下发；前端据此渲染因子选择器。该字段本身不改变 challenge 仍是 totp，只是在确认时允许用 SMS 或人脸令牌替代动态码。
+
 **此刻没有任何资金动作发生。** 用户拒绝、超时或直接关掉页面，账面都不会变化。
 
 ### 阶段 4-6：执行、校验、回复
 
-execute_steps（engine.py:364）逐步执行计划：
+execute_steps（engine.py:687）逐步执行计划：
 
 1. 每步先 emit tool_start（含 args_preview 与 risk），再算幂等键，调用 _exec_tool 分发到 mock_core 对应函数。
 2. 工具返回后先过 _scan_untrusted：命中 _SUSPECT_PATTERNS 就把可疑指令替换为「[已屏蔽的可疑指令]」，在 ctx.untrusted 记账，并审计 untrusted_content_blocked。
@@ -149,7 +175,7 @@ execute_steps（engine.py:364）逐步执行计划：
 4. 若该步是 create_transfer 且返回 balance_after_cents，立即调 mock_core.verify_balance 回读账户余额，审计 verify_balance；不一致就置 ctx.verify_issue，进入 _finalize 时把状态改为 blocked 并追加提示。
 5. 任何一步抛 DomainError：emit 失败版 tool_end、审计 tool_error、记录 failed 并 break，后续步骤不再执行。
 
-_finalize（engine.py:614）负责收尾：执行失败时用 _blocked_reply（余额不足、超限）或「操作未完成：原因」组织回复并审计 turn_blocked；成功时 build_reply 生成自然语言回复与 undo 信息；若 ctx.untrusted 非空，在回复前置「⚠️ 安全提示：…」并审计 injection_ignored；最后 emit message、审计 response，返回包含 session_id、thread_id、status、reply、blocked、intent、plan（steps 与 edges）、executed、approval、undo、audit、events 的完整结果。SSE 场景下这份结果与事件流内容一致。
+_finalize（engine.py:1065）负责收尾：执行失败时用 _blocked_reply（余额不足、超限）或「操作未完成：原因」组织回复并审计 turn_blocked；成功时 build_reply 生成自然语言回复与 undo 信息；若 ctx.untrusted 非空，在回复前置「⚠️ 安全提示：…」并审计 injection_ignored；最后 emit message、审计 response，返回包含 session_id、thread_id、status、reply、blocked、intent、plan（steps 与 edges）、executed、approval、undo、audit、events 的完整结果。SSE 场景下这份结果与事件流内容一致。
 
 ---
 
@@ -193,9 +219,9 @@ _finalize（engine.py:614）负责收尾：执行失败时用 _blocked_reply（�
 
 **持久化位置**：checkpoints 表（thread_id 主键、state_json 存整份 ctx、updated_at）。ctx 里包含 intent、steps、edges、turn_key、approval_id 等全部恢复所需信息，所以恢复不依赖内存。
 
-**恢复入口**：engine.resume(conn, session_id, approval_id, decision, code, sink)（engine.py:736）：
+**恢复入口**：engine.resume(conn, session_id, approval_id, decision, code, sink)（engine.py:1239）：
 
-1. approvals.check（approvals.py:60）依次校验：审批单存在、状态为 pending、未超过 300 秒 TTL（过期会顺手 mark expired）、decision 只能是 approve 或 reject、challenge 为 totp 时必须通过 totp.verify_code(user_id, code, window=config.TOTP_WINDOW)。失败分别映射为 HTTP 410（APPROVAL_EXPIRED）、409（APPROVAL_ALREADY_DECIDED）、400（INVALID_OTP 等），并给出中文提示。
+1. approvals.check（approvals.py:60）依次校验：审批单存在、状态为 pending、未超过 300 秒 TTL（过期会顺手 mark expired）、decision 只能是 approve 或 reject、challenge 为 totp 时必须通过所选因子。v0.4.1 的签名是 check(conn, approval_id, decision, code, user_id, method="")：method 缺省为 totp（向后兼容），可选 sms / face；分别调 totp.verify_code（窗口 ±1）、second_factor.sms_verify 或 face_verify。失败码：INVALID_OTP / INVALID_SMS / INVALID_FACE / INVALID_METHOD，另有 APPROVAL_EXPIRED（410）、APPROVAL_ALREADY_DECIDED（409），均给中文提示。审批单在校验失败时保持 pending，可在 TTL 内重试或换因子。
 2. _load_checkpoint(ap.thread_id) 取回 ctx；找不到则 410 CHECKPOINT_NOT_FOUND。
 3. decision=reject：mark rejected、审计 approval_rejected、回复固定文案「好的，已取消这笔操作，没有发生任何资金变动。」并 emit done。
 4. decision=approve：mark approved、审计 approval_granted，把 approval_id 写回 ctx，execute_steps 接着跑，最后 _finalize 收尾。
@@ -204,7 +230,7 @@ _finalize（engine.py:614）负责收尾：执行失败时用 _blocked_reply（�
 
 **审批 TTL 300 秒**：配置项 APPROVAL_TTL_SECONDS=300。过期后审批单不可用，必须重新发起，避免「半小时前的弹窗」被误点通过。前端拿到 expires_at 后自行倒计时。
 
-**撤销窗口 60 秒**：const UNDO_WINDOW_SECONDS=60。engine.undo_action（engine.py:763）先按 transfer_id 查 transfers，命中走 mock_core.undo_transfer，否则按申购走 mock_core.undo_purchase；超窗抛 UNDO_EXPIRED，由 server 转成 400 并发中文提示。撤销本身也审计（event_type=undo，risk_level=medium），并生成反向冲正流水，而不是删除原流水。
+**撤销窗口 60 秒**：const UNDO_WINDOW_SECONDS=60。engine.undo_action（engine.py:1276）先按 transfer_id 查 transfers，命中走 mock_core.undo_transfer，否则按申购走 mock_core.undo_purchase；超窗抛 UNDO_EXPIRED，由 server 转成 400 并发中文提示。撤销本身也审计（event_type=undo，risk_level=medium），并生成反向冲正流水，而不是删除原流水。
 
 **已知边界**：checkpoint 以 thread_id 为键且 INSERT OR REPLACE，同一线程同时只保留一份待恢复状态；如果用户在同一线程连续发起两笔待审批动作，后一笔会覆盖前一笔的 checkpoint（审批单本身仍在 approvals 表，但恢复状态只剩最新一份）。单用户单线程顺序操作不受影响，多审批并发是已知限制，见 docs/security.md。
 
@@ -212,7 +238,7 @@ _finalize（engine.py:614）负责收尾：执行失败时用 _blocked_reply（�
 
 ## 6. 幂等键设计
 
-每一轮对话在 run_turn 中生成 turn_key（形如 tk_ 加 12 位十六进制，engine.py:682），每个步骤在执行时拼出幂等键（engine.py:374）：
+每一轮对话在 run_turn 中生成 turn_key（形如 tk_ 加 12 位十六进制，engine.py:1166），每个步骤在执行时拼出幂等键（engine.py:697）：
 
     idem_<thread_id>_<turn_key>_<step_id>
 
@@ -235,9 +261,9 @@ _finalize（engine.py:614）负责收尾：执行失败时用 _blocked_reply（�
 
 **Emitter**（engine.py:65）在构造时读取当前会话的 MAX(seq)，每次 emit 自增并 INSERT events 后 commit，再追加到内存列表并回调 sink——server.py 传入的 sink 就是 SSE 推送函数，所以前端看到的事件与库里完全一致。
 
-事件类型：session、intent、plan、tool_start、tool_end、approval_required、message、done、undo_done。
+事件类型：session、intent、plan、tool_start、tool_end、approval_required、message、done、undo_done，以及 v0.4.1 的 security_lock（锁定态与触发锁定的那一轮都会 emit）。
 
-审计事件类型：attack_blocked、turn_blocked、approval_required、approval_granted、approval_rejected、tool_result、tool_error、untrusted_content_blocked、verify_balance、injection_ignored、undo、response。
+审计事件类型：attack_blocked、turn_blocked、approval_required、approval_granted、approval_rejected、tool_result、tool_error、untrusted_content_blocked、verify_balance、injection_ignored、undo、response，以及 v0.4.1 的 security_locked（tool=locks，high）、security_unlocked（tool=locks，medium）、turn_locked（tool=security_lock，high）。
 
 **哈希链算法**（audit.py）：把记录字段组成字典（含 prev_hash），用 canonical JSON（json.dumps 的 sort_keys=True、separators 为逗号与冒号、无多余空格）序列化后做 SHA-256；args_hash 与 result_hash 分别是参数与结果的 canonical JSON 哈希；首条记录 prev_hash 为 64 个 0（GENESIS）。verify 从第一条开始逐条重算并比对 prev_hash 与 hash，任何字段被改写都会返回 valid=false 并给出 broken_at 与原因。离线校验命令：
 
@@ -256,6 +282,287 @@ _finalize（engine.py:614）负责收尾：执行失败时用 _blocked_reply（�
 | sessions | 会话 | session_id → thread_id、user_id |
 | events | 实时事件 | (session_id, seq)，可增量回放 |
 | audit | 审计链 | 全局 seq，hash/prev_hash 链 |
-| wealth_products / wealth_holdings / cards / subscriptions / payees / budgets / reminders | 业务对象 | 由 db.seed 确定性写入 |
+| card_txns | 刷卡交易流水 | txn_id 主键、card_id + ts 索引；成功刷卡与限额校验共用 |
+| scheduled_transfers | 预约转账 | sched_id 主键、run_at 索引；status 默认 pending，执行后写 transfer_id 与 executed_at |
+| wealth_products / wealth_holdings / cards / subscriptions / payees / budgets / reminders | 业务对象 | 由 db.seed 确定性写入；payees 含 phone 列 |
 
 db.py 使用 WAL 与外键约束；种子数据由 random.Random(42) 生成，保证每次建库结果一致，评测可重复。
+
+---
+
+## 9. 插件注册表与能力开关（v0.3.0）
+
+v0.3.0 没有新增业务动作，而是把已有能力显式注册成插件，让它们可查看、可启停。插件层位于编排层旁路，不改变六阶段流水线的顺序。
+
+### 9.1 注册表
+
+plugins.py 的 REGISTRY 固定七个插件，每项声明 id、name、kind、provides（tools / skills / routes）、requires、detail（how / env / endpoints）与 toggleable：
+
+| id | kind | 提供 | 是否可停用 |
+| --- | --- | --- | --- |
+| policy | core | 权限分级与审批（/api/approval、/api/demo/totp） | 否，锁定 |
+| audit | core | 哈希链审计（/api/audit、/api/events） | 否，锁定 |
+| mcp-fx | mcp | fx_convert 汇率换算 | 是 |
+| mcp-risk | mcp | risk_screen 反欺诈评分 | 是 |
+| intent-llm | model | llm.parse 模型意图通道 | 是 |
+| skill-pack | skill | 六张技能卡 | 是 |
+| channel-im | channel | IM 渠道适配层 | 是 |
+
+- 状态判定顺序：插件被停用 → disabled；mcp 类插件探测不到外部服务 → degraded；否则 enabled。status() 永不抛异常，读取失败时退化为全部启用。
+- 状态持久化：backend/data/plugins.json（路径可由 PLUGINS_FILE 覆盖），先写 .tmp 再 os.replace 原子替换；文件缺失、JSON 损坏或不是对象时按空状态处理，即全部启用。每次读取现读磁盘，不用进程内缓存。
+- 版本字段统一读 config.VERSION（仓库根 VERSION 文件），重启后生效。
+
+### 9.2 启停语义
+
+POST /api/plugins/<id>/toggle 只接受布尔 enabled：
+
+- 未知 id → 404 PLUGIN_NOT_FOUND「插件不存在」。
+- core 插件 → 403 PLUGIN_CORE_LOCKED「核心能力不可停用」，传 true 也一样拒绝。
+- 成功后写一条 plugin_toggled 审计（tool=plugins.toggle、args 含 plugin_id/enabled、risk=low），并由服务端立即生效；失败只写 stderr，不影响其他插件。
+- 停用只收起能力，不放宽安全：engine._plugin_enabled 在读取状态异常时一律返回 True（宁可多执行能力，也不因插件文件损坏跳过安全相关路径）；policy、审批、TOTP 与哈希链审计始终执行。
+
+### 9.3 停用后的运行路径
+
+| 插件 | 停用后的行为 | 审计 / 回复 |
+| --- | --- | --- |
+| mcp-fx | 不发起外部调用，直接走内置参考价 | 审计 mcp_call source=disabled；回复前缀「汇率插件已停用，按内置参考价 … 估算」 |
+| mcp-risk | 跳过外部反欺诈评分，不拦截 | 结果标 risk_plugin_disabled；转账/跨场景结论补「外部反欺诈核查未执行（插件已停用），policy 安全规则仍然生效」 |
+| intent-llm | parse 回退规则模式，status 带 plugin_disabled=true | 回复来源标规则 |
+| skill-pack | GET /api/skills 返回空列表并标 disabled | 解析退回纯关键词规则，policy 不变 |
+| channel-im | 渠道进程 /message 返回 503「渠道插件已停用」，不写 messages.jsonl | 主服务 /api/channel/status 仍可读，enabled=false |
+
+接口字段见 [api.md](api.md) §4，插件清单与运维说明见 [plugins.md](plugins.md)，前端呈现见 [design-system.md](design-system.md) §4.1。
+
+---
+
+## 10. 渠道接入与主动触达（v0.3.2）
+
+v0.3.2 在不改六阶段流水线的前提下，把渠道从「单一路径的入站 webhook」扩展为「三种入站 + 一条出站」。主服务仍是唯一的业务与安全边界，三个入站进程都可以独立启停。
+
+### 10.1 三种入站形态
+
+| 形态 | 进程 | 入口 | 协议处理 |
+| --- | --- | --- | --- |
+| Web / PWA | backend/server.py :8000 | 静态页面 + REST + SSE | 无渠道协议，直接进 run_turn |
+| IM webhook | backend/channels/server.py :8400 | POST /message | X-Channel-Token 鉴权、10 秒幂等、两步确认 |
+| 企业微信 | backend/channels/wecom.py :8401 | GET/POST /wecom | URL 验签、AES 解密、MsgId 去重、加密回包 |
+
+IM 与企微最终都调用 channels/server.py 的 handle_message，因此共享同一套 sessions.json、10 秒幂等、两步确认与 messages.jsonl；主服务只看到「一条用户消息」或「一次审批确认」，不知道它来自哪个渠道。
+
+### 10.2 入站数据流
+
+    外部消息
+       │
+       ▼
+    渠道适配（鉴权 / 验签 / 解密 / 去重）
+       │
+       ▼
+    handle_message（user_id → session_id，10 秒幂等）
+       │
+       ├── 文本是「确认 / 取消」 → POST /api/approval（内存里的 approval_id）
+       └── 其他文本               → POST /api/chat
+       │
+       ▼
+    主服务六阶段流水线（parse → plan → policy_gate → act → verify → respond）
+       │
+       ▼
+    渠道回包白名单（reply，或 needs_confirmation + preview + hint）
+       │
+       ▼
+    messages.jsonl 留痕 + 回给发起方
+
+回包永远不包含 approval_id、nonce、thread_id 与 confirmation.token；审批凭据只存在渠道进程内存，确认动作由进程代为提交。
+
+### 10.3 企业微信加解密边界
+
+wecom_crypto.py 用纯标准库实现协议层，不引入第三方加密库：
+
+- 签名：sha1(sorted([token, timestamp, nonce, encrypt]))，用 hmac.compare_digest 做定时安全比较。
+- 解密：AES-128-CBC（IV = key），PKCS#7 补到 32 字节；明文为 random(16) + msg_len(4，网络序) + msg + corp_id。
+- 加密回包：把回复按同样结构封装、加密，再计算 MsgSignature，组成 Encrypt / MsgSignature / TimeStamp / Nonce 的 XML。
+
+验签在解密之前：签名失败直接 403，不进入解密与业务。CorpID 在解密后校验，不符按非法消息拒绝。
+
+### 10.4 主动触达数据流
+
+    定时器 / 设置页按钮 / 外部调用
+       │
+       ▼
+    POST /api/push（kind = subscription / large_txn / repayment）
+       │
+       ▼
+    push.py 读取账务数据（订阅、近 7 天流水、信用卡账单）
+       │
+       ▼
+    生成 title + text
+       │
+       ├── CHANNEL_PUSH_URL 未配置 → not_configured，只返回文案
+       └── 已配置 → POST {user_id, kind, title, text}
+                     │
+                     ├── 2xx → delivered
+                     └── 不可达 / 超时 / 非 2xx → failed
+       │
+       ▼
+    审计 push_message（actor=system，risk_level=low）
+       │
+       ▼
+    返回 {ok, kind, user_id, title, text, pushed, delivered, channel, audit_seq, ts}
+
+推送只读账务数据，不调用 mock_core 的任何写接口，因此不会改变余额、流水或审批状态。推送失败也不抛出到主流程，只在响应与审计里记录。
+
+### 10.5 隔离与降级
+
+- 入站进程与主服务进程隔离：渠道挂了不影响 Web、评测与资金链路；主服务挂了，渠道返回 HTTP 200 的可读降级文案，避免 IM 平台无限重试。
+- 企微协议与密钥只在 wecom.py 进程内：主服务不接触 WECOM_TOKEN、WECOM_AES_KEY 与 CorpID。
+- 渠道层的 10 秒幂等与 MsgId 去重只是防重复投递；真正的资金幂等仍由第 6 节的 thread_id + turn_key + step_id 保证。
+- 主动触达没有重试与补偿：失败只记录当次结果，不做队列重放，也不会因为推送失败而重复扣款。
+
+接口字段见 [api.md](api.md) §4，协议、配置与验收见 [channel.md](channel.md)，密钥与验签的安全边界见 [security.md](security.md) §9。
+---
+
+## 11. 资金动作扩展与预约调度（v0.4.0）
+
+v0.4.0 在六阶段流水线之外只多了两个东西：更多确定性工具，以及一个「到点触发」的调度器。流水线顺序、策略门位置、审批与审计入口都不变。
+
+### 11.1 新增意图与工具
+
+| 意图 | 工具 | build_plan 要点 |
+| --- | --- | --- |
+| wealth_redeem | redeem_wealth | 解析持仓或产品 id，缺省取第一笔持仓与全额；金额非法/超持仓在执行前由领域层拦截 |
+| card_limit | set_card_limit | 优先信用卡，从文本抽取日累计与单笔两个槽位；负数、0、单笔大于日累计在 policy 或领域层拦截 |
+| card_spend | card_spend | 按文本选择虚拟卡/借记卡/信用卡，从「在 X 消费」抽取商户；写 card_txns 并累计当日额度 |
+| anomaly_scan | scan_anomalies | 默认近 30 天，只读；三条规则在领域层产出可疑列表 |
+| annual_report | annual_report | 按年汇总，只读；缺省当前年 |
+| scheduled_transfer | create_scheduled_transfer / list_scheduled_transfers / cancel_scheduled_transfer | slots.op 区分 create / list / cancel；create 需要收款人、金额与时间三要素，缺一即 planner_block |
+
+只读能力（异常扫描、年度账单、预约列表）走 LOW 直接执行；赎回、限额、撤销预约走 MEDIUM 确认；刷卡与预约创建按金额进入 MEDIUM 或 HIGH。所有工具仍然只在 execute_steps 内被调用，且每次调用都写 tool_result 审计。
+
+**模型模式已支持六类新意图**：llm.ALLOWED_INTENTS（llm.py:55）由 17 增至 23，INTENT_ALIASES 补了赎回、改额度、刷卡、异常交易、年度账单、预约转账等中文说法；SYSTEM_PROMPT（llm.py:115）由 1739 增至 2395 字符，新增六意图说明与 single_limit_yuan / year / schedule_hint / op / merchant 五个字段；_normalize（llm.py:710）负责清洗这些新槽位。本地 stub 桩实测六类意图全部 source=llm、intent 正确，模型模式与规则模式都能走通新能力。
+
+模型仍然只提议意图，分类与时间由代码兜底：规则解析判成 anomaly_scan 时，_normalize 不允许模型改判成查流水（llm.py:712–714）；原句出现「明天 / 3 天后 / 9 点」等时间、规则判成 scheduled_transfer 时，模型改判立即转账会被拉回预约（llm.py:715–717），预约时间只以规则解析的 run_at 为准（llm.py:822–826）。详见 [security.md](security.md) §7。
+
+### 11.2 预约转账的生命周期
+
+    用户：「明天上午 9 点给妈妈转 100 元」
+        │
+        ▼
+    nlu / llm 解析出 scheduled_transfer + run_at + 金额 + 收款人
+        │
+        ▼
+    build_plan → policy_gate（1000 元内 confirm，超过 totp）
+        │
+        │  审批通过
+        ▼
+    execute_steps → mock_core.create_scheduled_transfer
+        │  只登记，不扣款；写 scheduled_transfers(status=pending)
+        ▼
+    scheduler 每 5 秒 / POST /api/scheduler/tick
+        │  run_at <= now 的 pending 记录
+        ▼
+    mock_core.execute_due_transfers
+        │  调 create_transfer，幂等键 sched_<sched_id>
+        ├── 成功 → status=executed，写 transfer_id / executed_at，审计 scheduled_transfer_executed（medium）
+        └── 失败 → status=failed，审计 scheduled_transfer_failed（high）
+        ▼
+    GET /api/scheduled 可查全部状态
+
+**为什么只在创建时审批一次**：预约语义本身就是「到点替我执行」，如果到期还要再确认，用户不在场时预约永远不会执行，等于没有预约能力。补偿措施是：创建时用完整审批（confirm / TOTP）确认金额、收款人与时间；执行复用与手动转账完全相同的 create_transfer 与 policy 参数校验；幂等键 sched_<sched_id> 保证重复 tick 不重复扣款；成功与失败都写审计。
+
+### 11.3 调度器实现
+
+- scheduler.py 的 _setting 先读 config 同名属性、再读环境变量：SCHEDULER_ENABLED 默认 1（0 / false / no / off 关闭），SCHEDULER_INTERVAL 默认 5 秒（最小 1 秒）。
+- 后台线程名为 zerostep-scheduler、daemon=True，同一进程只启动一次；每轮自建数据库连接调用 tick，异常只记 last_error，不终止线程。
+- tick 不接受外部时间参数，统一用服务端当前时间；这也是 /api/scheduler/tick 的已知限制。
+- 调度器只负责「何时执行」；「能不能执行」仍由 create_transfer 的 policy 校验、余额校验与领域错误码决定，失败不会重试。
+
+### 11.4 存储与种子
+
+- 新增 card_txns（刷卡流水，txn_id 主键、card_id + ts 索引）与 scheduled_transfers（预约登记，sched_id 主键、run_at 索引）两张表。
+- payees 增加 phone 列；find_payee_by_phone 忽略空格与横线，用于手机号转账命中通讯录。
+- SEED_VERSION 升到 2026.10.29，并新增 4 条固定演示异常流水 DEMO_ANOMALY_001..004，保证异常扫描每次都能演示出三条规则；SEED_VERSION 变化时旧演示库会自动重建（仅演示语义）。
+- 接口字段见 [api.md](api.md) §4 v0.4.0 段，用例与断言见 [evaluation.md](evaluation.md)，风险分级见 [security.md](security.md) §2。
+
+---
+
+## 12. 多因子与异常锁定（v0.4.1）
+
+v0.4.1 把「红色动作只能输动态码」扩展为「红色动作可三选一因子」，并给连续可疑会话加一层临时熔断。两者都不改变六阶段流水线的顺序，也不改变资金边界。
+
+### 12.1 三种强验证因子
+
+| 因子 | 实现 | 有效期 | 一次性 | 错误码 |
+| --- | --- | --- | --- | --- |
+| totp | totp.py，RFC 6238 / HMAC-SHA1 / 30 秒步长 / ±1 窗口 | 30 秒步长 | 每步可用 | INVALID_OTP |
+| sms | second_factor.sms_send / sms_verify，6 位数字 | 默认 120 秒（SMS_TTL） | 是；连续 5 次错误作废（SMS_MAX_ATTEMPTS） | INVALID_SMS |
+| face | second_factor.face_scan / face_verify，fc_ + 32 位十六进制令牌 | 默认 60 秒（FACE_TTL） | 是 | INVALID_FACE |
+
+完整链路：
+
+    用户点「确认」并选择因子
+        │
+        ├─ 动态码：前端直接展示 TOTP（DEMO_MODE 下由 /api/demo/totp 提供）
+        ├─ 短信：GET /api/demo/sms → 6 位 code（内存态）
+        └─ 人脸：POST /api/demo/face → fc_ 令牌（内存态）
+        │
+        ▼
+    POST /api/approval {approval_id, decision:"approve", method:"totp"|"sms"|"face", code}
+        │
+        ▼
+    approvals.check(..., method=...)（approvals.py:60）
+        │  challenge == "totp" 时才校验因子；confirm 直接通过
+        ├─ 失败 → INVALID_OTP / INVALID_SMS / INVALID_FACE / INVALID_METHOD，审批单保持 pending
+        └─ 成功 → mark approved，审计 approval_granted(result.method=...)
+        ▼
+    engine.resume → execute_steps → _finalize
+
+因子代码与业务代码分离：second_factor.py 只有内存字典与标准库 secrets / hmac，不读写数据库，也不参与风险分级；它只回答「这个 code / 令牌现在有效吗」。
+
+### 12.2 会话异常锁定
+
+    run_turn（engine.py:1106）
+        │
+        ▼
+    locks.info(conn, session_id)（:1111）
+        ├─ 已锁 → 回复「会话因连续可疑指令已被临时锁定，请在 N 秒后再试。锁定期间不会执行任何资金动作。」
+        │          审计 turn_locked（tool=security_lock，risk high），返回 status=locked
+        └─ 未锁 → 继续
+        │
+        ▼
+    攻击判定 / 计划拦截 / 策略拦截
+        │  命中时先写 attack_blocked 或 turn_blocked 审计
+        ▼
+    locks.record_security_event(conn, session_id, user_id, kind, reason)（locks.py）
+        │  统计本会话最近 600 秒内的 attack_blocked + turn_blocked 条数
+        ├─ 未达阈值（3）→ 返回 count，正常 blocked 响应
+        └─ 达到阈值且未锁 → UPSERT session_locks，锁定 300 秒
+               审计 security_locked（tool=locks，args 含 reason / seconds，risk high）
+               回复末尾追加「（N 分钟内第 K 次被拦操作，会话已临时锁定 300 秒。）」
+               emit security_lock
+        ▼
+    后续请求在阶段 0 被拦下，不解析、不建计划、不调工具
+
+三个常量都可由环境变量覆盖：SECURITY_LOCK_THRESHOLD=3、SECURITY_LOCK_WINDOW_SECONDS=600、SECURITY_LOCK_SECONDS=300。锁定与解锁（locks.unlock）都写审计：security_locked 为 high，security_unlocked 为 medium。
+
+**为什么用「次数 + 时间窗」而不是单次触发**：一次注入可能是用户好奇或误粘贴，立即锁定体验太差；但连续 3 次被拦已经明显不是正常使用。窗口 10 分钟足以覆盖一次连续尝试，又不会让历史误触长期累积。
+
+**为什么锁定发生在阶段 0**：锁定期间任何工具都不该被执行。把检查放在 run_turn 最前面，比在每个工具前重复判断更可靠，也让回复语义统一——用户看到的是「被锁定」，而不是某一步失败。
+
+### 12.3 存储与恢复
+
+- session_locks 表：session_id 主键、user_id、locked_until、reason、created_at；db.py:97-100 建表，RESET_TABLES 含该表，/api/admin/reset 会清空。
+- 锁是「到期自动失效」而不是定时任务：locks.info 每次比较 locked_until 与当前时间，过期即视为未锁（旧行可留待下次 UPSERT 覆盖）。
+- 锁状态在 SQLite 里，主服务重启不会丢锁；因子码与令牌只在内存，重启后全部失效，需要重新获取。
+- 计数直接读审计表的 attack_blocked / turn_blocked 时间戳，不额外维护计数器，因此审计清理会同时影响计数。
+
+### 12.4 边界与已知限制
+
+- 因子码与令牌是单进程内存态：多实例部署时各进程互不可见；演示接口直接返回 code / 令牌，仅适合本机演示。
+- 人脸是「令牌发放 + 校验」，没有真实摄像头、活体检测与生物特征存储。
+- 锁定按 session_id 计数，用户新建会话即可绕过；没有 IP、设备、用户级封禁与告警。
+- 多因子只作用于 challenge=totp 的红色动作，MEDIUM 仍是单次 confirm；不支持「必须两个因子同时通过」的复合校验。
+- 锁定与因子都不改变金额阈值、幂等键、审计链；即使被锁定，已有审批单的 TTL 与撤销窗口也照常计算。
+
+**接口字段见** [api.md](api.md) §2 与 §4 v0.4.1 段，风险矩阵与限制见 [security.md](security.md) §2、§4.1 与 §10，用例见 [evaluation.md](evaluation.md)。
+
+
+---
