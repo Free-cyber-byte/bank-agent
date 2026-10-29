@@ -456,8 +456,24 @@ def create_reminder(conn, user_id: str, title: str, remind_at: str = "") -> Dict
     return {"reminder_id": reminder_id, "title": title, "remind_at": when, "status": "pending"}
 
 
-def repay_credit(conn, user_id: str, amount_cents: int) -> Dict[str, Any]:
-    acc = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='credit' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
+def repay_credit(conn, user_id: str, amount_cents: int, from_account_id: str = "",
+                 credit_account_id: str = "") -> Dict[str, Any]:
+    """信用卡还款：真实双边记账。
+
+    v0.6.2 修复：原实现只把信用卡余额调回 0，不扣任何出账账户，等于凭空造钱。
+    现在必须同时从出账账户（默认工资卡，可由 from_kind/from_account_id 指定）扣款，
+    并校验出账账户余额；还款金额按实际欠款截断，多还的部分不会凭空进入信用卡。
+    """
+    if amount_cents <= 0:
+        raise DomainError("AMOUNT_INVALID", "还款金额必须大于 0")
+    if amount_cents > config.HARD_SINGLE_LIMIT_CENTS:
+        raise DomainError("LIMIT_EXCEEDED", "单笔金额超过演示系统上限 5 万元")
+    if credit_account_id:
+        acc = conn.execute("SELECT * FROM accounts WHERE account_id=? AND user_id=?",
+                           (credit_account_id, user_id)).fetchone()
+    else:
+        acc = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='credit' ORDER BY account_id LIMIT 1",
+                           (user_id,)).fetchone()
     if not acc:
         raise DomainError("ACCOUNT_NOT_FOUND", "没有找到信用卡账户")
     before = int(acc["balance_cents"])
@@ -465,12 +481,41 @@ def repay_credit(conn, user_id: str, amount_cents: int) -> Dict[str, Any]:
         raise DomainError("NO_OUTSTANDING_DEBT", "当前信用卡没有待还欠款")
     after = min(0, before + amount_cents)
     paid = after - before
-    conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (after, acc["account_id"]))
-    _record_txn(conn, acc["account_id"], user_id, "in", paid, "还款", "工资卡", "信用卡还款", after)
-    conn.commit()
+    if paid <= 0:
+        raise DomainError("NO_OUTSTANDING_DEBT", "当前信用卡没有待还欠款")
+    if from_account_id:
+        payer = get_account(conn, from_account_id, user_id)
+    else:
+        payer = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='checking' ORDER BY account_id LIMIT 1",
+                             (user_id,)).fetchone()
+        if not payer:
+            raise DomainError("ACCOUNT_NOT_FOUND", "没有找到可用于还款的出账账户")
+    if str(payer["kind"] or "") == "credit":
+        raise DomainError("INVALID_FROM_ACCOUNT", "不能用信用卡还信用卡，请选择工资卡或储蓄卡")
+    _begin_immediate(conn)
+    try:
+        available = int(payer["balance_cents"])
+        if paid > available:
+            raise DomainError("INSUFFICIENT_FUNDS", "出账账户「%s」可用余额不足，当前可用 %s" % (
+                payer["name"], yuan(available)), {"available_cents": available})
+        if not _guarded_debit(conn, payer["account_id"], user_id, paid, available, str(payer["kind"] or "")):
+            raise DomainError("INSUFFICIENT_FUNDS", "出账账户「%s」可用余额不足，当前可用 %s" % (
+                payer["name"], yuan(available)), {"available_cents": available})
+        payer_after = _balance(conn, payer["account_id"])
+        conn.execute("UPDATE accounts SET balance_cents=? WHERE account_id=?", (after, acc["account_id"]))
+        _record_txn(conn, acc["account_id"], user_id, "in", paid, "还款", payer["name"], "信用卡还款", after)
+        _record_txn(conn, payer["account_id"], user_id, "out", paid, "还款",
+                    str(acc["number_masked"] or "信用卡"), "信用卡还款", payer_after)
+        conn.commit()
+    except Exception:
+        _rollback_quietly(conn)
+        raise
     return {"action_id": "repay_" + secrets.token_hex(4), "account_id": acc["account_id"],
             "paid_cents": paid, "paid_display": yuan(paid),
-            "debt_before_cents": -before, "debt_after_cents": -after}
+            "debt_before_cents": -before, "debt_after_cents": -after,
+            "from_account_id": payer["account_id"], "from_account_name": payer["name"],
+            "from_balance_before_cents": int(payer["balance_cents"]),
+            "from_balance_after_cents": payer_after, "from_balance_after_display": yuan(payer_after)}
 
 
 def verify_balance(conn, account_id: str, expected_cents: int) -> Dict[str, Any]:

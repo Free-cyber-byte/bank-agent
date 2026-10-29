@@ -4,6 +4,43 @@
 
 v0.2.0 为 2026-10-27 启动的能力批次，代码合并与验收由 Lead 统一复核；尚未通过验收的接口与命令在对应位置单独注明。
 
+## [0.6.2] - 2026-10-29（进行中，未打 tag）
+
+v0.6.2 是「信用卡还款」修复批次：起因是真实截图里「把储蓄卡的钱取出 9000 元转移到信用卡」被拦截为「没有识别到合法收款人」。根因不是话术，而是三处实现缺陷：还款没有独立意图（规则把「信用卡」先判成 card_query，用户只能靠跨场景分账那一句话术绕过去）；`mock_core.repay_credit` 只把信用卡余额调回 0、**不扣任何出账账户**（凭空造钱）；出账账户不可选，余额不足 / 无待还欠款都不在策略层拦截。本批次把还款做成和转账并列的一等意图，并补齐双向记账。
+
+### Added
+
+- `credit_repay` 独立意图（nlu.py 规则层 + llm.py ALLOWED_INTENTS / INTENT_ALIASES）：支持「还信用卡 8432 元」「8432 还信用卡」「归还信用卡 8432 元」「用储蓄卡还信用卡 3000 元」「把储蓄卡 9000 还信用卡」等说法，金额在「还」前后都能抽到（含万/千倍率、千分位、`¥8,432.00` 这类带符号写法）；含「多少 / 几号 / 账单 / 明细 / 额度」等查询词时仍归 card_query。
+- `repay_credit` 工具改为双向记账：签名为 `repay_credit(conn, user_id, amount_cents, from_account_id="", credit_account_id="")`，同一 `BEGIN IMMEDIATE` 事务内校验金额 > 0、≤ 单笔硬上限、信用卡确有欠款、出账账户余额充足，再扣出账账户、冲减信用卡欠款、写两条流水（信用卡入账 + 出账账户出账），异常整单回滚；返回补 `from_account_id / from_account_name / from_balance_before_cents / from_balance_after_cents / from_balance_after_display`。
+- 出账账户可选：默认工资卡，说「用储蓄卡 / 从储蓄卡」则走储蓄卡；信用卡不能作为出账账户（INVALID_FROM_ACCOUNT）。
+- 策略层（policy.py repay_credit 分支）新增四类拦截：AMOUNT_INVALID、NO_OUTSTANDING_DEBT、INSUFFICIENT_FUNDS、INVALID_FROM_ACCOUNT，并保留「还款到账后不可撤销」的中风险判定；审批预览改为「执行后「工资卡」余额将从 ¥12,860.50 变为 ¥4,428.50」。
+- 计划层金额截断：还款金额超过实际欠款时按欠款执行（10000 → 8432），保证审批卡金额与实扣金额一致。
+- 前端工作台兜底快捷指令「还信用卡 8,432 元」（`/api/tasks` 失败时才用到，真实快捷指令来自 tasks/）。
+- 任务与自检：`tasks/t57.json`（还信用卡 8432 元）、`t58.json`（用储蓄卡还信用卡 3000 元）、`t59.json`（还信用卡未给金额 → AMOUNT_REQUIRED）；`scripts/smoke_repay.py`（9 组 engine 级断言，覆盖路由、双向记账、出账账户、金额截断、无金额、无欠款、余额不足、非法出账账户）。
+- 文档：skills/cards.skill.md 补还款流程与工具，skills/transfer.skill.md 明确「还信用卡不是转账」。
+
+### Changed
+
+- `engine.build_reply` 新增 credit_repay 分支：回复「已从「工资卡」扣款 ¥8,432.00 归还信用卡，信用卡当前待还 ¥0.00。信用卡欠款已结清。」并提示不可撤销、无 undo。
+- 还款提醒推送文案（push.py）改为与代码一致：`回复「还信用卡 8432」即可从工资卡还款（也可说「还信用卡 8432 元，用储蓄卡」）`；旧文案引导的「还信用卡 %s」在修复前实际会被判成 card_query。
+- 模型与规则的分工补两条护栏：原句只问「最近流水」时模型不得改判成 anomaly_scan；手机号收款人在模型输出缺 name/account 时保留规则层解析出的 payee_phone，避免退化成「未知收款人」被 PAYEE_REQUIRED 拦截。
+- `backend/app/skills.py` 的意图→技能映射补 `credit_repay: ["cards"]`。
+- VERSION 0.6.1 → 0.6.2。
+
+### Fixed
+
+- 修「还款凭空造钱」：旧实现还款后信用卡归零但工资卡/储蓄卡分文未动，账实不符（实测 before {工资卡 12,860.50, 储蓄卡 45,000.00, 信用卡 -8,432.00} → after 信用卡 0、两卡余额不变）。
+- 修「还款被当转账」：旧实现「把储蓄卡的钱取出 9000 元转移到信用卡」判成 transfer，因信用卡不是收款人而 PAYEE_REQUIRED 拦截；现走 credit_repay。
+- 修「单笔还款被判成 card_query」：旧实现规则里 `has_card` 分支先于一切，只有「3000 存到储蓄卡，8432 还信用卡」这种组合话术才能触发还款。
+- 修「还信用卡 8432 被解析成 ¥8」：金额抽取新增千分位剔除。
+
+### 验证
+
+- `scripts/run_tasks.py`：59/59 通过（默认 LLM 模式与 `ZEROSTEP_DISABLE_LLM=1` 规则模式各跑一遍），t23 跨场景三步仍为 high/totp 且审批后全部执行。
+- `scripts/smoke_repay.py`：9/9 PASS；`node frontend/_selftest.js` 与既有 e2e 未改动断言，回归见 README「v0.6.2」节。
+
+---
+
 ## [0.6.1] - 2026-10-28（进行中，未打 tag）
 
 v0.6.1 是「审计整改」批次：针对 v0.6.0 的三份独立安全审查（MCP 接入层 / HTTP 与鉴权 / 对话与数据层，见 `.review/`）修复 P0/P1 与高价值 P2。演示形态与接口语义保持兼容：默认 `DEMO_MODE=1`、端口与前端流程不变，新增行为只在「跨会话审批、重复决策、越界请求、恶意网页跨域」等异常路径生效。

@@ -42,6 +42,7 @@ _INTENT_SKILLS = {
     "anomaly_scan": ["bills"],
     "annual_report": ["bills"],
     "scheduled_transfer": ["transfer"],
+    "credit_repay": ["cards"],
     "query_balance": [],
     "query_transactions": [],
     "query_fx": [],

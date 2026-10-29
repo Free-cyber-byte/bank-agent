@@ -2,17 +2,17 @@
 id: cards
 name: 银行卡与卡片管理
 description: 查卡列表、申请虚拟卡、冻结解冻与挂失，敏感操作前先确认卡号尾号
-triggers: 银行卡, 信用卡, 卡片, 冻结, 解冻, 挂失, 额度, 虚拟卡, 几张卡
-tools: list_cards, apply_virtual_card, freeze_card, unfreeze_card
-examples: 看看我的银行卡, 冻结我的信用卡, 办一张虚拟卡
-slots: card_id, daily_limit_cents
+triggers: 银行卡, 信用卡, 卡片, 冻结, 解冻, 挂失, 额度, 虚拟卡, 几张卡, 还款
+tools: list_cards, apply_virtual_card, freeze_card, unfreeze_card, repay_credit
+examples: 看看我的银行卡, 冻结我的信用卡, 还信用卡 8432 元
+slots: card_id, daily_limit_cents, amount_cents, from_account_id
 clarify: 操作哪张卡？, 虚拟卡额度定多少？
 forbidden: 不得展示完整卡号, 不得绕过冻结确认
 ---
 
 ## 适用场景
 
-用户要查自己有哪些卡、看额度，或要冻结/解冻/挂失/申请虚拟卡。
+用户要查自己有哪些卡、看额度，或要冻结/解冻/挂失/申请虚拟卡，或要给信用卡还款。
 
 ## 处理流程
 
@@ -20,6 +20,8 @@ forbidden: 不得展示完整卡号, 不得绕过冻结确认
 2. 用户说「我的信用卡」但手里有多张时，列出尾号让用户选，不猜。
 3. 冻结/解冻/挂失属于敏感操作，走 approval 二次确认后才执行。
 4. 申请虚拟卡要确认额度，额度换算成整数分。
+5. 信用卡还款用 `repay_credit`（不是转账）：默认从工资卡扣，用户说「用储蓄卡还」才指定出账账户；
+   没给金额时先追问金额，没有待还欠款时直接说明无需还款。
 
 ## 需要补充的信息
 

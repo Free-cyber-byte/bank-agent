@@ -205,6 +205,13 @@ _finalize（engine.py:1065）负责收尾：执行失败时用 _blocked_reply（
 
 三步串行，任一失败即中断，前面已完成的步骤保留（资金类动作本来就不该回滚成「假成功」）。
 
+单笔还款（v0.6.2，t57/t58）不经过跨场景展开，`credit_repay` 直接生成一步：
+
+    s1 repay_credit（from_account_id = 工资卡，或用户指定的储蓄卡）
+       args: amount_cents / from_account_id / from_kind / credit_account_id / credit_last4
+
+还款不是转账：信用卡是账户而不是收款人，所以既不需要 get_payees，也不走 create_transfer 的收款人校验。金额超过实际欠款时在计划阶段按欠款截断（审批卡金额必须等于实扣金额），无金额、已还清、出账账户余额不足、拿信用卡当出账账户分别在 planner_block / policy / mock_core 三处拦截（AMOUNT_REQUIRED / NO_OUTSTANDING_DEBT / INSUFFICIENT_FUNDS / INVALID_FROM_ACCOUNT）。
+
 生日提醒（t24「下周三我妈生日，转 800 给她，再定个提醒」）展开为：
 
     s1 create_transfer（给妈妈 800 元，MEDIUM 确认）

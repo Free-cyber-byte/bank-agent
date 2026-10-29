@@ -1,0 +1,31 @@
+{
+  "id": "t57",
+  "title": "还信用卡 8,432 元（独立还款意图）",
+  "category": "card",
+  "user_id": "u001",
+  "turns": [
+    "还信用卡 8432 元"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "credit_repay",
+    "plan_tools": [
+      "repay_credit"
+    ],
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "repay_credit"
+      ]
+    },
+    "reply_contains": [
+      "归还信用卡"
+    ]
+  },
+  "judge_rubric": "还款是独立意图而不是转账：不得调用 create_transfer / get_payees（信用卡不是收款人），计划只含 repay_credit；中风险需确认；执行后从工资卡扣款、信用卡欠款归零。"
+}

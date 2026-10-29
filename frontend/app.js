@@ -56,7 +56,8 @@
     { id: 't18', title: '旅行预算测算', category: '组合', user_input: '去日本旅行要花多少钱，帮我做个预算' },
     { id: 't19', title: '赎回 500 元稳利宝', category: '理财', user_input: '赎回 500 元稳利宝' },
     { id: 't20', title: '今年的年度账单', category: '账单', user_input: '看一下今年的年度账单' },
-    { id: 't21', title: '3 天后给妈妈转 800 元', category: '转账', user_input: '3 天后给妈妈转 800 元' }
+    { id: 't21', title: '3 天后给妈妈转 800 元', category: '转账', user_input: '3 天后给妈妈转 800 元' },
+    { id: 't22', title: '还信用卡 8,432 元', category: '卡片', user_input: '还信用卡 8432 元' }
   ];
   var SAMPLES = [
     '查一下这个月支出最多的三类',

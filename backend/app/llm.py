@@ -63,6 +63,8 @@ ALLOWED_INTENTS = (
     "scheduled_transfer",
     # v0.5.0 新增：消费洞察（只读汇总；是否执行仍由代码层判定）
     "insight",
+    # v0.6.2 新增：信用卡还款（独立动作，不是转账、不需要收款人）
+    "credit_repay",
 )
 
 INTENT_ALIASES = {
@@ -102,6 +104,9 @@ INTENT_ALIASES = {
     "我最近花钱": "insight", "钱都花哪了": "insight", "能省": "insight",
     "省钱": "insight", "有什么可以省": "insight", "订阅在烧钱": "insight",
     "账单洞察": "insight",
+    # v0.6.2
+    "还款": "credit_repay", "还信用卡": "credit_repay", "信用卡还款": "credit_repay",
+    "归还信用卡": "credit_repay", "偿还信用卡": "credit_repay", "信用卡还钱": "credit_repay",
 }
 
 PRODUCT_ALIASES = {
@@ -132,6 +137,8 @@ v0.4.0 新增：wealth_redeem 赎回/取出理财；card_limit 调整银行卡�
 card_spend 刷信用卡或储蓄卡消费；anomaly_scan 查"最近有没有异常交易/可疑交易"（注意：只是扫描，不是查流水）；
 annual_report 年度/全年账单报告；scheduled_transfer 预约/定时转账（含创建、查询、取消）。
 v0.5.0 新增：insight 消费洞察/花费分析/哪里能省钱（只做只读汇总与建议，不执行任何资金操作）。
+v0.6.2 新增：credit_repay 给信用卡还款（如「还信用卡 8432 元」「把储蓄卡 8432 还信用卡」）——
+还款不是转账，不需要收款人；from_kind 指出账账户（工资卡 checking / 储蓄卡 savings），绝不能填 credit。
 
 输出严格 JSON，字段如下（没有提到的字段一律填 null，不要编造）：
 {
@@ -721,6 +728,9 @@ def _normalize(raw: Dict[str, Any], text: str, ctx: Dict[str, Any], fallback: Di
     # 安全相关分类以规则引擎为准：原句命中"异常交易扫描"时，不接受模型改判成查流水
     if fallback.get("name") == "anomaly_scan" and name != "anomaly_scan":
         name = "anomaly_scan"
+    # 反向同理：原句只是「看看最近流水」时，不接受模型改判成异常扫描（否则会跑错工具）
+    if fallback.get("name") == "query_transactions" and name == "anomaly_scan":
+        name = "query_transactions"
     # 用户说了"明天/3 天后/9 点"这类时间，规则判成预约转账时不允许模型改判成立即转账
     if fallback.get("name") == "scheduled_transfer" and name in ("transfer", "cross_scenario", "unknown"):
         name = "scheduled_transfer"
@@ -745,6 +755,11 @@ def _normalize(raw: Dict[str, Any], text: str, ctx: Dict[str, Any], fallback: Di
         slots["payee_account"] = account.strip()
     elif fb_slots.get("payee_account"):
         slots["payee_account"] = fb_slots["payee_account"]
+    # 手机号收款人：模型常常只写"向某手机号转账"而不给 payee_name/payee_account，
+    # 规则层解析出的手机号必须保留，否则会退化成"未知收款人"被 PAYEE_REQUIRED 拦截（t42）
+    if name != "credit_repay" and not slots.get("payee_name") and not slots.get("payee_account"):
+        if fb_slots.get("payee_phone"):
+            slots["payee_phone"] = fb_slots["payee_phone"]
 
     payees = ctx.get("payees") or []
     slots["payee_is_new"] = True
@@ -758,7 +773,12 @@ def _normalize(raw: Dict[str, Any], text: str, ctx: Dict[str, Any], fallback: Di
         slots["payee_is_new"] = bool(fb_slots.get("payee_is_new"))
 
     from_kind = str(raw.get("from_kind") or "").strip().lower()
+    if name == "credit_repay" and from_kind == "credit":
+        # 还款不能用信用卡还信用卡：模型给出 credit 时回退到规则层的出账账户判断
+        from_kind = ""
     slots["from_kind"] = from_kind if from_kind in ("checking", "savings", "credit") else (fb_slots.get("from_kind") or "checking")
+    if name == "credit_repay" and slots["from_kind"] == "credit":
+        slots["from_kind"] = "checking"
 
     months = _num(raw.get("months"))
     if months is not None and 1 <= int(months) <= 12:

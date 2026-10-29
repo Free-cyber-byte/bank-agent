@@ -1,6 +1,6 @@
 # ZeroStep 评测说明
 
-ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条任务是一段真实用户话术，运行器在独立数据库里跑完整链路（含审批恢复），再对状态、意图、技能命中、计划、拦截码、审批规则、回复文案与审计链逐项断言。v0.1.0 基线 30 条（t01–t30），v0.2.0 新增 6 条（t31–t36）；v0.3.0 不新增任务，36 条口径不变，插件与前端另由 scripts/plugin_e2e.py 与 frontend/_selftest.js 覆盖；v0.3.1 加固模型接入，同样不新增业务任务，改由桩服务端的 scripts/llm_e2e.py 覆盖 8 个模型交互场景；v0.3.2 扩展渠道与手机端，不新增业务任务，由 scripts/push_e2e.py、scripts/channel_wecom_e2e.py、backend/channels/wecom.py --selftest 与前端自检覆盖；v0.4.0 新增 7 条业务任务（t37–t43），覆盖理财赎回、卡限额、刷卡拦截、异常交易扫描、年度账单、手机号转账与预约转账，资金动作类能力同时由 scripts/capability_e2e.py 与前端自检另行覆盖；v0.4.1 新增 3 条安全任务（t44–t46），覆盖挂失/解挂升红后的多因子强验证与连续可疑操作触发的会话锁定，不新增能力类 e2e；v0.5.0 新增 10 条洞察类任务（t47–t56），覆盖消费洞察统计与环比、可省金额口径、只读零写操作、订阅识别与误报、逐字流式事件序、中途取消与取消不撤销已执行工具，以及 LLM 模式下的洞察意图解析，流式链路另由 scripts/e2e_stream.py 与前端自检覆盖。
+ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条任务是一段真实用户话术，运行器在独立数据库里跑完整链路（含审批恢复），再对状态、意图、技能命中、计划、拦截码、审批规则、回复文案与审计链逐项断言。v0.1.0 基线 30 条（t01–t30），v0.2.0 新增 6 条（t31–t36）；v0.3.0 不新增任务，36 条口径不变，插件与前端另由 scripts/plugin_e2e.py 与 frontend/_selftest.js 覆盖；v0.3.1 加固模型接入，同样不新增业务任务，改由桩服务端的 scripts/llm_e2e.py 覆盖 8 个模型交互场景；v0.3.2 扩展渠道与手机端，不新增业务任务，由 scripts/push_e2e.py、scripts/channel_wecom_e2e.py、backend/channels/wecom.py --selftest 与前端自检覆盖；v0.4.0 新增 7 条业务任务（t37–t43），覆盖理财赎回、卡限额、刷卡拦截、异常交易扫描、年度账单、手机号转账与预约转账，资金动作类能力同时由 scripts/capability_e2e.py 与前端自检另行覆盖；v0.4.1 新增 3 条安全任务（t44–t46），覆盖挂失/解挂升红后的多因子强验证与连续可疑操作触发的会话锁定，不新增能力类 e2e；v0.5.0 新增 10 条洞察类任务（t47–t56），覆盖消费洞察统计与环比、可省金额口径、只读零写操作、订阅识别与误报、逐字流式事件序、中途取消与取消不撤销已执行工具，以及 LLM 模式下的洞察意图解析，流式链路另由 scripts/e2e_stream.py 与前端自检覆盖；v0.6.2 新增 3 条还款任务（t57–t59），覆盖独立还款意图与双向记账、指定储蓄卡出账、未给金额不臆造，还款链路的边界（金额截断、无欠款、余额不足、非法出账账户）另由 scripts/smoke_repay.py 覆盖。
 
 ---
 
@@ -8,14 +8,14 @@ ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条�
 
 | 维度 | 数值 |
 | --- | --- |
-| 任务总数 | 56（tasks/t01.json 至 t30.json 为 v0.1.0 基线，t31.json 至 t36.json 为 v0.2.0 新增，t37.json 至 t43.json 为 v0.4.0 新增，t44.json 至 t46.json 为 v0.4.1 新增，t47.json 至 t56.json 为 v0.5.0 新增） |
+| 任务总数 | 59（t01–t30 为 v0.1.0 基线，t31–t36 为 v0.2.0 新增，t37–t43 为 v0.4.0 新增，t44–t46 为 v0.4.1 新增，t47–t56 为 v0.5.0 新增，t57–t59 为 v0.6.2 新增） |
 | 类别数 | 9（v0.1.0 的 7 类 + v0.2.0 的 mcp + v0.5.0 的 insight） |
-| 类别分布 | bills 6、transfer 8、wealth 5、card 7、subscription 4、cross 4、security 10、mcp 2、insight 10（合计 56） |
-| 首轮结果分布 | ok 26 条、awaiting_approval 16 条、blocked 14 条（按 56 条任务的 expect.status 统计，2026-10-28） |
+| 类别分布 | bills 6、transfer 8、wealth 5、card 10、subscription 4、cross 4、security 10、mcp 2、insight 10（合计 59） |
+| 首轮结果分布 | ok 26 条、awaiting_approval 18 条、blocked 15 条（按 59 条任务的 expect.status 统计，2026-10-29） |
 | 运行器 | scripts/run_tasks.py（零依赖；串行、每任务独立临时库） |
 | 解析模式 | rule / llm / auto（默认 auto：有 Key 用模型，无 Key 回落规则） |
 | 对比评测 | scripts/compare_modes.py：30 条基线 + 10 条口语化变体（v0.2.0 未扩展，仍为基线对比数据） |
-| 实测结果 | 规则模式 56/56，0 失败（2026-10-28 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消），node frontend/_selftest.js PASS=247 FAIL=0（v0.5.1 时点） |
+| 实测结果 | 规则模式 59/59，0 失败（2026-10-29 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消），node frontend/_selftest.js PASS=247 FAIL=0（v0.5.1 时点） |
 | v0.3.0 增量自检 | scripts/plugin_e2e.py 17/17、node frontend/_selftest.js PASS=100 FAIL=0（2026-10-27 实测；不改变 36 条任务） |
 | v0.3.1 增量自检 | scripts/llm_e2e.py 8/8 场景、52/52 项检查；node frontend/_selftest.js PASS=134 FAIL=0；run_tasks 36/36（均 2026-10-27 本机实测）；scripts/llm_smoke.py 需真实 Key，无 Key 自动跳过 |
 | v0.3.2 增量自检 | 企业微信自检 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13、node frontend/_selftest.js PASS=182 FAIL=0（2026-10-27，与 QA 报告一致；QA 全量回归 15/15 步 exit 0、0 FAIL）；v0.4.0 时前端断言已增至 190 项 |
@@ -25,6 +25,7 @@ ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条�
 | v0.5.1 增量自检 | scripts/run_tasks.py 56/56（0 失败，用例未增）、scripts/e2e_stream.py 33/33（不变）、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，新增 9 条「资金流向与余额刷新」：kind 字段口径、信用卡待还脚注、理财持仓行、资产构成理财段放宽、回合结束自动刷新余额与持仓）；均为 2026-10-28 实测 |
 | v0.6.0 增量自检 | scripts/mcp_gateway_e2e.py 17/17（注册表、Bearer/OAuth2 鉴权、streamable-http 会话、SSE、写拒绝零转发、白名单、密钥脱敏、动态插件、MCP_ENABLED=0、坏配置、未知服务/工具，2026-10-28 实测）；任务集未变（仍 56/56），regression 全绿 |
 | v0.6.1 增量自检 | scripts/mcp_gateway_e2e.py 19/19（新增 gw-18 空白名单写拒绝、gw-19 MCP_SERVERS 合并后 fx/risk 仍可用）；scripts/security_factor_e2e.py 55/55（新增 sec-idor-1 跨会话审批 403、sec-idor-2 二次决策 409，2026-10-28 实测）；任务集未变（仍 56/56），其余回归见 README「后端口径」 |
+| v0.6.2 增量自检 | scripts/run_tasks.py 59/59（新增 t57–t59，2026-10-29 实测）；scripts/smoke_repay.py 9/9（engine 级还款边界）；scripts/e2e_stream.py 33/33、skill_check 6/6、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、plugin_e2e 17/17、llm_e2e 9 组全过、smoke18 审计链 valid=True、node frontend/_selftest.js PASS=247 FAIL=0 |
 
 ---
 
@@ -99,7 +100,7 @@ ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条�
 
 实测输出（本机，节选）：
 
-    ZeroStep 评测：共 56 条任务
+    ZeroStep 评测：共 59 条任务
     ------------------------------------------------------------------------
     PASS  t01  查询本月账单                  query_bills
     PASS  t06  小额转账 800 元给妈妈           transfer
@@ -133,8 +134,11 @@ ZeroStep 用「56 条任务 + 声明式断言」验证整条流水线：每条�
     PASS  t54  流式阶段中途取消返回 cancelled 并补发 answer_end   insight
     PASS  t55  取消不撤销已执行工具且余额不变        insight
     PASS  t56  LLM 模式可解析消费洞察意图（本地桩模型）  insight
+    PASS  t57  还信用卡 8,432 元（独立还款意图）    credit_repay
+    PASS  t58  指定储蓄卡还信用卡（出账账户可选）       credit_repay
+    PASS  t59  还信用卡未给金额（不臆造金额）         credit_repay
     ------------------------------------------------------------------------
-    结果：56/56 通过，0 失败
+    结果：59/59 通过，0 失败
 
 退出码：全部通过为 0，存在失败为 1，没有匹配任务为 2。可直接用于 CI（.github/workflows/ci.yml 在 Python 3.10 与 3.12 上跑全量评测，再跑 replay.py 演示脚本）。
 
@@ -301,7 +305,7 @@ e2e_stream.py 的 33 项断言分四组：
 
 ---
 
-## 5. 56 条任务表（30 条基线 + 6 条 v0.2.0 新增 + 7 条 v0.4.0 新增 + 3 条 v0.4.1 新增 + 10 条 v0.5.0 新增）
+## 5. 59 条任务表（30 条基线 + 6 条 v0.2.0 新增 + 7 条 v0.4.0 新增 + 3 条 v0.4.1 新增 + 10 条 v0.5.0 新增 + 3 条 v0.6.2 新增）
 
 ### bills 账单（t01–t05）
 
@@ -340,6 +344,9 @@ e2e_stream.py 的 33 项断言分四组：
 | t16 | 冻结信用卡 | 把我的信用卡冻结 | awaiting_approval | risk=medium / confirm；审批后 ok，执行 set_card_status |
 | t17 | 申请虚拟卡 | 帮我申请一张虚拟卡 | awaiting_approval | risk=medium / confirm；审批后 ok，执行 apply_virtual_card |
 | t18 | 解冻信用卡 | 把我的信用卡解冻 | awaiting_approval | risk=medium / confirm；审批后 ok，执行 set_card_status |
+| t57 | 还信用卡 8,432 元 | 还信用卡 8432 元 | awaiting_approval | intent=credit_repay，plan_tools=[repay_credit]（不得出现 create_transfer / get_payees）；risk=medium / confirm；审批后从工资卡扣 8,432 元、信用卡欠款归零 |
+| t58 | 指定储蓄卡还信用卡 | 用储蓄卡还信用卡 3000 元 | awaiting_approval | intent=credit_repay（不得判成 card_spend）；出账账户为储蓄卡，审批后储蓄卡 -3,000、工资卡不变 |
+| t59 | 还款未给金额 | 还信用卡 | blocked | 拦码 AMOUNT_REQUIRED，plan_tools=[]，不产生任何资金操作，回复含「金额」 |
 
 ### subscription 订阅（t19–t22）
 
@@ -424,14 +431,29 @@ e2e_stream.py 的 33 项断言分四组：
 | t55 | insight | 取消不撤销已执行工具且余额不变 | 帮我看看这个月的消费洞察 | ok | stream checks=[balance_unchanged,executed_not_undone,audit_cancelled]；取消前后余额与支出合计不变，tool_end 仍保留 spending_insights |
 | t56 | insight | LLM 模式可解析消费洞察意图（本地桩模型） | 我最近的开销都去了哪里，帮我总结一下 | ok | mock_llm 返回 intent=insight，expected_intent_source=llm；plan_tools=[spending_insights]；insight_checks=[totals_match] |
 
-本轮 10 条的实测均为 PASS（t47–t56），合计 56/56；t53–t55 的完整流式断言另由 scripts/e2e_stream.py 33/33 兜底（见 3.4）。
+本轮 10 条的实测均为 PASS（t47–t56），合计 59/59；t53–t55 的完整流式断言另由 scripts/e2e_stream.py 33/33 兜底（见 3.4）。
+
+---
+
+### v0.6.2 新增（t57–t59）
+
+这 3 条属于 card 类别，验证「还款不是转账」这条边界：t57 用最常见说法确认意图与计划工具（只允许 repay_credit，出现 create_transfer 或 get_payees 即失败），t58 验证出账账户可选且不被 card_spend 抢走，t59 验证没给金额时拦截而不臆造。金额截断、已还清、余额不足、信用卡当出账账户这四条边界走不到「首轮状态」的断言口径，由 `scripts/smoke_repay.py` 的 9 组 engine 级断言覆盖（A 路由 / B 不误伤查询 / C 双向记账与总资产 / D 出账账户 / E 金额截断 / F 无金额 / G 无欠款 / H 余额不足 / I 非法出账账户）。
+
+| id | 类别 | 标题 | 用户输入 | 首轮状态 | 关键期望 |
+| --- | --- | --- | --- | --- | --- |
+| t57 | card | 还信用卡 8,432 元 | 还信用卡 8432 元 | awaiting_approval | intent=credit_repay，plan_tools=[repay_credit]；risk=medium / confirm；审批后 ok，执行 repay_credit，回复含「归还信用卡」 |
+| t58 | card | 指定储蓄卡还信用卡 | 用储蓄卡还信用卡 3000 元 | awaiting_approval | intent=credit_repay（不得为 card_spend）；出账账户=储蓄卡；回复含「储蓄卡」 |
+| t59 | card | 还款未给金额 | 还信用卡 | blocked | 拦码 AMOUNT_REQUIRED，plan_tools=[]，回复含「金额」；不动账、不臆造金额 |
+
+---
+
 ## 6. 隔离与可重复性
 
 - **独立数据库**：每条任务把 config.DB_PATH 临时指向仓库内 .eval_tmp/任务id/bank.db，跑完合并回原值并清理临时文件；任务之间零污染，可任意顺序、任意子集执行。
 - **确定性种子**：db.seed 用 random.Random(42)，账户余额、流水、收款人、理财、订阅每次都一样，断言可以写死具体金额与文案。
 - **双模式可切换**：compare_modes.py 用同一份种子数据与临时库，只切换解析模式后重跑，标准用例断言不受模式影响；解析失败回退规则也在同一批用例里被间接覆盖。
 - **真实时间语义**：审批 TTL 300 秒与撤销窗口 60 秒按真实时间计算；评测里审批是立即通过的，不会触发过期分支。TOTP 由 totp.current_code 现算，不依赖固定时钟。
-- **单线程顺序执行**：运行器串行跑任务，避免 SQLite 并发写干扰；每条任务通常毫秒级到百毫秒级，全量 56 条在本机数秒内完成（2026-10-28 实测全量 56/56 一次跑完，脚本自身计时见第 3 节输出）。
+- **单线程顺序执行**：运行器串行跑任务，避免 SQLite 并发写干扰；每条任务通常毫秒级到百毫秒级，全量 59 条在本机数秒内完成（2026-10-29 实测全量 59/59 一次跑完，脚本自身计时见第 3 节输出）。
 
 ---
 
@@ -440,8 +462,8 @@ e2e_stream.py 的 33 项断言分四组：
 加 --json 参数会生成如下结构的报告（scripts/eval_report.json 即示例产物）：
 
     {
-      "total": 56,
-      "passed": 56,
+      "total": 59,
+      "passed": 59,
       "failed": 0,
       "tasks": [
         {
@@ -469,7 +491,7 @@ CI（.github/workflows/ci.yml）在 Python 3.10 与 3.12 两个版本上执行�
     python scripts/run_tasks.py
     python scripts/replay.py --script scripts/demo_flow.json
 
-前者保证 56 条断言全过，后者保证 CLI 演示链路可跑通；流式链路另在本地跑 python scripts/e2e_stream.py（33 项断言，起真实 HTTP 服务，CI 未接入）。
+前者保证 59 条断言全过，后者保证 CLI 演示链路可跑通；流式链路另在本地跑 python scripts/e2e_stream.py（33 项断言，起真实 HTTP 服务，CI 未接入）。
 
 端到端演示流另有 scripts/smoke18.py（不受 CI 调用，供本地或评委复跑）：它在一个临时库上依次执行 17 轮真实对话与第 18 轮撤销，逐轮打印意图、状态、审批挑战类型与执行结果，最后汇总审计链校验、事件与业务表数量；带 --json 时把完整结构写入指定文件。本机实测（Python 3.14.6，2026-10-26）：18 轮 / 0.41 秒 / 审计链 valid=True、checked=56 / 本会话审计 56 条 / 事件 111 条 / 业务表 17 张，事件类型为 approval_required=7、intent=17、message=17、plan=17、session=17、tool_end=21、tool_start=14、undo_done=1；完整输出已随仓库提交在 scripts/smoke18_result.json。
 
@@ -477,7 +499,7 @@ CI（.github/workflows/ci.yml）在 Python 3.10 与 3.12 两个版本上执行�
 
 ## 8. 如何新增任务
 
-1. 在 bank-agent/tasks/ 下新建任务文件（编号必须补零，运行器按文件名排序加载，t100 会排在 t11 前面）。现网已占用 t01–t56，新任务从 t57 起按序编号；下面的示例用 t99 避免与现有文件冲突。
+1. 在 bank-agent/tasks/ 下新建任务文件（编号必须补零，运行器按文件名排序加载，t100 会排在 t11 前面）。现网已占用 t01–t59，新任务从 t60 起按序编号；下面的示例用 t99 避免与现有文件冲突。
 2. 写最小必填字段：id、category、title、turns、expect。expect 至少给 status 与 audit_valid。
 
 示例（新增用例，正式采用前需实跑确认）：

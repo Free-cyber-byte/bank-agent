@@ -1,0 +1,31 @@
+{
+  "id": "t58",
+  "title": "指定储蓄卡还信用卡（出账账户可选）",
+  "category": "card",
+  "user_id": "u001",
+  "turns": [
+    "用储蓄卡还信用卡 3000 元"
+  ],
+  "expect": {
+    "status": "awaiting_approval",
+    "intent": "credit_repay",
+    "plan_tools": [
+      "repay_credit"
+    ],
+    "approval": {
+      "risk": "medium",
+      "challenge": "confirm"
+    },
+    "audit_valid": true,
+    "after": {
+      "status": "ok",
+      "executed": [
+        "repay_credit"
+      ]
+    },
+    "reply_contains": [
+      "储蓄卡"
+    ]
+  },
+  "judge_rubric": "「用储蓄卡还信用卡」不能被判成信用卡消费（card_spend），必须走 credit_repay；出账账户是储蓄卡而不是默认工资卡，执行后储蓄卡扣 3000、信用卡欠款减少 3000。"
+}

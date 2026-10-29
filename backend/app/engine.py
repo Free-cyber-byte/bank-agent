@@ -235,6 +235,26 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
     elif name == "subscription_cancel":
         steps.append(_step("s1", "取消订阅", "cancel_subscription",
                            {"sub_id": slots.get("sub_id"), "merchant": slots.get("merchant")}))
+    elif name == "credit_repay":
+        # v0.6.2 信用卡还款：独立意图，不走转账。出账账户默认工资卡，用户说储蓄卡则从储蓄卡扣。
+        amount = int(slots.get("amount_cents") or 0)
+        credit = _account_of(conn, user_id, "credit")
+        payer = from_acc or check_acc
+        debt = -int(credit["balance_cents"]) if credit is not None and int(credit["balance_cents"]) < 0 else 0
+        if amount > 0 and debt and amount > debt:
+            # 还款金额按实际欠款截断：审批卡上展示的金额必须等于真正扣款的金额
+            amount = debt
+        if amount > 0:
+            payer_name = (payer or {}).get("name") or "工资卡"
+            credit_masked = (credit or {}).get("number_masked") or "信用卡"
+            steps.append(_step("s1", "从「%s」归还信用卡 %s %s" % (payer_name, credit_masked, yuan(amount)),
+                               "repay_credit", {
+                                   "amount_cents": amount,
+                                   "from_account_id": (payer or {}).get("account_id"),
+                                   "from_kind": (payer or {}).get("kind") or "checking",
+                                   "credit_account_id": (credit or {}).get("account_id"),
+                                   "credit_last4": credit_masked,
+                               }))
     elif name == "transfer":
         payee, is_new = _resolve_payee(conn, user_id, slots)
         amount = int(slots.get("amount_cents") or 0)
@@ -291,7 +311,13 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
                 steps.append(_step("s%d" % idx, "申购理财 %s" % yuan(amount), "purchase_wealth",
                                    {"product_id": pid, "amount_cents": amount, "product_name": prods.get(pid, hint)}))
             elif kind == "credit":
-                steps.append(_step("s%d" % idx, "还信用卡 %s" % yuan(amount), "repay_credit", {"amount_cents": amount}))
+                credit_acc = _account_of(conn, user_id, "credit")
+                steps.append(_step("s%d" % idx, "还信用卡 %s" % yuan(amount), "repay_credit", {
+                    "amount_cents": amount,
+                    "from_account_id": check_acc["account_id"] if check_acc else None,
+                    "from_kind": "checking",
+                    "credit_account_id": (credit_acc or {}).get("account_id"),
+                }))
             elif kind == "transfer":
                 pname = a.get("payee_name") or ""
                 if pname in ("她", "他", "对方", "那个人"):
@@ -413,6 +439,8 @@ def build_plan(conn, user_id: str, intent: Dict[str, Any], text: str) -> Dict[st
         planner_block = {"code": "AMOUNT_REQUIRED", "message": "请告诉我申购金额"}
     if name == "transfer" and not slots.get("amount_cents"):
         planner_block = {"code": "AMOUNT_REQUIRED", "message": "请告诉我转账金额"}
+    if name == "credit_repay" and not slots.get("amount_cents"):
+        planner_block = {"code": "AMOUNT_REQUIRED", "message": "请告诉我还信用卡的金额，例如「还信用卡 8432 元」"}
     if name == "card_limit" and slots.get("daily_limit_cents") is None and slots.get("single_limit_cents") is None:
         planner_block = {"code": "LIMIT_REQUIRED", "message": "请告诉我新的限额，例如「日累计限额 5000 元」或「单笔限额 2000 元」"}
     if name == "card_spend" and not slots.get("amount_cents"):
@@ -668,7 +696,9 @@ def _exec_tool(conn, user_id: str, session_id: str, thread_id: str, tool: str, a
     if tool == "purchase_wealth":
         return mock_core.purchase_wealth(conn, user_id, session_id, thread_id, args.get("product_id"), int(args.get("amount_cents") or 0))
     if tool == "repay_credit":
-        return mock_core.repay_credit(conn, user_id, int(args.get("amount_cents") or 0))
+        return mock_core.repay_credit(conn, user_id, int(args.get("amount_cents") or 0),
+                                      from_account_id=args.get("from_account_id") or "",
+                                      credit_account_id=args.get("credit_account_id") or "")
     if tool == "apply_virtual_card":
         return mock_core.apply_virtual_card(conn, user_id, int(args.get("daily_limit_cents") or 200000))
     if tool == "set_card_status":
@@ -888,6 +918,16 @@ def build_reply(intent: Dict[str, Any], results: List[Dict[str, Any]], action_id
         parts.append("已向「%s」转账 **%s**，账户余额变为 %s。" % (d.get("payee_name", ""), d.get("amount_display", ""), d.get("balance_after_display", "")))
         parts.append("已写入审计链，60 秒内可撤销。")
         undo = {"action_id": d.get("action_id"), "kind": "transfer"}
+    elif name == "credit_repay":
+        d = _find(results, "repay_credit") or {}
+        payer = d.get("from_account_name") or "工资卡"
+        parts.append("已从「%s」扣款 **%s** 归还信用卡，信用卡当前待还 %s。" % (
+            payer, d.get("paid_display", ""), yuan(int(d.get("debt_after_cents") or 0))))
+        if int(d.get("debt_after_cents") or 0):
+            parts.append("剩余待还 %s，可继续还款。" % yuan(int(d.get("debt_after_cents") or 0)))
+        else:
+            parts.append("信用卡欠款已结清。")
+        parts.append("已写入审计链；信用卡还款到账后不可撤销。")
     elif name == "cross_scenario":
         parts.append("已按你的要求完成：")
         for r in results:
@@ -1031,6 +1071,15 @@ def _approval_preview(conn, user_id: str, steps: List[Dict[str, Any]]) -> Tuple[
         elif s["tool"] == "repay_credit":
             amount += int(s["args"].get("amount_cents") or 0)
             counterparty = counterparty or "信用卡还款"
+            payer = None
+            if s["args"].get("from_account_id"):
+                payer = conn.execute("SELECT * FROM accounts WHERE account_id=?", (s["args"].get("from_account_id"),)).fetchone()
+            if payer is None:
+                payer = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='checking' ORDER BY account_id LIMIT 1", (user_id,)).fetchone()
+            if payer:
+                after = int(payer["balance_cents"]) - int(s["args"].get("amount_cents") or 0)
+                preview = "执行后「%s」余额将从 %s 变为 %s（信用卡还款到账后不可撤销）" % (
+                    payer["name"], yuan(int(payer["balance_cents"])), yuan(after))
         elif s["tool"] == "create_scheduled_transfer":
             amount += int(s["args"].get("amount_cents") or 0)
             counterparty = s["args"].get("payee_name") or counterparty
@@ -1080,6 +1129,13 @@ def _approval_party_account(conn, steps: List[Dict[str, Any]]) -> str:
             return mask_account(s["args"].get("payee_account") or "") or "手机号转账"
         if s["tool"] == "redeem_wealth":
             return "理财账户"
+        if s["tool"] == "repay_credit":
+            if s["args"].get("credit_last4"):
+                return str(s["args"].get("credit_last4"))
+            row = conn.execute("SELECT number_masked FROM accounts WHERE kind='credit' ORDER BY account_id LIMIT 1").fetchone()
+            if row:
+                return row["number_masked"]
+            return "信用卡"
     return ""
 
 
@@ -1120,6 +1176,10 @@ def _blocked_reply(blocked: Dict[str, str]) -> str:
         "INSUFFICIENT_FUNDS": "已拦截：账户可用余额不足，未执行任何资金操作。",
         "NEW_PAYEE_UNVERIFIED": "已拦截：首次向新收款人转账，必须先补充并核实收款人账户信息，防止冒充熟人诈骗。",
         "PAYEE_REQUIRED": "已拦截：没有识别到合法收款人，请补充收款人姓名与账户。",
+        "NO_OUTSTANDING_DEBT": "已拦截：当前信用卡没有待还欠款，未执行任何资金操作。",
+        "AMOUNT_INVALID": "已拦截：金额必须大于 0，未执行任何资金操作。",
+        "INVALID_FROM_ACCOUNT": "已拦截：不能用信用卡还信用卡，请选择工资卡或储蓄卡作为出账账户。",
+        "AMOUNT_REQUIRED": "请告诉我还款金额，例如「还信用卡 8432 元」。",
     }
     return mapping.get(code, "已拦截：" + blocked.get("message", "该操作不符合安全策略"))
 
@@ -1140,7 +1200,9 @@ def _finalize(conn, ctx: Dict[str, Any], exec_result: Dict[str, Any], emit: Emit
     failed = exec_result["failed"]
     results = exec_result["results"]
     if failed:
-        reply = _blocked_reply(failed) if failed["code"] in ("INSUFFICIENT_FUNDS", "LIMIT_EXCEEDED") else "操作未完成：" + failed["message"]
+        reply = _blocked_reply(failed) if failed["code"] in (
+            "INSUFFICIENT_FUNDS", "LIMIT_EXCEEDED", "NO_OUTSTANDING_DEBT", "AMOUNT_INVALID",
+            "INVALID_FROM_ACCOUNT", "AMOUNT_REQUIRED") else "操作未完成：" + failed["message"]
         status = "blocked"
         undo = None
         audit.append(conn, "turn_blocked", session_id=ctx["session_id"], tool=failed.get("tool", ""),

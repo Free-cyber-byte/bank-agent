@@ -219,12 +219,49 @@ def evaluate(conn, user_id: str, steps: List[Dict[str, Any]], intent: Dict[str, 
                     continue
         elif tool == "repay_credit":
             step_risk = "medium"
-            amount_total += int(args.get("amount_cents") or 0)
+            repay = int(args.get("amount_cents") or 0)
+            amount_total += repay
             counterparty = "信用卡还款"
-            action_summary = "归还信用卡欠款 %s" % yuan(int(args.get("amount_cents") or 0))
+            # v0.6.2：还款必须校验出账账户余额与信用卡实际欠款，不能把「余额不足/已还清」留到执行期
+            payer = None
+            if args.get("from_account_id"):
+                payer = conn.execute("SELECT * FROM accounts WHERE account_id=? AND user_id=?",
+                                     (args.get("from_account_id"), user_id)).fetchone()
+            if payer is None:
+                kind = str(args.get("from_kind") or "checking")
+                if kind == "credit":
+                    kind = "checking"
+                payer = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind=? ORDER BY account_id LIMIT 1",
+                                     (user_id, kind)).fetchone()
+            payer_name = payer["name"] if payer else "工资卡"
+            action_summary = "从「%s」归还信用卡 %s" % (payer_name, yuan(repay))
+            credit = None
+            if args.get("credit_account_id"):
+                credit = conn.execute("SELECT * FROM accounts WHERE account_id=? AND user_id=?",
+                                      (args.get("credit_account_id"), user_id)).fetchone()
+            if credit is None:
+                credit = conn.execute("SELECT * FROM accounts WHERE user_id=? AND kind='credit' ORDER BY account_id LIMIT 1",
+                                      (user_id,)).fetchone()
+            if repay <= 0:
+                blocked = blocked or {"code": "AMOUNT_INVALID", "message": "还款金额必须大于 0"}
+                _add_hit(hits, _hit("amount_invalid", "金额", "high", "还款金额必须大于 0", value=repay, threshold=0))
+                continue
+            if credit is not None and int(credit["balance_cents"]) >= 0:
+                blocked = blocked or {"code": "NO_OUTSTANDING_DEBT", "message": "当前信用卡没有待还欠款"}
+                _add_hit(hits, _hit("no_outstanding_debt", "金额（欠款）", "medium",
+                                    "信用卡当前欠款为 0，无需还款", value=0, threshold=0))
+                continue
+            if payer is not None and int(payer["balance_cents"]) < repay:
+                blocked = blocked or {"code": "INSUFFICIENT_FUNDS",
+                                      "message": "「%s」余额不足，当前 %s" % (payer_name, yuan(int(payer["balance_cents"])))}
+                _add_hit(hits, _hit("insufficient_funds", "金额（余额）", "high",
+                                    "「%s」可用 %s 元 < 还款金额 %s 元" % (
+                                        payer_name, yuan(int(payer["balance_cents"])), yuan(repay)),
+                                    value=repay, threshold=int(payer["balance_cents"])))
+                continue
             _add_hit(hits, _hit("irreversible", "可逆性", "medium",
-                                "信用卡还款 %s 元到账后不可撤销" % yuan(int(args.get("amount_cents") or 0)),
-                                value=int(args.get("amount_cents") or 0), threshold=0))
+                                "信用卡还款 %s 元到账后不可撤销" % yuan(repay),
+                                value=repay, threshold=0))
         elif tool in ("cancel_subscription", "apply_virtual_card"):
             step_risk = "medium"
             if tool == "cancel_subscription":

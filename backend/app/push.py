@@ -186,8 +186,9 @@ def build_repayment(conn, user_id: str) -> Dict[str, Any]:
     days = (due - today).days
     title = "还款提醒：信用卡待还 %s" % amount
     text = ("信用卡 %s 当前待还 %s，最晚 %s 还款（还有 %d 天）。"
-            "建议从工资卡还款，回复「还信用卡 %s」即可，需要二次确认并写入审计链。") % (
-        acc.get("number_masked") or "****", amount, due.isoformat(), days, amount)
+            "回复「还信用卡 %s」即可从工资卡还款（也可说「还信用卡 %s 元，用储蓄卡」，指定出账账户），"
+            "需要二次确认并写入审计链。") % (
+        acc.get("number_masked") or "****", amount, due.isoformat(), days, amount, amount)
     return {"ok": True, "kind": "repayment", "title": title, "text": text,
             "data": {"account_id": acc.get("account_id"), "number_masked": acc.get("number_masked"),
                      "debt_cents": debt, "debt_display": amount, "due_date": due.isoformat(), "days_left": days}}

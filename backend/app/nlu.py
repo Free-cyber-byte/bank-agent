@@ -130,6 +130,8 @@ def _cn_to_int(s: str) -> Optional[int]:
 
 def extract_amount(text: str) -> Optional[int]:
     t = _normalize(text)
+    # 千分位逗号不是金额信号："¥8,432.00" 曾被解析成 "¥8"
+    t = re.sub(r"(?<=\d),(?=\d)", "", t)
     m = re.search(r"(\d+(?:\.\d{1,2})?)\s*(万|千)", t)
     if m:
         val = float(m.group(1)) * (10000 if m.group(2) == "万" else 1000)
@@ -145,7 +147,7 @@ def extract_amount(text: str) -> Optional[int]:
         v = _cn_to_int(m.group(1))
         if v:
             return v * 100
-    m = re.search(r"(?:转|汇|打|申购|买入|买|充值|存)\s*(\d+(?:\.\d{1,2})?)", t)
+    m = re.search(r"(?:转|汇|打|申购|买入|买|充值|存|还|归还|偿还)\s*(\d+(?:\.\d{1,2})?)", t)
     if m:
         return int(round(float(m.group(1)) * 100))
     return None
@@ -390,7 +392,8 @@ def parse(text: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
         return {"name": "wealth_redeem", "confidence": 0.9, "source": "rule", "slots": slots}
     if "amount_cents" in slots and re.search(
             r"(信用卡消费|储蓄卡消费|借记卡消费|虚拟卡消费|刷卡|用卡消费|刷信用卡|刷储蓄卡|刷借记卡|刷虚拟卡"
-            r"|用信用卡|用储蓄卡|用借记卡|用虚拟卡)", t):
+            r"|用信用卡|用储蓄卡|用借记卡|用虚拟卡)", t) and not re.search(
+            r"(还|归还|还掉|偿还|还款|偿付)", t):
         return {"name": "card_spend", "confidence": 0.9, "source": "rule", "slots": slots}
     if has_card and re.search(r"((额度|限额).{0,10}(调|改|设|提高|降低|调整|设置))|((调|改|设|提高|降低|调整|设置).{0,10}(额度|限额))", t):
         def _limit_cents(mm):
@@ -421,6 +424,29 @@ def parse(text: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     cross_strong = alloc_count >= 2 or bool(re.search(r"(分账|发工资|工资到账|生日|订个提醒|提醒我)", t))
     if has_cross and cross_strong:
         return {"name": "cross_scenario", "confidence": 0.85, "source": "rule", "slots": slots}
+
+    # v0.6.2 信用卡还款：独立的还款意图，先于「卡片查询」判定。
+    # 还款不是转账——信用卡不是收款人，绝不能走 create_transfer 的收款人校验。
+    repay_signal = bool(re.search(
+        r"(?:还|归还|还掉|偿还|还款|偿付)\s*(?:款)?\s*(?:给|到|至|进)?\s*(?:我的|本人)?\s*信用卡"
+        r"|信用卡\s*的?\s*(?:还款|还钱|偿还|账单还款|欠款|还)"
+        r"|(?:转账|转|存|打款?|汇款?|划款?|取现?|取)\s*(?:移)?\s*(?:到|至|进|入|还)\s*(?:我的|本人)?信用卡", t))
+    repay_query = bool(re.search(r"(多少|几号|哪天|账单|明细|流水|记录|查询|查一下|看看|额度|限额|余额|利率|免息)", t))
+    if repay_signal and not repay_query:
+        # 金额在「还」之前的说法（「8432 还信用卡」「把储蓄卡 8432 还信用卡」）通用金额抽取抓不到，这里补一次
+        if "amount_cents" not in slots:
+            m = re.search(r"(\d+(?:\.\d{1,2})?)\s*(万|千)?\s*(?:元|块)?\s*(?:还|归还|还掉|偿还|偿付)\s*(?:款)?\s*(?:给|到|至|进)?\s*(?:我的|本人)?\s*信用卡", t)
+            if m:
+                mult = {"万": 10000, "千": 1000}.get(m.group(2) or "", 1)
+                slots["amount_cents"] = int(round(float(m.group(1)) * mult * 100))
+        # 出账账户：储蓄卡/借记卡 → 储蓄卡；其余默认工资卡（活期）。信用卡本身不能作为出账账户。
+        if re.search(r"(储蓄卡|借记卡)", t):
+            slots["from_kind"] = "savings"
+        else:
+            slots["from_kind"] = "checking"
+        slots["card_kind"] = "credit"
+        return {"name": "credit_repay", "confidence": 0.9, "source": "rule", "slots": slots}
+
     if has_card:
         if re.search(r"(冻结|挂失)", t):
             return {"name": "card_freeze", "confidence": 0.9, "source": "rule", "slots": slots}
@@ -487,7 +513,10 @@ def parse_cross(text: str, ctx: Dict[str, Any]) -> Dict[str, Any]:
     m = re.search(r"(\d+(?:\.\d+)?)\s*(万|千)?\s*(?:元|块)?\s*(?:买|申购|投|认购)\s*(?:点|些)?(稳健|稳利宝|增利宝|指数|理财|基金|货币)", t)
     if m:
         allocs.append({"kind": "wealth", "amount_cents": to_cents(m.group(1), m.group(2)), "hint": m.group(3)})
-    m = re.search(r"(\d+(?:\.\d+)?)\s*(万|千)?\s*(?:元|块)?\s*(?:还|还掉|归还)\s*信用卡", t)
+    m = re.search(r"(\d+(?:\.\d+)?)\s*(万|千)?\s*(?:元|块)?\s*(?:还|还掉|归还|偿还)\s*信用卡", t)
+    if not m:
+        # 也支持「还信用卡 8432 元」这种金额在后的说法，避免组合任务里丢掉还款项
+        m = re.search(r"(?:还|还掉|归还|偿还)\s*信用卡\s*(\d+(?:\.\d+)?)\s*(万|千)?", t)
     if m:
         allocs.append({"kind": "credit", "amount_cents": to_cents(m.group(1), m.group(2))})
     has_reminder = bool(re.search(r"(提醒|提醒我|订个提醒|日程)", t))
