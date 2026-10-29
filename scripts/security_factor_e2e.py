@@ -548,8 +548,8 @@ def scenario_env(app, c):
           status == 200 and _status(health) == "ok" and str(_dig(health, "version") or "") == VERSION_FILE.read_text(encoding="utf-8").strip(),
           "http=%s %s" % (status, _short(health)))
     seed_version = str(_dig(health, "seed_version") or "")
-    c.add("sec-env-2", "health.seed_version 为 2026.10.29（v0.4.1 未改种子）",
-          seed_version == "2026.10.29", "seed_version=%r" % seed_version)
+    c.add("sec-env-2", "health.seed_version 与 v0.8.0 起冻结的种子版本一致（2026.11.01）",
+          seed_version == "2026.11.01", "seed_version=%r" % seed_version)
 
     status, sms, _ = _demo_sms(port)
     code = str(_dig(sms, "code") or "")

@@ -616,8 +616,8 @@ def scenario_env(app, c):
           bool(version) and bool(file_version) and version == file_version,
           "health.version=%r file=%r" % (version, file_version))
     seed_version = str(_dig(health, "seed_version") or "")
-    c.add("cap-env-2b", "health.seed_version 为契约确认的 2026.10.29",
-          seed_version == "2026.10.29", "seed_version=%r" % seed_version)
+    c.add("cap-env-2b", "health.seed_version 与 v0.8.0 起冻结的种子版本一致（2026.11.01）",
+          seed_version == "2026.11.01", "seed_version=%r" % seed_version)
 
     status, reset, _ = _post(port, "/api/admin/reset", {})
     c.add("cap-env-3", "POST /api/admin/reset 成功（200 + reset=True）",
