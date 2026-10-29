@@ -30,6 +30,7 @@
 
   <nav class="topnav" id="topNav" aria-label="主导航">
     <button class="topnav__btn is-on" type="button" data-nav="home">工作台</button>
+    <button class="topnav__btn" type="button" data-nav="zone">专区</button>
     <button class="topnav__btn" type="button" data-nav="skills">技能</button>
     <button class="topnav__btn" type="button" data-nav="plugins">插件</button>
     <button class="topnav__btn" type="button" data-nav="services">外部服务</button>
@@ -47,6 +48,9 @@
 
   <div class="topbar__right">
     <span class="effective" id="modeBadge" title="推理模式"><i class="effective__dot"></i><span class="effective__text">实际：规则</span></span>
+    <button class="icon-btn" type="button" id="btnTheme" aria-label="切换外观" title="外观：跟随系统">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v2M12 19v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M3 12h2M19 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/><circle cx="12" cy="12" r="3.4"/></svg>
+    </button>
     <button class="btn-text" type="button" id="btnAudit">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h10"/></svg>审计
     </button>
@@ -184,6 +188,27 @@
     <div class="trace__foot">工具调用由确定性代码执行，结果写入哈希链。</div>
   </aside>
 </div>
+
+<!-- ===== 专区（仪表盘 / 分析） ===== -->
+<section class="screen screen--zone" id="scr-zone">
+  <div class="screen__head">
+    <div>
+      <div class="eyebrow screen__eyebrow">专区</div>
+      <h1 class="screen__h1" id="zoneH1">钱在哪、花在哪、要不要动手</h1>
+      <p class="screen__sub" id="zoneSub">只读聚合：数据与对话共用同一套账本口径，看数不会改动任何账户，也不写审计链。</p>
+    </div>
+    <div class="screen__acts">
+      <span class="zone__stamp" id="zoneStamp">尚未加载</span>
+      <button class="btn-text" type="button" id="btnZoneRefresh">刷新</button>
+      <button class="btn-secondary" type="button" data-nav="home">返回工作台</button>
+    </div>
+  </div>
+  <div class="ztabs" role="tablist" aria-label="专区视图">
+    <button class="ztabs__btn is-on" type="button" role="tab" data-zone="dashboard" aria-selected="true">仪表盘</button>
+    <button class="ztabs__btn" type="button" role="tab" data-zone="analytics" aria-selected="false">分析</button>
+  </div>
+  <div class="zone__body" id="zoneBody" aria-live="polite"></div>
+</section>
 
 <!-- ===== 技能页 ===== -->
 <section class="screen" id="scr-skills">
@@ -432,6 +457,7 @@
 
 <!-- ===== 更多菜单 ===== -->
 <div class="menu" id="moreMenu" hidden>
+  <button class="menu__item menu__item--nav" type="button" data-nav="zone">专区</button>
   <button class="menu__item menu__item--nav" type="button" data-nav="skills">技能</button>
   <button class="menu__item menu__item--nav" type="button" data-nav="plugins">插件</button>
   <button class="menu__item menu__item--nav" type="button" data-nav="services">外部服务</button>
@@ -474,6 +500,10 @@
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 10.5 12 4l8 6.5V20H4z"/><path d="M9.5 20v-5h5v5"/></svg>
     <span>工作台</span>
   </button>
+  <button class="tabbar__btn" type="button" data-nav="zone" aria-label="专区">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V9M10 20V4M16 20v-7M22 20H2"/></svg>
+    <span>专区</span>
+  </button>
   <button class="tabbar__btn" type="button" data-nav="skills" aria-label="技能">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l2.2 4.6 5 .7-3.6 3.5.9 5-4.5-2.4-4.5 2.4.9-5L4.8 9.3l5-.7z"/></svg>
     <span>技能</span>
@@ -487,6 +517,16 @@
     <span>设置</span>
   </button>
 </nav>
+
+<!-- ===== 命令面板（Ctrl / Cmd + K） ===== -->
+<div class="palette" id="palette" hidden>
+  <div class="palette__card" role="dialog" aria-modal="true" aria-label="命令面板">
+    <input class="palette__input" id="paletteInput" type="text" autocomplete="off" spellcheck="false"
+           placeholder="输入命令：仪表盘 / 分析 / 审计 / 切换外观…">
+    <div class="palette__list" id="paletteList" role="listbox" aria-label="命令列表"></div>
+    <div class="palette__foot">↑↓ 选择 · Enter 执行 · Esc 关闭</div>
+  </div>
+</div>
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 

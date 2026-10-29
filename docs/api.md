@@ -384,9 +384,9 @@ Key 无效（HTTP 401）：
 - GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "chain": { "valid": true, "checked": 21, "broken_at": null, "reason": null } }
   entry 字段：seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash, hash
 - GET /api/events?session_id=...&after=0 → { "events": [ { "seq": 1, "type": "message", "payload": {...} } ] }  // 会话回放
-- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.6.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.6.0；改 VERSION 后需重启进程生效
+- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.7.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.7.0；改 VERSION 后需重启进程生效
 - GET /api/tasks[?limit=N&offset=M] → 任务列表，前端快捷按钮；user_input 即 turns[0]。
-  无参数时与旧版完全一致，只返回 tasks（全部 56 条）：
+  无参数时与旧版完全一致，只返回 tasks（全部 59 条）：
 
     { "tasks": [ { "id": "t01", "title": "查账单", "category": "bills", "user_input": "帮我看看这个月花了多少钱", "expect": {...} }, ... ] }
 
@@ -397,13 +397,13 @@ Key 无效（HTTP 401）：
     {
       "tasks": [ { "id": "t07", ... }, { "id": "t08", ... }, { "id": "t09", ... },
                  { "id": "t10", ... }, { "id": "t11", ... }, { "id": "t12", ... } ],
-      "total": 56,
+      "total": 59,
       "offset": 6,
       "limit": 6,
       "has_more": true
     }
 
-  offset=54 时只返回 t55、t56 且 has_more=false；offset=999 时 tasks=[]、total 仍为 56、has_more=false。has_more 的判定为 offset + 本页条数 < total。分页以请求是否出现 limit 为准：只传 offset 不触发分页，仍返回全部 56 条；limit=0 或大于 50 按默认 6 处理，offset 为负数按 0 处理。
+  offset=54 时返回 t55–t59 共 5 条且 has_more=false；offset=60 时 tasks=[]、total 仍为 59、has_more=false。has_more 的判定为 offset + 本页条数 < total。分页以请求是否出现 limit 为准：只传 offset 不触发分页，仍返回全部 59 条；limit=0 或大于 50 按默认 6 处理，offset 为负数按 0 处理。
 - GET /api/demo/totp?user_id=u001 → { "user_id":"u001", "code":"246810", "seconds_left":18 }  // 仅 DEMO_MODE 开启时可用，否则 403 DEMO_MODE_DISABLED
 
 ### v0.2.0 新增只读接口
@@ -872,6 +872,89 @@ v0.4.1 的红色动作（challenge.type=totp，如挂失 / 解挂、大额转账
 - 判定规则：同一商户连续出现 3 次及以上、相邻间隔在 25–35 天、相邻金额差不超过 10%，才算周期扣费；confidence = 60 + 10 ×（次数 - 2），上限 90。
 - detected 按 monthly_cents 降序；registered 表示命中已登记订阅（此时 sub_id 非空）；category 取最近一笔交易的分类；subscription_like 为 true 表示可归为订阅（已登记或分类为订阅），false 的进 fixed_cycles 做说明。
 - unregistered_monthly_cents 是未登记订阅的每月合计；演示种子 5 项订阅均已登记，因此为 0。
+### v0.7.0 新增只读聚合接口：数据专区
+
+两个接口都只读：不写 transactions、不写 events、不写 audit，不产生审批，也不占用幂等键。金额一律整数分 + `*_display` 展示串。
+
+#### GET /api/dashboard
+
+    GET /api/dashboard?session_id=s_29fb3a938c63&window=30d
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| session_id | 是 | 会话 id；未知会话 404 `SESSION_NOT_FOUND` |
+| window | 否 | `7d` / `30d` / `90d` / `180d` / `6m` / `1y`，默认 `30d`；**未知值回落 30d，不报错** |
+
+响应（2026-10-29 演示种子实测，节选）：
+
+    {
+      "as_of": "2026-10-29",
+      "window": { "kind": "30d", "days": 30, "from": "2026-09-30", "to": "2026-10-29" },
+      "kpis": {
+        "net_worth_cents": 7942850, "net_worth_display": "¥79,428.50",
+        "available_cents": 5786050, "available_display": "¥57,860.50",
+        "holdings_cents": 3000000,
+        "credit_due_cents": 843200, "credit_due_display": "¥8,432.00",
+        "month_out_cents": 2443271, "month_in_cents": 2500001, "net_flow_cents": 56730,
+        "month": "2026-10",
+        "deltas": { "month_out_pct": 47, "month_in_pct": 0, "net_flow_pct": -93 },
+        "prev": { "month": "2026-09", "out_cents": 1653372, "in_cents": 2500001, "net_cents": 846629 },
+        "sparklines": { "out_cents": [ … 14 个点 … ], "in_cents": [ … ], "days": [ … ] }
+      },
+      "trend": { "months": [ { "month": "2026-05", "in_cents": 2500001, "out_cents": 1728767, "net_cents": 771234 } ], "unit": "cents" },
+      "budget": [ { "category": "购物", "limit_cents": 200000, "used_cents": 1158671,
+                    "remaining_cents": -958671, "pct": 579, "state": "over" } ],
+      "composition": { "total_out_cents": 2443271,
+                       "by_category": [ { "category": "购物", "cents": 1158671, "display": "¥11,586.71", "pct": 47.1 } ],
+                       "by_account": [ { "account_id": "acc_001", "kind": "checking", "number_masked": "**** 8821", "balance_cents": 1286050 } ],
+                       "holdings_cents": 3000000 },
+      "todo": { "rows": [ { "kind": "approval", "label": "待你确认的操作", "count": 4, "detail": "…", "target": "workbench" } ],
+                "pending_approvals": 4, "anomaly_count": 3, "subscriptions_due": 2, "scheduled_pending": 0,
+                "chain": { "valid": true, "checked": 22 } },
+      "recent": [ { "txn_id": "T00349", "ts": "2026-10-29T09:12:00", "direction": "in",
+                    "amount_cents": 1, "amount_display": "¥0.01", "category": "其他",
+                    "counterparty": "扫码返现", "account_last4": "**** 8821" } ]
+    }
+
+口径：`net_worth_cents = available_cents + holdings_cents − credit_due_cents`；`deltas` 以「上月同日」为基线，基线期样本不足 ¥100 时该字段为 `null`（前端显示「—」）；`composition.by_category` 只取前 6 类，因此占比合计可能小于 100，`total_out_cents` 仍是完整总额；`recent` 固定 8 条，按 `ts` 倒序。
+
+#### GET /api/analytics
+
+    GET /api/analytics?session_id=s_29fb3a938c63&from=2026-05-01&to=2026-10-29&granularity=month
+
+| 参数 | 必填 | 说明 |
+| --- | --- | --- |
+| session_id | 是 | 未知会话 404 `SESSION_NOT_FOUND` |
+| from / to | 否 | `YYYY-MM-DD`，缺省近 180 天；解析失败、`from > to`、跨度 > 400 天 → 400 `BAD_RANGE` |
+| granularity | 否 | `day` / `week` / `month`，默认 `month`；日粒度桶数上限 120，超出 400 `BAD_RANGE` |
+
+响应（节选）：
+
+    {
+      "as_of": "2026-10-29",
+      "range": { "start": "2026-05-03", "end": "2026-10-29", "span_days": 180,
+                 "granularity": "month", "buckets": 6, "prev": { "start": "2025-11-04", "end": "2026-05-02" } },
+      "totals": { "in_cents": 15000001, "out_cents": 11125135, "net_cents": 3883233, "txn_count": 353,
+                  "avg_day_out_cents": 61760, "avg_day_out_display": "¥617.60",
+                  "prev_in_cents": 0, "prev_out_cents": 8367, "out_delta_pct": null, "in_delta_pct": null },
+      "series": [ { "bucket": "2026-05", "in_cents": 2500001, "out_cents": 1728767, "net_cents": 771234, "count": 53 } ],
+      "categories": [ { "category": "购物", "cents": 3162704, "pct": 28.45, "prev_cents": 0, "delta_pct": null,
+                        "budget_cents": 1200000, "budget_pct": 264, "over_budget": true } ],
+      "merchants": [ { "merchant": "房东王姐", "cents": 2700000, "pct": 24.3, "count": 6 } ],
+      "transactions": [ { "txn_id": "T00349", "ts": "2026-10-29T09:12:00", "direction": "in", "amount_cents": 1,
+                          "amount_display": "¥0.01", "category": "其他", "counterparty": "扫码返现", "account_last4": "**** 8821" } ],
+      "anomalies": [ { "txn_id": "T00xxx", "ts": "2026-10-26T02:30:00", "amount_cents": 86000,
+                       "amount_display": "¥860.00", "rule": "late_night_large", "level": "warn", "detail": "…" } ],
+      "subscriptions": [ { "name": "爱奇艺 VIP", "amount_cents": 2500, "next_charge": "2026-11-04", "days_left": 6 } ],
+      "savings": { "potential_cents": 950671, "potential_display": "¥9,506.71", "savings_rate": 0.2, "suggestions": ["…"] }
+    }
+
+约束：`series.length == range.buckets`（按桶补零，`day` 形如 `2026-10-29`、`week` 形如 `2026-W44`、`month` 形如 `2026-10`）；`transactions` 最多 100 条、按 `ts` 倒序；`anomalies` 最多 10 条；`merchants` 最多 10 条。
+
+#### 只读性
+
+两个接口都不写库。`scripts/dashboard_e2e.py` 的 `ana-17` / `ana-18` 在连续调用前后各取一次 `/api/audit` 与 `/api/transactions`，断言审计链 `checked` 不变、`valid` 仍为 `true`、流水条数不变。
+
 ## 5. 审计哈希链
 
 - 每条审计行：payload = {seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash}；hash = sha256(canonical_json(payload))。canonical_json 指键排序 + 紧凑分隔符 + 不转义非 ASCII（audit.canonical）。prev_hash 是 payload 的一个普通字段，取上一行 hash，首行为 64 个 0；args_hash / result_hash 分别是对参数与结果做同样 canonical 序列化后的 sha256。

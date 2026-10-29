@@ -318,6 +318,15 @@ const doc = {
     return out;
   },
   addEventListener: function (t, fn) { (doc._listeners[t] = doc._listeners[t] || []).push(fn); },
+  removeEventListener: function (t, fn) {
+    const l = doc._listeners[t];
+    if (l) doc._listeners[t] = l.filter(function (f) { return f !== fn; });
+  },
+  dispatchEvent: function (ev) {
+    ev.target = ev.target || doc;
+    (doc._listeners[ev.type] || []).slice().forEach(function (fn) { ev.currentTarget = doc; fn.call(doc, ev); });
+    return !ev._prevented;
+  },
   execCommand: function () { return true; }
 };
 const body = new Node('body', doc);
@@ -387,6 +396,137 @@ const AUDIT_ROWS = [
 ];
 FIX.audit.entries = AUDIT_ROWS;
 
+// ---- v0.7.0 专区：仪表盘 / 分析 固定数据 ----
+const SPARK_OUT = [6100, 8200, 5400, 9100, 7300, 10400, 8600, 7800, 11200, 9400, 8900, 12100, 10200, 11500];
+const SPARK_IN = [0, 0, 25000, 0, 0, 0, 0, 0, 0, 0, 0, 25000, 0, 0];
+FIX.dashboard = {
+  as_of: '2026-10-29T13:20:00+08:00',
+  window: { kind: '30d', days: 30, from: '2026-09-30', to: '2026-10-29' },
+  kpis: {
+    net_worth_cents: 7942850, net_worth_display: '¥79,428.50',
+    available_cents: 5786050, available_display: '¥57,860.50',
+    holdings_cents: 3000000, holdings_display: '¥30,000.00',
+    credit_due_cents: 843200, credit_due_display: '¥8,432.00',
+    month_out_cents: 2443271, month_out_display: '¥24,432.71',
+    month_in_cents: 2500001, month_in_display: '¥25,000.01',
+    net_flow_cents: 56730, net_flow_display: '¥567.30',
+    month: '2026-10',
+    deltas: { month_out_pct: 47, month_in_pct: 0, net_flow_pct: -93 },
+    prev: { month: '2026-09', out_cents: 1663000, in_cents: 2500001, net_cents: 837001 },
+    sparklines: { out_cents: SPARK_OUT, in_cents: SPARK_IN }
+  },
+  trend: {
+    unit: 'cents',
+    months: [
+      { month: '2026-05', in_cents: 25000000, out_cents: 17300000, net_cents: 7700000 },
+      { month: '2026-06', in_cents: 25000000, out_cents: 17200000, net_cents: 7800000 },
+      { month: '2026-07', in_cents: 25000000, out_cents: 17900000, net_cents: 7100000 },
+      { month: '2026-08', in_cents: 25000000, out_cents: 17900000, net_cents: 7100000 },
+      { month: '2026-09', in_cents: 25000000, out_cents: 16600000, net_cents: 8400000 },
+      { month: '2026-10', in_cents: 25000001, out_cents: 2443271, net_cents: 56730 }
+    ]
+  },
+  budget: [
+    { category: '购物', limit_cents: 200000, used_cents: 1150000, remaining_cents: -950000, pct: 575, state: 'over' },
+    { category: '居住', limit_cents: 500000, used_cents: 480000, remaining_cents: 20000, pct: 96, state: 'warn' },
+    { category: '订阅', limit_cents: 30000, used_cents: 25500, remaining_cents: 4500, pct: 85, state: 'warn' },
+    { category: '餐饮', limit_cents: 300000, used_cents: 213000, remaining_cents: 87000, pct: 71, state: 'ok' },
+    { category: '娱乐', limit_cents: 100000, used_cents: 58000, remaining_cents: 42000, pct: 58, state: 'ok' },
+    { category: '交通', limit_cents: 80000, used_cents: 8000, remaining_cents: 72000, pct: 10, state: 'ok' }
+  ],
+  composition: {
+    total_out_cents: 2443271,
+    by_category: [
+      { category: '购物', cents: 1150000, display: '¥11,500.00', pct: 47.1 },
+      { category: '居住', cents: 478600, display: '¥4,786.00', pct: 19.6 },
+      { category: '还款', cents: 300000, display: '¥3,000.00', pct: 12.3 },
+      { category: '餐饮', cents: 212300, display: '¥2,123.00', pct: 8.7 },
+      { category: '转账', cents: 200000, display: '¥2,000.00', pct: 8.2 }
+    ],
+    by_account: [
+      { account_id: 'a1', name: '工资卡', kind: 'checking', number_masked: '**** 8821', balance_cents: 1284450, balance_display: '¥12,844.50' },
+      { account_id: 'a2', name: '信用卡', kind: 'credit', number_masked: '**** 6712', balance_cents: -843200, balance_display: '-¥8,432.00' },
+      { account_id: 'a3', name: '储蓄', kind: 'savings', number_masked: '**** 3390', balance_cents: 4500000, balance_display: '¥45,000.00' }
+    ],
+    holdings_cents: 3000000, holdings_display: '¥30,000.00'
+  },
+  todo: {
+    rows: [
+      { kind: 'subscription', label: '未来 3 天有 2 笔自动扣费', count: 2, detail: '爱奇艺 ¥25.00、网易云 ¥15.00', target: 'analytics' },
+      { kind: 'anomaly', label: '发现 3 笔异常消费', count: 3, detail: '单笔金额超过近 90 天分位', target: 'analytics' }
+    ],
+    pending_approvals: 0, anomaly_count: 3, subscriptions_due: 2, scheduled_pending: 1,
+    chain: { valid: true, checked: 12 }
+  },
+  recent: [
+    { txn_id: 'x1', ts: '2026-10-29T12:40:00+08:00', direction: 'out', amount_cents: 3800, amount_display: '¥38.00', category: '餐饮', counterparty: '麦当劳', account_last4: '**** 8821', account_name: '工资卡' },
+    { txn_id: 'x2', ts: '2026-10-28T19:02:00+08:00', direction: 'out', amount_cents: 25900, amount_display: '¥259.00', category: '购物', counterparty: '京东', account_last4: '**** 8821', account_name: '工资卡' },
+    { txn_id: 'x3', ts: '2026-10-28T08:12:00+08:00', direction: 'in', amount_cents: 2500000, amount_display: '¥25,000.00', category: '工资', counterparty: '公司代发', account_last4: '**** 8821', account_name: '工资卡' },
+    { txn_id: 'x4', ts: '2026-10-27T21:30:00+08:00', direction: 'out', amount_cents: 450000, amount_display: '¥4,500.00', category: '居住', counterparty: '房东', account_last4: '**** 8821', account_name: '工资卡' },
+    { txn_id: 'x5', ts: '2026-10-26T10:00:00+08:00', direction: 'out', amount_cents: 843200, amount_display: '¥8,432.00', category: '还款', counterparty: '信用卡还款', account_last4: '**** 8821', account_name: '工资卡' },
+    { txn_id: 'x6', ts: '2026-10-25T14:00:00+08:00', direction: 'out', amount_cents: 6600, amount_display: '¥66.00', category: '交通', counterparty: '地铁', account_last4: '**** 8821', account_name: '工资卡' },
+    { txn_id: 'x7', ts: '2026-10-24T20:00:00+08:00', direction: 'out', amount_cents: 12800, amount_display: '¥128.00', category: '娱乐', counterparty: '影院', account_last4: '**** 8821', account_name: '工资卡' },
+    { txn_id: 'x8', ts: '2026-10-23T11:00:00+08:00', direction: 'out', amount_cents: 19900, amount_display: '¥199.00', category: '订阅', counterparty: '健身私教', account_last4: '**** 8821', account_name: '工资卡' }
+  ]
+};
+
+const ANA_TX = [];
+for (let i = 0; i < 25; i++) {
+  ANA_TX.push({
+    txn_id: 'tx' + i, ts: '2026-10-' + String(28 - i).padStart(2, '0') + 'T12:00:00+08:00',
+    direction: i % 3 === 0 ? 'in' : 'out', amount_cents: 1000 + i * 500,
+    amount_display: '¥' + ((1000 + i * 500) / 100).toFixed(2),
+    category: i % 3 === 0 ? '工资' : '餐饮', counterparty: '商户' + i,
+    account_last4: '**** 8821'
+  });
+}
+FIX.analytics = {
+  as_of: '2026-10-29T13:20:00+08:00',
+  range: { start: '2026-05-01', end: '2026-10-29', span_days: 182, granularity: 'month', buckets: 6, prev: { start: '2025-11-01', end: '2026-04-30' } },
+  totals: {
+    in_cents: 15000001, in_display: '¥150,000.01',
+    out_cents: 11125135, out_display: '¥111,251.35',
+    net_cents: 3874866, net_display: '¥38,748.66',
+    txn_count: 353, avg_day_out_cents: 61127, avg_day_out_display: '¥611.27',
+    prev_in_cents: 14900000, prev_out_cents: 11000000, out_delta_pct: 1.1, in_delta_pct: 0.7
+  },
+  series: [
+    { bucket: '2026-05', in_cents: 25000000, out_cents: 17300000, net_cents: 7700000, count: 61 },
+    { bucket: '2026-06', in_cents: 25000000, out_cents: 17200000, net_cents: 7800000, count: 58 },
+    { bucket: '2026-07', in_cents: 25000000, out_cents: 17900000, net_cents: 7100000, count: 60 },
+    { bucket: '2026-08', in_cents: 25000000, out_cents: 17900000, net_cents: 7100000, count: 59 },
+    { bucket: '2026-09', in_cents: 25000000, out_cents: 16600000, net_cents: 8400000, count: 62 },
+    { bucket: '2026-10', in_cents: 25000001, out_cents: 2443271, net_cents: 56730, count: 53 }
+  ],
+  categories: [
+    { category: '购物', cents: 5200000, display: '¥52,000.00', pct: 40.0, prev_cents: 4000000, delta_pct: 30, budget_cents: 200000, budget_pct: 2600, over_budget: true },
+    { category: '居住', cents: 2700000, display: '¥27,000.00', pct: 46.7, prev_cents: 2900000, delta_pct: -6.9, budget_cents: 500000, budget_pct: 540, over_budget: true },
+    { category: '餐饮', cents: 1200000, display: '¥12,000.00', pct: 13.3, prev_cents: 1400000, delta_pct: -14.3, budget_cents: 300000, budget_pct: 400, over_budget: true }
+  ],
+  merchants: [
+    { merchant: '京东', cents: 1800000, display: '¥18,000.00', pct: 16.2, count: 12 },
+    { merchant: '淘宝', cents: 1400000, display: '¥14,000.00', pct: 12.6, count: 18 },
+    { merchant: '房东', cents: 1300000, display: '¥13,000.00', pct: 11.7, count: 3 },
+    { merchant: '美团', cents: 900000, display: '¥9,000.00', pct: 8.1, count: 25 },
+    { merchant: '山姆会员店', cents: 800000, display: '¥8,000.00', pct: 7.2, count: 4 },
+    { merchant: '滴滴出行', cents: 600000, display: '¥6,000.00', pct: 5.4, count: 30 },
+    { merchant: '星巴克', cents: 400000, display: '¥4,000.00', pct: 3.6, count: 22 },
+    { merchant: '国家电网', cents: 300000, display: '¥3,000.00', pct: 2.7, count: 3 },
+    { merchant: '中国移动', cents: 200000, display: '¥2,000.00', pct: 1.8, count: 3 },
+    { merchant: '健身房', cents: 100000, display: '¥1,000.00', pct: 0.9, count: 2 }
+  ],
+  anomalies: [
+    { txn_id: 'an1', ts: '2026-10-18T21:00:00+08:00', amount_cents: 388000, amount_display: '¥3,880.00', counterparty: '某某珠宝', category: '购物', rule: 'amount_p99', level: 'high', detail: '单笔金额超过近 90 天 P99（¥3,120.00）' },
+    { txn_id: 'an2', ts: '2026-10-11T03:00:00+08:00', amount_cents: 199900, amount_display: '¥1,999.00', counterparty: '海外商户', category: '购物', rule: 'odd_hour', level: 'warn', detail: '凌晨 3 点发生大额支出' }
+  ],
+  subscriptions: [
+    { sub_id: 's1', name: '爱奇艺', cycle: '每月', amount_cents: 2500, amount_display: '¥25.00', next_charge: '2026-10-31', days_left: 2 },
+    { sub_id: 's2', name: '健身私教', cycle: '每月', amount_cents: 19900, amount_display: '¥199.00', next_charge: '2026-11-08', days_left: 10 }
+  ],
+  savings: { potential_cents: 58000, potential_display: '¥580.00', savings_rate: 0.23, suggestions: ['把 2 个低频订阅降级为季付，预计每月省 ¥58.00', '本月外卖支出比上月高 32%，可设为每周两次'] },
+  transactions: ANA_TX
+};
+
 FIX.plugins = [
   { id: 'policy', name: '权限分级与审批', kind: 'core', version: '0.2.0', enabled: true, status: 'enabled', toggleable: false,
     locked_reason: '核心能力不可停用',
@@ -440,6 +580,7 @@ const CALLS = [];
 const PUSH_CALLS = [];
 let pushMode = 'delivered';
 let tasksMode = 'paged';
+let zoneFail = false;
 let chatScript = null;
 let chatFailAfter = null;
 function sseChunks(events) {
@@ -552,12 +693,26 @@ function makeFetch() {
         ts: '2026-10-27T22:40:00+08:00'
       });
     }
+    if (u.indexOf('/api/dashboard') === 0) {
+      if (zoneFail) return Promise.reject(new Error('dashboard 502'));
+      return json(FIX.dashboard);
+    }
+    if (u.indexOf('/api/analytics') === 0) {
+      if (zoneFail) return Promise.reject(new Error('analytics 502'));
+      return json(FIX.analytics);
+    }
     return json({ error: 'NOT_FOUND' }, 404);
   };
 }
 
+const LS_STORE = {};
 const sandbox = {
   console: console, document: doc, navigator: { clipboard: undefined },
+  localStorage: {
+    getItem: function (k) { return Object.prototype.hasOwnProperty.call(LS_STORE, k) ? LS_STORE[k] : null; },
+    setItem: function (k, v) { LS_STORE[k] = String(v); },
+    removeItem: function (k) { delete LS_STORE[k]; }
+  },
   fetch: makeFetch(),
   setTimeout: setTimeout, clearTimeout: clearTimeout, setInterval: setInterval, clearInterval: clearInterval,
   TextDecoder: TextDecoder, TextEncoder: TextEncoder,
@@ -986,9 +1141,9 @@ function one(sel) { return doc.querySelector(sel); }
   sandbox.navigator.serviceWorker = undefined;
 
   console.log('== v0.3.2 手机收口 ==');
-  ok('底部 tab 四个入口', getEls('#tabbar .tabbar__btn').length === 4, String(getEls('#tabbar .tabbar__btn').length));
+  ok('底部 tab 五个入口', getEls('#tabbar .tabbar__btn').length === 5, String(getEls('#tabbar .tabbar__btn').length));
   const tabNavs = getEls('#tabbar .tabbar__btn').map(function (b) { return b.getAttribute('data-nav'); }).join(',');
-  ok('tab 顺序 = 工作台/技能/插件/设置', tabNavs === 'home,skills,plugins,settings', tabNavs);
+  ok('tab 顺序 = 工作台/专区/技能/插件/设置', tabNavs === 'home,zone,skills,plugins,settings', tabNavs);
   sandbox.innerWidth = 390;
   one('#tabbar .tabbar__btn[data-nav="plugins"]').click();
   await sleep(60);
@@ -1279,6 +1434,127 @@ function one(sel) { return doc.querySelector(sel); }
   ok('流式中断：去掉 is-typing 与光标', !!broken && !broken.classList.contains('is-typing') && !broken.querySelector('.answer__caret'));
   ok('流式中断：已输出文本保留', !!broken && /先输出一半/.test(broken.textContent), broken ? broken.textContent.slice(0, 80) : 'null');
   ok('流式中断：按钮恢复「发送」且可点', ZS.dom.btnSend.textContent === '发送' && !ZS.dom.btnSend.classList.contains('is-stop') && ZS.dom.btnSend.disabled === false);
+
+  // ===================== v0.7.0 专区 / 仪表盘 / 分析 =====================
+  console.log('== v0.7.0 专区：入口与路由 ==');
+  ZS.state.sessionId = ZS.state.sessionId || 'sess_test_001';
+  const navBtnsAll = getEls('.topnav__btn');
+  ok('顶栏第二项是「专区」', navBtnsAll[1] && navBtnsAll[1].getAttribute('data-nav') === 'zone', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
+  ok('更多菜单也带专区入口', !!one('#moreMenu [data-nav="zone"]'));
+  ZS.state.zone.dash = null;
+  ZS.state.zone.dashAt = 0;
+  one('.topnav__btn[data-nav="zone"]').click();
+  ok('点专区切到 zone 视图', ZS.state.view === 'zone' && one('#scr-zone').classList.contains('is-on'), ZS.state.view);
+  ok('顶栏标题 = 专区', one('#pageTitle').textContent === '专区', one('#pageTitle').textContent);
+  ok('专区 H1 = 钱在哪、花在哪、要不要动手', one('#zoneH1').textContent === '钱在哪、花在哪、要不要动手', one('#zoneH1').textContent);
+  const dashTab = one('[data-zone="dashboard"]');
+  ok('默认 tab 为仪表盘且 aria-selected', dashTab.classList.contains('is-on') && dashTab.getAttribute('aria-selected') === 'true');
+  ok('加载中先标「读取中」', /读取中/.test(one('#zoneStamp').textContent), one('#zoneStamp').textContent);
+  await sleep(150);
+  ok('哈希解析：#/zone/analytics?preset=90d', (function () {
+    const r = ZS.zoneParseHash('#/zone/analytics?preset=90d&from=2026-05-01&to=2026-06-30&gran=week');
+    return r && r.view === 'zone' && r.zone === 'analytics' && r.params.preset === '90d' && r.params.gran === 'week';
+  })());
+  ok('哈希解析：#/zone/dashboard 无参数', (function () {
+    const r = ZS.zoneParseHash('#/zone/dashboard');
+    return r && r.view === 'zone' && r.zone === 'dashboard' && Object.keys(r.params).length === 0;
+  })());
+  ok('哈希解析：普通页面 #/skills', (function () { const r = ZS.zoneParseHash('#/skills'); return r && r.view === 'skills'; })());
+
+  console.log('== v0.7.0 仪表盘渲染 ==');
+  ok('KPI 六张卡', getEls('#zoneBody .zkpi').length === 6, String(getEls('#zoneBody .zkpi').length));
+  const kpiText = getEls('#zoneBody .zkpi').map(function (el) { return el.textContent; }).join(' | ');
+  ok('净资产 KPI = ¥79,428.50', kpiText.indexOf('¥79,428.50') >= 0, kpiText.slice(0, 60));
+  ok('信用卡待还 KPI = ¥8,432.00', kpiText.indexOf('¥8,432.00') >= 0);
+  ok('本月支出带环比徽章', getEls('#zoneBody .zkpi__delta').length >= 2, String(getEls('#zoneBody .zkpi__delta').length));
+  ok('两张 KPI 带 14 点 sparkline', getEls('#zoneBody .zspark').length === 2, String(getEls('#zoneBody .zspark').length));
+  ok('趋势图 6 根支出柱', getEls('#zoneBody .zchart__rect--out').length === 6, String(getEls('#zoneBody .zchart__rect--out').length));
+  ok('趋势图有净额折线', getEls('#zoneBody .zchart__net').length === 1);
+  ok('柱可聚焦且有 aria-label', (function () {
+    const bar = one('#zoneBody .zchart__bar');
+    return !!bar && bar.getAttribute('tabindex') === '0' && /支出/.test(bar.getAttribute('aria-label') || '');
+  })());
+  ok('图例三项（支出/收入/净流入）', (function () {
+    const t = one('#zoneBody .zlegend').textContent;
+    return /支出/.test(t) && /收入/.test(t) && /净流入/.test(t);
+  })());
+  ok('趋势数据表可展开且 6 行', (function () {
+    const d = one('#zoneBody .zdetails');
+    return !!d && /查看数据表/.test(d.querySelector('summary').textContent) && d.querySelectorAll('tbody tr').length === 6;
+  })());
+  ok('预算 6 行', getEls('#zoneBody .zbudget__row').length === 6, String(getEls('#zoneBody .zbudget__row').length));
+  ok('超支行标红（购物 575%）', getEls('#zoneBody .zbudget__row--over').length === 1 && /575%/.test(one('#zoneBody .zbudget__row--over').textContent));
+  ok('支出构成 5 段堆叠', getEls('#zoneBody .zstack__seg').length === 5, String(getEls('#zoneBody .zstack__seg').length));
+  const compLegend = getEls('#zoneBody .zlegend').filter(function (el) { return !el.classList.contains('zlegend--inline'); })[0];
+  ok('构成图例首项购物 47.1%', !!compLegend && /购物/.test(compLegend.textContent) && /47.1%/.test(compLegend.textContent), compLegend ? compLegend.textContent.slice(0, 80) : 'null');
+  ok('待办 2 行', getEls('#zoneBody .ztodo__btn').length === 2, String(getEls('#zoneBody .ztodo__btn').length));
+  ok('审计链徽章 valid', /审计链/.test(one('#zoneBody .zchain').textContent) && one('#zoneBody .zchain').classList.contains('zchain--ok'));
+  ok('最近流水 8 行', getEls('#zoneBody .zcard--wide .ztable tbody tr').length >= 8);
+  ok('数据时间戳标注只读', /更新于/.test(one('#zoneStamp').textContent) && /只读/.test(one('#zoneStamp').textContent), one('#zoneStamp').textContent);
+
+  console.log('== v0.7.0 分析页渲染 ==');
+  one('[data-zone="analytics"]').click();
+  await sleep(150);
+  ok('切到分析 tab', ZS.state.view === 'zone' && ZS.state.zone.view === 'analytics' && one('[data-zone="analytics"]').classList.contains('is-on'));
+  ok('分析 H1 = 花在哪里，和上一期比变了多少', one('#zoneH1').textContent === '花在哪里，和上一期比变了多少', one('#zoneH1').textContent);
+  ok('分析 KPI 四张卡', getEls('#zoneBody .zkpi').length === 4, String(getEls('#zoneBody .zkpi').length));
+  ok('控制条 4 个区间预设 + 3 个粒度', getEls('#zoneBody [data-zpreset]').length === 4 && getEls('#zoneBody [data-zgran]').length === 3);
+  ok('控制条回填起止日期', one('#zoneFrom').value.length === 10 && one('#zoneTo').value.length === 10, one('#zoneFrom').value + '→' + one('#zoneTo').value);
+  ok('序列数据表 6 行', (function () {
+    const d = one('#zoneBody .zdetails');
+    return d.querySelectorAll('tbody tr').length === 6;
+  })());
+  ok('类别表默认按金额降序（购物在前）', /购物/.test(one('#zoneCats tbody tr').textContent), one('#zoneCats tbody tr').textContent.slice(0, 40));
+  ok('点「占比」表头改为按占比排序（居住在前）', (function () {
+    one('#zoneCats [data-zsort="pct"]').click();
+    return /居住/.test(one('#zoneCats tbody tr').textContent);
+  })(), one('#zoneCats tbody tr').textContent.slice(0, 40));
+  ok('商户 TOP 10 横条', getEls('#zoneBody .zhbars__row').length === 10, String(getEls('#zoneBody .zhbars__row').length));
+  ok('异常消费 2 条且标注等级', getEls('#zoneBody .zlist__badge').length >= 2 && /高/.test(one('#zoneBody .zlist__badge').textContent));
+  ok('订阅显示剩余天数', /2 天/.test(one('#zoneBody').textContent));
+  ok('储蓄建议显示可优化金额', /¥580.00/.test(one('#zoneBody').textContent));
+  ok('明细首屏 20 笔 + 分页信息', (function () {
+    const info = getEls('#zoneBody .zpager__info');
+    return /共 25 笔 · 第 1 \/ 2 页/.test(info[info.length - 1].textContent);
+  })(), getEls('#zoneBody .zpager__info').map(function (e) { return e.textContent; }).join(' | '));
+  ok('明细上一页在首屏禁用', getEls('#zoneBody [data-zpage="prev"]').filter(function (b) { return b.disabled; }).length === 1);
+  one('#zoneBody [data-zpage="next"]').click();
+  ok('点下一页到第 2 页（5 笔）', /第 2 \/ 2 页/.test(getEls('#zoneBody .zpager__info').slice(-1)[0].textContent));
+  ok('导出 CSV 触发下载提示', (function () {
+    one('#zoneBody #zoneCsv').click();
+    return getEls('#toasts .toast').some(function (t) { return /已导出/.test(t.textContent); });
+  })());
+
+  console.log('== v0.7.0 外观与命令面板 ==');
+  ok('主题按钮存在', !!one('#btnTheme'));
+  ZS.themeApply('dark');
+  ok('切深色写入 body[data-theme]', doc.body.getAttribute('data-theme') === 'dark');
+  ok('深色记忆写入 localStorage', sandbox.localStorage.getItem('zs-theme') === 'dark', String(sandbox.localStorage.getItem('zs-theme')));
+  ok('主题按钮 aria-label 跟随', /深色/.test(one('#btnTheme').getAttribute('aria-label') || ''), one('#btnTheme').getAttribute('aria-label'));
+  ZS.themeToggle();
+  ok('再点一次 → 跟随系统（matchMedia 返回浅色）', doc.body.getAttribute('data-theme') === 'light' && sandbox.localStorage.getItem('zs-theme') === 'system');
+  ok('命令面板动作 8 条', ZS.paletteActions().length === 8, String(ZS.paletteActions().length));
+  doc.dispatchEvent(makeEvent('keydown', { key: 'k', ctrlKey: true, metaKey: false }));
+  ok('Ctrl+K 打开命令面板', one('#palette').hidden === false);
+  ok('面板列出 8 条动作', getEls('#paletteList [data-palette]').length === 8, String(getEls('#paletteList [data-palette]').length));
+  one('#paletteInput').value = '分析';
+  one('#paletteInput').dispatchEvent(makeEvent('input'));
+  ok('输入「分析」过滤到 1 条', getEls('#paletteList [data-palette]').length === 1, String(getEls('#paletteList [data-palette]').length));
+  doc.dispatchEvent(makeEvent('keydown', { key: 'Escape' }));
+  ok('Esc 关闭命令面板', one('#palette').hidden === true);
+
+  console.log('== v0.7.0 空态与失败降级 ==');
+  ok('仪表盘空数据 → 空态块', /zempty/.test(ZS.zoneRenderDashboard(null)));
+  ok('分析页空数据 → 空态块', /zempty/.test(ZS.zoneRenderAnalytics(null)));
+  ok('趋势图空数据 → 空态', /zempty/.test(ZS.zoneFlowSvg([])));
+  zoneFail = true;
+  one('#btnZoneRefresh').click();
+  await sleep(150);
+  ok('接口失败 → 错误块带重试按钮', !!one('#zoneBody .zerror') && /重试/.test(one('#zoneBody').textContent));
+  ok('失败时时间戳改为读取失败', /读取失败/.test(one('#zoneStamp').textContent), one('#zoneStamp').textContent);
+  zoneFail = false;
+  ZS.showView('home');
+  await sleep(20);
 
   if (process.env.ZS_DUMP_CLASSES) {
     const seen = {};

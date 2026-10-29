@@ -741,3 +741,110 @@ frontend/_selftest.js:600-625 新增 9 条「资金流向与余额刷新」断�
 
 **接口字段见** [api.md](api.md) §1（wealth 与 kind），用例与测试口径见 [evaluation.md](evaluation.md) §5，审计与安全边界见 [security.md](security.md)。
 
+## 15. 数据专区与只读聚合层（v0.7.0）
+
+专区是「看数」的入口，对话是「办事」的入口，两者共用同一套账本口径，但走不同的通路：对话走六阶段流水线并可能触发审批与资金动作；专区只读，从 `server.py` 直接进 `analytics.py`，**不经过 policy、不产生审批、不写任何表**。
+
+### 15.1 分层位置
+
+    browser frontend/app.js（zone 模块 + 手写 SVG 图表 + hash 路由）
+        │  GET /api/dashboard?session_id=&window=
+        │  GET /api/analytics?session_id=&from=&to=&granularity=
+        ▼
+    HTTP 层  backend/server.py（_guard → 会话校验 → 分派）
+        ▼
+    聚合层  backend/app/analytics.py（只读）
+        dashboard(conn, user_id, window)      → GET /api/dashboard
+        analytics(conn, user_id, start, end, granularity) → GET /api/analytics
+        ▼
+    领域层  backend/app/mock_core.py（同一批只读函数，供对话工具复用）
+        list_accounts / account_total / list_transactions / bill_summary
+        budget_analysis / scan_anomalies / list_subscriptions
+        list_scheduled_transfers / list_wealth
+        ▼
+    SQLite  accounts / transactions / budgets / subscriptions
+            scheduled_transfers / wealth_holdings / approvals
+            （全部只读：SELECT）
+
+**为什么不复用对话的 insight 工具**：`spending_insights` 是「一句话回答」的形态，字段围绕单轮对话裁剪；仪表盘需要的是「一次拿全页面」的宽对象（趋势 + 预算 + 构成 + 待办 + 最近流水）。两者共用底层聚合函数与口径，但各自组装响应，避免为了页面把对话工具的契约撑大。
+
+### 15.2 两个入口的参数与校验
+
+| 参数 | 位置 | 规则 |
+| --- | --- | --- |
+| `session_id` | query | 必填，经 `engine.session_owner` 校验；未知会话 404 `SESSION_NOT_FOUND` |
+| `window` | `/api/dashboard` | `7d / 30d / 90d / 180d / 6m / 1y`；未知值**回落 30d**（看板不应因为拼错参数而 400） |
+| `from` / `to` | `/api/analytics` | `YYYY-MM-DD`，缺省为近 180 天；解析失败、`from > to`、跨度 > 400 天均 400 `BAD_RANGE` |
+| `granularity` | `/api/analytics` | `day / week / month`；日粒度桶数上限 120，超出 400 `BAD_RANGE` |
+
+返回体的金额一律是整数分 + `*_display` 展示串（与对话工具同口径），前端不做二次换算，避免「页面算的和账本不一样」。
+
+### 15.3 仪表盘响应骨架
+
+    {
+      "as_of": "2026-10-29",
+      "window": { "kind": "30d", "days": 30, "from": "2026-09-30", "to": "2026-10-29" },
+      "kpis": {
+        "net_worth_cents": 7942850,  "net_worth_display": "¥79,428.50",
+        "available_cents": 5786050,  "available_display": "¥57,860.50",
+        "holdings_cents": 3000000,   "holdings_display": "¥30,000.00",
+        "credit_due_cents": 843200,  "credit_due_display": "¥8,432.00",
+        "month_out_cents": 2443271,  "month_in_cents": 2500001, "net_flow_cents": 56730,
+        "deltas": { "month_out_pct": 47, "month_in_pct": 0, "net_flow_pct": -93 },
+        "prev": { "month": "2026-09", "out_cents": 1653372, "in_cents": 2500001, "net_cents": 846629 },
+        "sparklines": { "out_cents": [ … 14 点 … ], "in_cents": [ … ], "days": [ … ] }
+      },
+      "trend": { "months": [ { "month": "2026-05", "in_cents": …, "out_cents": …, "net_cents": … } ], "unit": "cents" },
+      "budget": [ { "category": "购物", "limit_cents": 200000, "used_cents": 1158671, "pct": 579, "state": "over" } ],
+      "composition": { "total_out_cents": …, "by_category": [ { "category": "购物", "cents": …, "pct": 47.1 } ], "by_account": [ … ], "holdings_cents": … },
+      "todo": { "rows": [ { "kind": "approval", "label": "待你确认的操作", "count": 4, "detail": …, "target": "workbench" } ],
+                "chain": { "valid": true, "checked": 22 } },
+      "recent": [ { "txn_id": "T00349", "ts": "2026-10-29T09:12:00", "direction": "in",
+                    "amount_cents": 1, "amount_display": "¥0.01", "category": "其他",
+                    "counterparty": "扫码返现", "account_last4": "**** 8821" } ]
+    }
+
+口径要点：
+
+- `net_worth_cents = available_cents + holdings_cents − credit_due_cents`（信用卡余额为负，取反后作为待还）。
+- `deltas` 与上月同日为基线；基线期样本不足 ¥100 时给 `null`（前端显示「—」）。
+- `composition.by_category` 只取前 6 类，占比合计可能 < 100%，`total_out_cents` 是完整总额。
+- `todo.chain` 来自 `audit.verify`，只读调用，不追加事件。
+
+### 15.4 分析页响应骨架
+
+    {
+      "range": { "start": "2026-05-03", "end": "2026-10-29", "span_days": 180,
+                 "granularity": "month", "buckets": 6, "prev": { "start": …, "end": … } },
+      "totals": { "in_cents": 15000001, "out_cents": 11125135, "net_cents": 3883233,
+                  "txn_count": 353, "avg_day_out_cents": 61760,
+                  "prev_in_cents": …, "prev_out_cents": …, "out_delta_pct": null },
+      "series": [ { "bucket": "2026-05", "in_cents": …, "out_cents": …, "net_cents": …, "count": … } ],
+      "categories": [ { "category": "购物", "cents": 3162704, "pct": 28.45, "prev_cents": …,
+                        "delta_pct": null, "budget_cents": …, "budget_pct": 264, "over_budget": true } ],
+      "merchants": [ { "merchant": "房东王姐", "cents": 2700000, "pct": …, "count": 6 } ],
+      "transactions": [ … 最多 100 条，ts 倒序 … ],
+      "anomalies": [ … 最多 10 条 … ],
+      "subscriptions": [ { "name": "爱奇艺 VIP", "amount_cents": 2500, "next_charge": "2026-11-04", "days_left": 6 } ],
+      "savings": { "potential_cents": 950671, "potential_display": "¥9,506.71", "savings_rate": 0.20, "suggestions": [ … ] }
+    }
+
+桶的划分：`day` → `YYYY-MM-DD`、`week` → `YYYY-Www`（ISO 周）、`month` → `YYYY-MM`；区间两端按桶补零，保证 `series.length == buckets`，前端不需要处理空洞。
+
+### 15.5 前端：hash 路由与图表模块
+
+- 路由：`#/zone/dashboard`、`#/zone/analytics?preset=180d&from=…&to=…&gran=month`。`showView('zone')` 与 hash 双向同步，`state.hashReady` 之外（自测桩里没有 `window.location.hash`）所有 hash 操作静默跳过，保证不依赖浏览器历史对象也能渲染。
+- 数据层：30 秒内复用缓存，页头常驻「更新于 hh:mm · 只读」；可见时 60 秒轮询，离开专区停止；失败渲染带「重试」的错误块。
+- 图表：`zoneFlowSvg` / `zoneSparkSvg` / `zoneStacked` / `zoneHbars` 全部手写 SVG，按容器宽度出图（`zoneChartWidth()`，390 下折叠为紧凑刻度），每图带 `<details>` 数据表与 `aria-label`。
+- 交互：类别表头排序、明细分页（每页 20）、CSV 导出（`﻿` BOM + CRLF，Excel 直开不乱码）、主题三态、命令面板 `Ctrl/Cmd+K`。
+
+### 15.6 只读性的证明方式
+
+不靠「我们没写」的自觉，靠断言：
+
+- `scripts/dashboard_e2e.py` 的 `ana-17`：连续调用两个聚合接口前后各取一次 `/api/audit`，断言 `chain.checked` 数值不变且 `valid` 仍为 `true`。
+- `ana-18`：同样前后比对 `transactions` 条数，断言不产生资金流水。
+- `dash-11`：仪表盘 `todo.chain.valid` 必须为 `true`（专区自己也在读审计链，但只读）。
+- 实测：v0.7.0 时 `chain.checked` 恒为 22，两个接口连续调用 20 次后 `transactions` 条数不变。
+
+**接口字段见** [api.md](api.md) §4（v0.7.0 只读聚合接口），图表与布局规范见 [design-system.md](design-system.md) §七，自检口径见 [evaluation.md](evaluation.md) §3.5。

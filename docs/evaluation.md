@@ -1,6 +1,6 @@
 # ZeroStep 评测说明
 
-ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条任务是一段真实用户话术，运行器在独立数据库里跑完整链路（含审批恢复），再对状态、意图、技能命中、计划、拦截码、审批规则、回复文案与审计链逐项断言。v0.1.0 基线 30 条（t01–t30），v0.2.0 新增 6 条（t31–t36）；v0.3.0 不新增任务，36 条口径不变，插件与前端另由 scripts/plugin_e2e.py 与 frontend/_selftest.js 覆盖；v0.3.1 加固模型接入，同样不新增业务任务，改由桩服务端的 scripts/llm_e2e.py 覆盖 8 个模型交互场景；v0.3.2 扩展渠道与手机端，不新增业务任务，由 scripts/push_e2e.py、scripts/channel_wecom_e2e.py、backend/channels/wecom.py --selftest 与前端自检覆盖；v0.4.0 新增 7 条业务任务（t37–t43），覆盖理财赎回、卡限额、刷卡拦截、异常交易扫描、年度账单、手机号转账与预约转账，资金动作类能力同时由 scripts/capability_e2e.py 与前端自检另行覆盖；v0.4.1 新增 3 条安全任务（t44–t46），覆盖挂失/解挂升红后的多因子强验证与连续可疑操作触发的会话锁定，不新增能力类 e2e；v0.5.0 新增 10 条洞察类任务（t47–t56），覆盖消费洞察统计与环比、可省金额口径、只读零写操作、订阅识别与误报、逐字流式事件序、中途取消与取消不撤销已执行工具，以及 LLM 模式下的洞察意图解析，流式链路另由 scripts/e2e_stream.py 与前端自检覆盖；v0.6.2 新增 3 条还款任务（t57–t59），覆盖独立还款意图与双向记账、指定储蓄卡出账、未给金额不臆造，还款链路的边界（金额截断、无欠款、余额不足、非法出账账户）另由 scripts/smoke_repay.py 覆盖。
+ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条任务是一段真实用户话术，运行器在独立数据库里跑完整链路（含审批恢复），再对状态、意图、技能命中、计划、拦截码、审批规则、回复文案与审计链逐项断言。v0.1.0 基线 30 条（t01–t30），v0.2.0 新增 6 条（t31–t36）；v0.3.0 不新增任务，36 条口径不变，插件与前端另由 scripts/plugin_e2e.py 与 frontend/_selftest.js 覆盖；v0.3.1 加固模型接入，同样不新增业务任务，改由桩服务端的 scripts/llm_e2e.py 覆盖 8 个模型交互场景；v0.3.2 扩展渠道与手机端，不新增业务任务，由 scripts/push_e2e.py、scripts/channel_wecom_e2e.py、backend/channels/wecom.py --selftest 与前端自检覆盖；v0.4.0 新增 7 条业务任务（t37–t43），覆盖理财赎回、卡限额、刷卡拦截、异常交易扫描、年度账单、手机号转账与预约转账，资金动作类能力同时由 scripts/capability_e2e.py 与前端自检另行覆盖；v0.4.1 新增 3 条安全任务（t44–t46），覆盖挂失/解挂升红后的多因子强验证与连续可疑操作触发的会话锁定，不新增能力类 e2e；v0.5.0 新增 10 条洞察类任务（t47–t56），覆盖消费洞察统计与环比、可省金额口径、只读零写操作、订阅识别与误报、逐字流式事件序、中途取消与取消不撤销已执行工具，以及 LLM 模式下的洞察意图解析，流式链路另由 scripts/e2e_stream.py 与前端自检覆盖；v0.6.2 新增 3 条还款任务（t57–t59），覆盖独立还款意图与双向记账、指定储蓄卡出账、未给金额不臆造，还款链路的边界（金额截断、无欠款、余额不足、非法出账账户）另由 scripts/smoke_repay.py 覆盖；v0.7.0 不新增任务，新增只读「数据专区」（仪表盘 / 分析），由 scripts/dashboard_e2e.py 33 项断言与前端自检 59 项覆盖，对话侧口径不变。
 
 ---
 
@@ -15,7 +15,7 @@ ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条�
 | 运行器 | scripts/run_tasks.py（零依赖；串行、每任务独立临时库） |
 | 解析模式 | rule / llm / auto（默认 auto：有 Key 用模型，无 Key 回落规则） |
 | 对比评测 | scripts/compare_modes.py：30 条基线 + 10 条口语化变体（v0.2.0 未扩展，仍为基线对比数据） |
-| 实测结果 | 规则模式 59/59，0 失败（2026-10-29 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消），node frontend/_selftest.js PASS=247 FAIL=0（v0.5.1 时点） |
+| 实测结果 | 规则模式 59/59、LLM 模式 59/59，0 失败（2026-10-29 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消）、scripts/dashboard_e2e.py 33/33（数据专区），node frontend/_selftest.js PASS=306 FAIL=0（v0.7.0 时点） |
 | v0.3.0 增量自检 | scripts/plugin_e2e.py 17/17、node frontend/_selftest.js PASS=100 FAIL=0（2026-10-27 实测；不改变 36 条任务） |
 | v0.3.1 增量自检 | scripts/llm_e2e.py 8/8 场景、52/52 项检查；node frontend/_selftest.js PASS=134 FAIL=0；run_tasks 36/36（均 2026-10-27 本机实测）；scripts/llm_smoke.py 需真实 Key，无 Key 自动跳过 |
 | v0.3.2 增量自检 | 企业微信自检 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13、node frontend/_selftest.js PASS=182 FAIL=0（2026-10-27，与 QA 报告一致；QA 全量回归 15/15 步 exit 0、0 FAIL）；v0.4.0 时前端断言已增至 190 项 |
@@ -26,6 +26,7 @@ ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条�
 | v0.6.0 增量自检 | scripts/mcp_gateway_e2e.py 17/17（注册表、Bearer/OAuth2 鉴权、streamable-http 会话、SSE、写拒绝零转发、白名单、密钥脱敏、动态插件、MCP_ENABLED=0、坏配置、未知服务/工具，2026-10-28 实测）；任务集未变（仍 56/56），regression 全绿 |
 | v0.6.1 增量自检 | scripts/mcp_gateway_e2e.py 19/19（新增 gw-18 空白名单写拒绝、gw-19 MCP_SERVERS 合并后 fx/risk 仍可用）；scripts/security_factor_e2e.py 55/55（新增 sec-idor-1 跨会话审批 403、sec-idor-2 二次决策 409，2026-10-28 实测）；任务集未变（仍 56/56），其余回归见 README「后端口径」 |
 | v0.6.2 增量自检 | scripts/run_tasks.py 59/59（新增 t57–t59，2026-10-29 实测）；scripts/smoke_repay.py 9/9（engine 级还款边界）；scripts/e2e_stream.py 33/33、skill_check 6/6、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、plugin_e2e 17/17、llm_e2e 9 组全过、smoke18 审计链 valid=True、node frontend/_selftest.js PASS=247 FAIL=0 |
+| v0.7.0 增量自检 | scripts/dashboard_e2e.py 33/33（仪表盘 / 分析 schema、KPI 口径、桶数、参数校验 400、未知会话 404、审计链 checked 不变、不产生资金流水，2026-10-29 实测）；scripts/run_tasks.py 59/59（规则与 LLM 双模式，任务集未变）；node frontend/_selftest.js PASS=306 FAIL=0（v0.6.2 为 247，新增专区 59 项）；scripts/smoke_repay.py 9/9 回归通过 |
 
 ---
 
@@ -267,6 +268,32 @@ e2e_stream.py 的 33 项断言分四组：
 | 审计与清理 | 有且仅有 1 条 answer_cancelled（tool=stream，risk low）；取消前后余额与支出合计不变，tool_end 保留 spending_insights；演示服务退出后 8010 端口无残留、日志无 Traceback |
 
 块间延时由环境变量 ZS_STREAM_DELAY_MS 控制（默认 18ms，演示观感用），e2e 里置 0 加速。取消语义的验证方法（t54 / t55 同款）：先起服务并打开 SSE，收到 answer_start 与至少 2 个 answer_delta 后调 POST /api/turn/cancel，再断言后续事件与审计；t55 额外比对取消前后账户余额与流水合计，确认「停止输出」不等于「回滚已执行工具」。
+### 3.5 数据专区自检（dashboard_e2e.py，v0.7.0）
+
+专区是只读页面，不占 t 编号，单独用 scripts/dashboard_e2e.py 端到端验证（33 项断言）。运行器自带隔离目录与端口（默认 8052），不污染主库，也不需要额外依赖。
+
+运行：
+
+    cd D:/DeepSeek/buildagent/bank-agent
+    $env:PYTHONIOENCODING = "utf-8"
+    python scripts/dashboard_e2e.py            # 33/33 通过则退出码 0
+    python scripts/dashboard_e2e.py -v         # 打印每条断言明细
+    python scripts/dashboard_e2e.py --json     # 机器可读报告
+
+实测（2026-10-29 本机，Python 3.14.6）：
+
+    python scripts/dashboard_e2e.py
+    结果：33/33 通过
+
+断言分两组：
+
+| 组 | 断言要点 |
+| --- | --- |
+| dash-0…14（15 条） | `/api/health` 版本、`POST /api/session` 建会话、仪表盘顶层字段齐全、KPI 字段与单位、净资产 = 可用 + 持仓 − 信用卡待还、净流入 = 收入 − 支出、sparkline 恰好 14 点、trend 6 桶、预算 state 取值、构成最多 6 类且总额 ≥ 分项之和、待办 rows 非空且审计链 valid、最近流水 8 条且按 ts 倒序、window 跨度与 from/to 自洽、非法 window 回落 30d 而不报错 |
+| ana-1…18（18 条） | 顶层字段、桶数 = series 长度、序列合计 = totals、类别合计与占比、商户 TOP10 降序、明细 ≤100 且倒序、日均 = 支出 ÷ 跨度、订阅倒计时为整数、储蓄建议 ≤3 条、day/week 桶数 30/5、桶键格式、单日区间、`start > end` / `granularity=hour` / 跨度 > 400 天均 400 `BAD_RANGE`、未知会话 404、调用前后审计链 checked 不变、调用前后流水条数不变 |
+
+**为什么不并进 run_tasks**：`run_tasks.py` 的语义是「一句自然语言 → 意图 / 计划 / 审批 / 执行」的对话闭环，专区是纯查询面，没有意图与审批，塞进去会稀释任务集的口径。两者的公共前提相同：不写库、可重复、失败可定位。
+
 ## 4. 断言字段说明
 
 每条任务的 expect 对象支持以下字段，运行器逐项比对，任一不符即 FAIL 并打印原因。

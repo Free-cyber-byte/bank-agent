@@ -67,7 +67,7 @@
     '看一下今年的年度账单',
     '3 天后给妈妈转 800 元'
   ];
-  var PAGE_TITLES = { home: '工作台', chat: '工作台', skills: '技能', plugins: '插件', services: '外部服务', settings: '设置' };
+  var PAGE_TITLES = { home: '工作台', chat: '工作台', zone: '专区', skills: '技能', plugins: '插件', services: '外部服务', settings: '设置' };
   var PUSH_KIND = {
     subscription: { label: '订阅扣费', hint: '会员即将自动续费' },
     large_txn: { label: '大额支出', hint: '单笔支出超过阈值' },
@@ -94,7 +94,16 @@
     approvalFace: { token: '', expiresAt: 0, busy: false, error: '' },
     lockUntil: 0, lockTimer: null, lockActive: false,
     lastAction: null,
-    streaming: false, streamCancelRequested: false, streamTurnId: null
+    streaming: false, streamCancelRequested: false, streamTurnId: null,
+    hashReady: false, theme: 'light',
+    zone: {
+      view: 'dashboard', dash: null, dashAt: 0, dashBusy: false,
+      ana: null, anaAt: 0, anaBusy: false,
+      preset: '180d', from: '', to: '', granularity: 'month',
+      sortKey: 'cents', sortDir: -1, txPage: 0, txPer: 20,
+      pollTimer: null, ignoreHash: false, sessionWait: null,
+      paletteActions: [], paletteQuery: '', paletteIndex: 0
+    }
   };
   var dom = {};
 
@@ -184,6 +193,8 @@
       'moreMenu', 'modal', 'modalTitle', 'modalBody', 'modalActions',
       'pendingPill', 'pendingPillTime', 'toasts',
       'pageTitle', 'tabbar', 'menuModeWrap',
+      'btnTheme', 'btnZoneRefresh', 'zoneBody', 'zoneStamp', 'zoneH1', 'zoneSub',
+      'palette', 'paletteInput', 'paletteList',
       'pushCard', 'pushTag', 'pushKinds', 'btnPushPreview', 'pushStatus',
       'pushResult', 'pushTitle', 'pushText', 'pushMeta', 'pushNote'
     ];
@@ -371,7 +382,7 @@
     var chatEl = document.getElementById('view-chat');
     if (homeEl) homeEl.classList.toggle('is-on', name === 'home');
     if (chatEl) chatEl.classList.toggle('is-on', name === 'chat');
-    var screens = { skills: 'scr-skills', plugins: 'scr-plugins', services: 'scr-services', settings: 'scr-settings' };
+    var screens = { zone: 'scr-zone', skills: 'scr-skills', plugins: 'scr-plugins', services: 'scr-services', settings: 'scr-settings' };
     Object.keys(screens).forEach(function (key) {
       var el = document.getElementById(screens[key]);
       if (el) el.classList.toggle('is-on', name === key);
@@ -382,10 +393,16 @@
     if (dom.topNav) dom.topNav.classList.toggle('is-on', false);
     if (dom.pageTitle) dom.pageTitle.textContent = PAGE_TITLES[name] || '工作台';
     closeMenu();
-    if (name === 'skills') loadSkills();
+    if (name === 'zone') zoneEnter();
+    else if (name === 'skills') loadSkills();
     else if (name === 'plugins') loadPlugins();
     else if (name === 'services') loadServices();
     else if (name === 'settings') loadSettings();
+    else zoneStopPoll();
+    if (state.hashReady) {
+      if (name === 'zone') zoneSyncHash();
+      else zoneSetHash('#/' + (isHome ? 'home' : name));
+    }
     if (dom.stageScroll) dom.stageScroll.scrollTop = 0;
     // 整页视图（技能/插件/外部服务/设置）不走 .shell 滚动容器，需要把页面本身拉回顶部，
     // 否则从工作台下滚后切到插件页会停在中间。
@@ -2887,6 +2904,936 @@
       if (dom.acctDelta) dom.acctDelta.innerHTML = '<span>账户读取失败</span>';
     }
   }
+  // ===================== 专区：仪表盘 / 分析 =====================
+  // 只读视图：数据来自 /api/dashboard 与 /api/analytics，不触碰账本，也不写审计链。
+  var ZONE_META = {
+    dashboard: {
+      title: '钱在哪、花在哪、要不要动手',
+      sub: '只读聚合：数据与对话共用同一套账本口径，看数不会改动任何账户，也不写审计链。'
+    },
+    analytics: {
+      title: '花在哪里，和上一期比变了多少',
+      sub: '所选区间与上一等长区间对比：类别、商户、异常、订阅都在同一口径下统计。'
+    }
+  };
+  var ZONE_PRESETS = [
+    { id: '7d', label: '近 7 天', days: 7 },
+    { id: '30d', label: '近 30 天', days: 30 },
+    { id: '90d', label: '近 90 天', days: 90 },
+    { id: '180d', label: '近 180 天', days: 180 }
+  ];
+  var ZONE_GRANS = [
+    { id: 'day', label: '按日' },
+    { id: 'week', label: '按周' },
+    { id: 'month', label: '按月' }
+  ];
+
+  function zone() { return state.zone; }
+
+  // ---------- 基础格式 ----------
+  function zoneIsoDay(d) {
+    d = d instanceof Date ? d : new Date(d);
+    if (isNaN(d.getTime())) d = new Date();
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
+  }
+  function zoneDayLabel(iso) {
+    var s = String(iso || '');
+    var m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+    return m ? (Number(m[2]) + '/' + Number(m[3])) : s;
+  }
+  function zoneMonthLabel(iso) {
+    var m = /^(\d{4})-(\d{2})/.exec(String(iso || ''));
+    return m ? (Number(m[2]) + ' 月') : String(iso || '');
+  }
+  function zoneBucketLabel(bucket) {
+    var s = String(bucket || '');
+    var w = /^(\d{4})-W(\d{2})$/.exec(s);
+    if (w) return '第 ' + Number(w[2]) + ' 周';
+    if (/^\d{4}-\d{2}$/.test(s)) return zoneMonthLabel(s);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return zoneDayLabel(s);
+    return s;
+  }
+  function zoneTime(iso) {
+    if (!iso) return '--:--';
+    var s = String(iso);
+    var m = /(\d{2}):(\d{2})/.exec(s.length > 10 ? s.slice(10) : s);
+    return m ? m[1] + ':' + m[2] : s.slice(0, 5);
+  }
+  function zoneDateTime(iso) {
+    if (!iso) return '--';
+    var s = String(iso);
+    var m = /^\d{4}-(\d{2})-(\d{2})/.exec(s);
+    return m ? m[1] + '-' + m[2] + ' ' + zoneTime(s) : zoneTime(s);
+  }
+  function zoneWan(cents) {
+    var yuan = Number(cents || 0) / 100;
+    if (yuan >= 10000) {
+      var w = yuan / 10000;
+      return (w >= 100 ? w.toFixed(0) : w.toFixed(w >= 10 ? 1 : 2)) + '万';
+    }
+    return String(Math.round(yuan));
+  }
+  function zoneNiceCeil(v) {
+    var n = Number(v) || 0;
+    if (n <= 0) return 1;
+    var mag = Math.pow(10, Math.floor(Math.log(n) / Math.LN10));
+    var steps = [1, 1.2, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10];
+    for (var i = 0; i < steps.length; i++) {
+      if (n <= mag * steps[i]) return mag * steps[i];
+    }
+    return mag * 10;
+  }
+  function zoneDeltaPill(v, goodWhenUp) {
+    if (v == null || v === '' || isNaN(Number(v))) {
+      return '<span class="zkpi__delta zkpi__delta--flat">无对比</span>';
+    }
+    var n = Number(v);
+    if (n === 0) return '<span class="zkpi__delta zkpi__delta--flat">持平</span>';
+    var up = n > 0;
+    var tone = (goodWhenUp ? up : !up) ? 'good' : 'bad';
+    return '<span class="zkpi__delta zkpi__delta--' + tone + '">' + (up ? '↑' : '↓') + ' ' + Math.abs(n).toFixed(0) + '%</span>';
+  }
+  function zoneEmptyHtml(text) {
+    return '<div class="zempty">' + esc(text || '暂无数据') + '</div>';
+  }
+  function zoneErrorHtml(msg) {
+    return '<div class="zerror"><p class="zerror__text">' + esc(msg || '数据读取失败') + '</p>' +
+      '<button class="btn-secondary" type="button" id="zoneRetry">重试</button></div>';
+  }
+  function zoneSkeleton() {
+    var cells = [];
+    for (var i = 0; i < 6; i++) cells.push('<div class="zskeleton zskeleton--kpi"></div>');
+    return '<div class="zskeleton zskeleton--line"></div>' +
+      '<div class="zkpis">' + cells.join('') + '</div>' +
+      '<div class="zskeleton zskeleton--chart"></div>' +
+      '<div class="zskeleton zskeleton--chart"></div>';
+  }
+  function zoneStamp(text) {
+    var el = document.getElementById('zoneStamp');
+    if (el) el.textContent = text || '';
+  }
+
+  // ---------- 结构片段 ----------
+  function zoneSection(title, note, body, extra) {
+    return '<section class="zcard' + (extra ? ' ' + extra : '') + '">' +
+      '<div class="zcard__head"><h2 class="zcard__t">' + esc(title) + '</h2>' +
+      (note ? '<span class="zcard__note">' + esc(note) + '</span>' : '') + '</div>' +
+      '<div class="zcard__body">' + body + '</div></section>';
+  }
+  function zoneKpiCard(k) {
+    var html = '<article class="zkpi">';
+    html += '<div class="zkpi__head"><span class="zkpi__label">' + esc(k.label) + '</span>' + (k.delta != null ? zoneDeltaPill(k.delta, k.goodWhenUp) : '') + '</div>';
+    html += '<div class="zkpi__value">' + esc(k.value) + '</div>';
+    if (k.spark && k.spark.length > 1) html += zoneSparkSvg(k.spark, k.tone || 'accent');
+    if (k.note) html += '<div class="zkpi__note">' + esc(k.note) + '</div>';
+    html += '</article>';
+    return html;
+  }
+  function zoneLegendRow(items) {
+    return '<ul class="zlegend zlegend--inline">' + items.map(function (it) {
+      return '<li class="zlegend__item"><i class="zlegend__dot zlegend__dot--' + it[0] + '"></i><span class="zlegend__name">' + esc(it[1]) + '</span></li>';
+    }).join('') + '</ul>';
+  }
+  function zoneTableDetails(summary, head, rows) {
+    var th = head.map(function (h) { return '<th scope="col">' + esc(h) + '</th>'; }).join('');
+    return '<details class="zdetails"><summary>' + esc(summary) + '</summary>' +
+      '<div class="ztable__wrap"><table class="ztable"><thead><tr>' + th + '</tr></thead><tbody>' +
+      rows.join('') + '</tbody></table></div></details>';
+  }
+
+  // ---------- 图表（内联 SVG：无 canvas 依赖，自测桩也能渲染） ----------
+  function zoneSparkSvg(values, tone) {
+    var vals = (values || []).map(function (v) { return Number(v) || 0; });
+    if (vals.length < 2) return '';
+    var W = 104, H = 28, pad = 3;
+    var max = Math.max.apply(null, vals), min = Math.min.apply(null, vals);
+    if (max === min) { max = min + 1; }
+    var pts = vals.map(function (v, i) {
+      var x = (i / (vals.length - 1)) * W;
+      var y = H - pad - ((v - min) / (max - min)) * (H - pad * 2);
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    return '<svg class="zspark zspark--' + esc(tone || 'accent') + '" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" aria-hidden="true" focusable="false"><polyline points="' + pts + '"></polyline></svg>';
+  }
+  function zoneChartWidth() {
+    var doc = typeof document !== 'undefined' ? document : null;
+    var w = doc && doc.documentElement ? Number(doc.documentElement.clientWidth) || 0 : 0;
+    if (!w) return 760;
+    return Math.max(300, Math.min(760, w - 72));
+  }
+  function zoneFlowSvg(rows, opts) {
+    opts = opts || {};
+    if (!rows || !rows.length) return zoneEmptyHtml('暂无可用数据');
+    var W = Math.max(300, Math.min(760, Number(opts.width) || zoneChartWidth()));
+    var compact = W < 480;
+    var H = compact ? 210 : 250, padL = compact ? 40 : 58, padR = compact ? 10 : 18, padT = 16, padB = compact ? 30 : 36;
+    var innerW = W - padL - padR, innerH = H - padT - padB;
+    var hi = 0, lo = 0;
+    rows.forEach(function (r) {
+      hi = Math.max(hi, Number(r.out_cents) || 0, Number(r.in_cents) || 0, Number(r.net_cents) || 0);
+      lo = Math.min(lo, Number(r.net_cents) || 0);
+    });
+    if (hi <= 0) hi = 1;
+    var top = zoneNiceCeil(hi);
+    var bottom = lo < 0 ? -zoneNiceCeil(-lo) : 0;
+    var span = top - bottom || 1;
+    function yy(v) { return padT + innerH - ((Number(v) || 0) - bottom) / span * innerH; }
+    var zeroY = yy(0);
+    var n = rows.length, slot = innerW / n;
+    var barW = Math.max(3, Math.min(16, slot * 0.28));
+    var out = ['<svg class="zchart" viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(opts.label || '收支趋势图') + '">'];
+    for (var g = 0; g <= 4; g++) {
+      var gv = bottom + span * g / 4;
+      var gy = yy(gv);
+      out.push('<line class="zchart__grid" x1="' + padL + '" x2="' + (W - padR) + '" y1="' + gy.toFixed(1) + '" y2="' + gy.toFixed(1) + '"></line>');
+      out.push('<text class="zchart__axis" x="' + (padL - 10) + '" y="' + (gy + 4).toFixed(1) + '" text-anchor="end">' + esc(zoneWan(gv)) + '</text>');
+    }
+    var step = Math.max(1, Math.ceil(n / (compact ? 4 : 9)));
+    var netPts = [];
+    rows.forEach(function (r, i) {
+      var cx = padL + slot * (i + 0.5);
+      var outV = Math.abs(Number(r.out_cents) || 0), inV = Math.abs(Number(r.in_cents) || 0);
+      var label = r.label || r.month || r.bucket || '';
+      var aria = label + '：支出 ' + fmtMoney(outV) + '，收入 ' + fmtMoney(inV) + (r.net_cents != null ? '，净额 ' + fmtMoney(r.net_cents) : '');
+      out.push('<g class="zchart__bar" tabindex="0" role="img" aria-label="' + esc(aria) + '">');
+      out.push('<title>' + esc(aria) + '</title>');
+      out.push('<rect class="zchart__rect zchart__rect--out" x="' + (cx - barW - 1).toFixed(1) + '" y="' + yy(outV).toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(0, zeroY - yy(outV)).toFixed(1) + '" rx="2"></rect>');
+      out.push('<rect class="zchart__rect zchart__rect--in" x="' + (cx + 1).toFixed(1) + '" y="' + yy(inV).toFixed(1) + '" width="' + barW.toFixed(1) + '" height="' + Math.max(0, zeroY - yy(inV)).toFixed(1) + '" rx="2"></rect>');
+      out.push('</g>');
+      if (r.net_cents != null) netPts.push(cx.toFixed(1) + ',' + yy(r.net_cents).toFixed(1));
+      if (i % step === 0) out.push('<text class="zchart__x" x="' + cx.toFixed(1) + '" y="' + (H - 12) + '" text-anchor="middle">' + esc(label) + '</text>');
+    });
+    if (netPts.length > 1) out.push('<polyline class="zchart__net" points="' + netPts.join(' ') + '"></polyline>');
+    out.push('</svg>');
+    return out.join('');
+  }
+  function zoneStacked(rows, totalCents) {
+    if (!rows || !rows.length) return zoneEmptyHtml('暂无支出构成');
+    var total = Number(totalCents) || rows.reduce(function (s, r) { return s + (Number(r.cents) || 0); }, 0) || 1;
+    var segs = rows.map(function (r, i) {
+      var pct = (Number(r.cents) || 0) / total * 100;
+      return '<span class="zstack__seg zstack__seg--' + ((i % 6) + 1) + '" style="width:' + pct.toFixed(2) + '%" title="' + esc(r.category + ' ' + fmtMoney(r.cents) + ' · ' + pct.toFixed(1) + '%') + '"></span>';
+    }).join('');
+    var legend = rows.map(function (r, i) {
+      var pct = (Number(r.cents) || 0) / total * 100;
+      return '<li class="zlegend__item"><i class="zlegend__dot zlegend__dot--' + ((i % 6) + 1) + '"></i>' +
+        '<span class="zlegend__name">' + esc(r.category) + '</span>' +
+        '<span class="zlegend__val">' + esc(fmtMoney(r.cents)) + '</span>' +
+        '<span class="zlegend__pct">' + pct.toFixed(1) + '%</span></li>';
+    }).join('');
+    return '<div class="zstack">' + segs + '</div><ul class="zlegend">' + legend + '</ul>';
+  }
+  function zoneHbars(rows) {
+    if (!rows || !rows.length) return zoneEmptyHtml('暂无商户数据');
+    var max = 0;
+    rows.forEach(function (r) { max = Math.max(max, Number(r.cents) || 0); });
+    max = max || 1;
+    return '<ul class="zhbars">' + rows.map(function (r) {
+      var pct = (Number(r.cents) || 0) / max * 100;
+      return '<li class="zhbars__row"><span class="zhbars__name">' + esc(r.merchant || r.name || '') + '</span>' +
+        '<span class="zhbars__track"><i style="width:' + Math.max(1, pct).toFixed(1) + '%"></i></span>' +
+        '<span class="zhbars__val">' + esc(fmtMoney(r.cents)) + '<span class="zhbars__count">' + esc(String(r.count || 0)) + ' 笔</span></span></li>';
+    }).join('') + '</ul>';
+  }
+
+  // ---------- 仪表盘 ----------
+  function zoneConclusionHtml(d) {
+    var k = d.kpis || {};
+    var budget = d.budget || [];
+    var worst = budget.filter(function (b) { return b.state === 'over'; })[0];
+    var parts = [];
+    parts.push('本月支出 ' + fmtMoney(k.month_out_cents) + '、收入 ' + fmtMoney(k.month_in_cents) + '，净流入 ' + fmtMoney(k.net_flow_cents) + '。');
+    if (worst) parts.push(worst.category + '已用掉预算 ' + worst.pct + '%，是当期最紧的一项。');
+    if (Number(k.credit_due_cents) > 0) parts.push('信用卡待还 ' + fmtMoney(k.credit_due_cents) + '，到期前还清不计息。');
+    var todoRows = (d.todo && d.todo.rows) || [];
+    if (todoRows.length) parts.push('另有 ' + todoRows.length + ' 类待办等待处理。');
+    return '<div class="zconclusion">' +
+      '<div class="zconclusion__top"><span class="eyebrow">三句话看懂这个月</span>' +
+      '<span class="zconclusion__asof">数据截至 ' + esc(zoneTime(d.as_of)) + '</span></div>' +
+      '<p class="zconclusion__text">' + esc(parts.join('')) + '</p></div>';
+  }
+  function zoneBudgetHtml(rows) {
+    if (!rows || !rows.length) return zoneEmptyHtml('还没有设置预算');
+    return '<ul class="zbudget">' + rows.map(function (b) {
+      var pct = Number(b.pct) || 0;
+      var width = Math.max(0, Math.min(100, pct));
+      return '<li class="zbudget__row zbudget__row--' + esc(b.state) + '">' +
+        '<span class="zbudget__name">' + esc(b.category) + '</span>' +
+        '<span class="zbudget__track"><i style="width:' + width.toFixed(1) + '%"></i></span>' +
+        '<span class="zbudget__pct">' + pct + '%</span>' +
+        '<span class="zbudget__val">' + esc(fmtMoney(b.used_cents)) + ' / ' + esc(fmtMoney(b.limit_cents)) + '</span></li>';
+    }).join('') + '</ul>';
+  }
+  function zoneTodoHtml(todo) {
+    todo = todo || {};
+    var rows = todo.rows || [];
+    var chain = todo.chain || {};
+    var badge = chain.valid
+      ? '<span class="zchain zchain--ok">审计链有效 · ' + (chain.checked || 0) + ' 条</span>'
+      : '<span class="zchain zchain--bad">审计链异常</span>';
+    var list = rows.length ? rows.map(function (r) {
+      return '<li class="ztodo__row"><button class="ztodo__btn" type="button" data-ztodo="' + esc(r.kind) + '">' +
+        '<span class="ztodo__label">' + esc(r.label) + '</span>' +
+        '<span class="ztodo__count">' + esc(String(r.count)) + '</span>' +
+        '<span class="ztodo__detail">' + esc(r.detail || '') + '</span></button></li>';
+    }).join('') : '<li class="ztodo__row ztodo__row--clear">当前没有待处理事项</li>';
+    return '<div class="ztodo__head">' + badge + '</div><ul class="ztodo">' + list + '</ul>';
+  }
+  function zoneRecentHtml(rows) {
+    if (!rows || !rows.length) return zoneEmptyHtml('暂无流水');
+    var body = rows.map(function (r) {
+      var isIn = r.direction === 'in';
+      return '<tr><td class="zcell--mono">' + esc(zoneDateTime(r.ts)) + '</td>' +
+        '<td>' + esc(r.counterparty || r.category || '—') + (r.category ? '<span class="zcell__tag">' + esc(r.category) + '</span>' : '') + '</td>' +
+        '<td class="zcell--muted zcell--acct">' + esc((r.account_name || '') + ' ' + (r.account_last4 || '')) + '</td>' +
+        '<td class="zcell--num ' + (isIn ? 'zin' : 'zout') + '">' + (isIn ? '+' : '−') + esc(fmtMoney(Math.abs(Number(r.amount_cents) || 0)).replace('¥', '¥')) + '</td></tr>';
+    }).join('');
+    return '<div class="ztable__wrap"><table class="ztable"><thead><tr>' +
+      '<th scope="col">时间</th><th scope="col">摘要</th><th scope="col" class="zcell--acct">账户</th>' +
+      '<th scope="col" class="zcell--num">金额</th></tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+  function zoneRenderDashboard(d) {
+    if (!d || !d.kpis) return zoneEmptyHtml('没有可展示的数据');
+    var k = d.kpis, deltas = k.deltas || {}, sparks = k.sparklines || {};
+    var kpis = [
+      { label: '净资产', value: fmtMoney(k.net_worth_cents), note: '含理财 ' + fmtMoney(k.holdings_cents)
+        + (Number(k.credit_due_cents) > 0 ? '，已扣信用卡待还' : '') },
+      { label: '可用资金', value: fmtMoney(k.available_cents), note: '活期 + 储蓄，可直接动用' },
+      { label: '本月支出', value: fmtMoney(k.month_out_cents), delta: deltas.month_out_pct, goodWhenUp: false, note: '较上月同期', spark: sparks.out_cents, tone: 'out' },
+      { label: '本月收入', value: fmtMoney(k.month_in_cents), delta: deltas.month_in_pct, goodWhenUp: true, note: '较上月同期', spark: sparks.in_cents, tone: 'in' },
+      { label: '本月净流入', value: fmtMoney(k.net_flow_cents), delta: deltas.net_flow_pct, goodWhenUp: true, note: '收入 − 支出' },
+      { label: '信用卡待还', value: fmtMoney(k.credit_due_cents), note: Number(k.credit_due_cents) > 0 ? '到期前还清不计息' : '当前无待还' }
+    ];
+    var months = (d.trend && d.trend.months) || [];
+    var trendRows = months.map(function (m) {
+      return { label: zoneMonthLabel(m.month), out_cents: m.out_cents, in_cents: m.in_cents, net_cents: m.net_cents };
+    });
+    var trendTable = months.map(function (m) {
+      return '<tr><td>' + esc(m.month) + '</td><td class="zcell--num">' + esc(fmtMoney(m.in_cents)) + '</td>' +
+        '<td class="zcell--num">' + esc(fmtMoney(m.out_cents)) + '</td><td class="zcell--num">' + esc(fmtMoney(m.net_cents)) + '</td></tr>';
+    });
+    var comp = d.composition || {};
+    var byAcc = (comp.by_account || []).map(function (a) {
+      return '<tr><td>' + esc(a.name || '') + '</td><td class="zcell--muted">' + esc(a.number_masked || '') + '</td>' +
+        '<td class="zcell--num">' + esc(fmtMoney(a.balance_cents)) + '</td></tr>';
+    });
+    var html = [];
+    html.push(zoneConclusionHtml(d));
+    html.push('<div class="zkpis">' + kpis.map(zoneKpiCard).join('') + '</div>');
+    html.push(zoneSection('收支趋势 · 近 6 个月', '柱为支出与收入，折线为净流入；纵轴自 0 起，单位与账户一致',
+      zoneFlowSvg(trendRows, { label: '近 6 个月收支与净流入' }) + zoneLegendRow([['out', '支出'], ['in', '收入'], ['net', '净流入']]) +
+      zoneTableDetails('查看数据表', ['月份', '收入', '支出', '净流入'], trendTable), 'zcard--wide'));
+    html.push(zoneSection('预算执行', '按本月已用金额／月度预算计算，超过 100% 标红',
+      zoneBudgetHtml(d.budget || [])));
+    html.push(zoneSection('支出构成 · 本月', '按类别占比（100% 堆叠），总支出 ' + fmtMoney(comp.total_out_cents),
+      zoneStacked(comp.by_category || [], comp.total_out_cents) +
+      (byAcc.length ? zoneTableDetails('按账户看余额', ['账户', '卡号', '余额'], byAcc) : '')));
+    html.push(zoneSection('待办与风险', '待授权、预约转账、临近扣费与异常消费集中在这里',
+      zoneTodoHtml(d.todo)));
+    html.push(zoneSection('最近流水', '最新 ' + ((d.recent || []).length) + ' 笔，完整明细见「分析」页',
+      zoneRecentHtml(d.recent || []), 'zcard--wide'));
+    return html.join('');
+  }
+
+  // ---------- 分析页 ----------
+  function zoneAnalyticsControls() {
+    var z = zone();
+    var presets = ZONE_PRESETS.map(function (p) {
+      return '<button class="seg__btn' + (z.preset === p.id ? ' is-on' : '') + '" type="button" data-zpreset="' + p.id + '">' + esc(p.label) + '</button>';
+    }).join('');
+    var grans = ZONE_GRANS.map(function (g) {
+      return '<button class="seg__btn' + (z.granularity === g.id ? ' is-on' : '') + '" type="button" data-zgran="' + g.id + '">' + esc(g.label) + '</button>';
+    }).join('');
+    return '<div class="zcontrols">' +
+      '<div class="zcontrols__group"><span class="zcontrols__label">区间</span><div class="seg" role="group" aria-label="时间区间">' + presets + '</div></div>' +
+      '<div class="zcontrols__group"><span class="zcontrols__label">起止</span>' +
+      '<input class="zinput" type="date" id="zoneFrom" value="' + esc(z.from) + '" aria-label="开始日期">' +
+      '<span class="zcontrols__sep" aria-hidden="true">→</span>' +
+      '<input class="zinput" type="date" id="zoneTo" value="' + esc(z.to) + '" aria-label="结束日期"></div>' +
+      '<div class="zcontrols__group"><span class="zcontrols__label">粒度</span><div class="seg" role="group" aria-label="聚合粒度">' + grans + '</div></div>' +
+      '<div class="zcontrols__group zcontrols__group--end"><button class="btn-secondary" type="button" id="zoneCsv">导出 CSV</button></div>' +
+      '</div>';
+  }
+  function zoneSortedCats(a) {
+    var rows = (a.categories || []).slice();
+    var key = zone().sortKey, dir = zone().sortDir;
+    rows.sort(function (x, y) {
+      var vx = x[key], vy = y[key];
+      if (typeof vx === 'string' || typeof vy === 'string' || vx == null || vy == null) {
+        var sx = String(vx == null ? '' : vx), sy = String(vy == null ? '' : vy);
+        return sx.localeCompare(sy) * dir;
+      }
+      return ((Number(vx) || 0) - (Number(vy) || 0)) * dir;
+    });
+    return rows;
+  }
+  function zoneCatsHtml(a) {
+    var rows = zoneSortedCats(a);
+    var z = zone();
+    function th(key, label, num) {
+      var on = z.sortKey === key;
+      var mark = on ? (z.sortDir > 0 ? ' ↑' : ' ↓') : '';
+      return '<th scope="col" class="' + (num ? 'zcell--num ' : '') + 'zth' + (on ? ' is-sorted' : '') + '">' +
+        '<button class="zth__btn" type="button" data-zsort="' + key + '">' + esc(label) + mark + '</button></th>';
+    }
+    if (!rows.length) return zoneEmptyHtml('该区间没有支出');
+    var body = rows.map(function (c) {
+      var budgetPct = c.budget_pct == null ? '—' : (c.budget_pct + '%');
+      var delta = c.delta_pct == null ? '—' : ((c.delta_pct > 0 ? '↑ ' : (c.delta_pct < 0 ? '↓ ' : '')) + Math.abs(c.delta_pct).toFixed(0) + '%');
+      return '<tr><td>' + esc(c.category) + '</td>' +
+        '<td class="zcell--num">' + esc(fmtMoney(c.cents)) + '</td>' +
+        '<td class="zcell--num">' + esc(String(c.pct)) + '%</td>' +
+        '<td class="zcell--num ' + (c.delta_pct > 0 ? 'zout' : (c.delta_pct < 0 ? 'zin' : '')) + '">' + esc(delta) + '</td>' +
+        '<td class="zcell--num ' + (c.over_budget ? 'zout' : '') + '">' + esc(budgetPct) + '</td></tr>';
+    }).join('');
+    return '<div class="ztable__wrap"><table class="ztable"><thead><tr>' +
+      th('category', '类别') + th('cents', '金额', true) + th('pct', '占比', true) +
+      th('delta_pct', '环比', true) + th('budget_pct', '预算使用', true) +
+      '</tr></thead><tbody>' + body + '</tbody></table></div>';
+  }
+  function zoneAnomaliesHtml(a) {
+    var rows = a.anomalies || [];
+    if (!rows.length) return zoneEmptyHtml('该区间没有异常消费');
+    return '<ul class="zlist">' + rows.map(function (r) {
+      return '<li class="zlist__row"><span class="zlist__badge zlist__badge--' + esc(r.level || 'warn') + '">' + esc(r.level === 'high' ? '高' : '关注') + '</span>' +
+        '<span class="zlist__main"><span class="zlist__title">' + esc(r.counterparty || r.category || '') + '</span>' +
+        '<span class="zlist__meta">' + esc(zoneDayLabel(r.ts)) + ' · ' + esc(r.detail || r.rule || '') + '</span></span>' +
+        '<span class="zlist__num">' + esc(fmtMoney(r.amount_cents)) + '</span></li>';
+    }).join('') + '</ul>';
+  }
+  function zoneSubsHtml(a) {
+    var rows = a.subscriptions || [];
+    if (!rows.length) return zoneEmptyHtml('没有正在扣费的订阅');
+    return '<ul class="zlist">' + rows.map(function (r) {
+      var left = Number(r.days_left);
+      var tone = left <= 3 ? 'bad' : (left <= 7 ? 'warn' : 'ok');
+      return '<li class="zlist__row"><span class="zlist__badge zlist__badge--' + tone + '">' + (isFinite(left) ? (left + ' 天') : '—') + '</span>' +
+        '<span class="zlist__main"><span class="zlist__title">' + esc(r.name || '') + '</span>' +
+        '<span class="zlist__meta">' + esc(r.cycle || '') + ' · 下次 ' + esc(r.next_charge || '') + '</span></span>' +
+        '<span class="zlist__num">' + esc(fmtMoney(r.amount_cents)) + '</span></li>';
+    }).join('') + '</ul>';
+  }
+  function zoneSavingsHtml(a) {
+    var s = a.savings || {};
+    var suggestions = s.suggestions || [];
+    if (!suggestions.length) return zoneEmptyHtml('该区间没有明显的节流空间');
+    return '<div class="zsavings"><div class="zsavings__num"><span class="zsavings__label">可优化金额</span>' +
+      '<span class="zsavings__value">' + esc(fmtMoney(s.potential_cents)) + '</span>' +
+      '<span class="zsavings__note">按当前区间同类支出估算，仅供参考</span></div>' +
+      '<ul class="zsavings__list">' + suggestions.map(function (t) {
+        return '<li>' + esc(typeof t === 'string' ? t : (t.text || '')) + '</li>';
+      }).join('') + '</ul></div>';
+  }
+  function zoneTxHtml(a) {
+    var z = zone();
+    var rows = a.transactions || [];
+    if (!rows.length) return zoneEmptyHtml('该区间没有流水');
+    var per = z.txPer, total = rows.length, pages = Math.max(1, Math.ceil(total / per));
+    if (z.txPage > pages - 1) z.txPage = pages - 1;
+    if (z.txPage < 0) z.txPage = 0;
+    var slice = rows.slice(z.txPage * per, z.txPage * per + per);
+    var body = slice.map(function (r) {
+      var isIn = r.direction === 'in';
+      return '<tr><td class="zcell--mono">' + esc(zoneDayLabel(r.ts) + ' ' + zoneTime(r.ts)) + '</td>' +
+        '<td>' + esc(r.counterparty || '') + '</td>' +
+        '<td class="zcell--muted">' + esc(r.category || '') + '</td>' +
+        '<td class="zcell--muted zcell--acct">' + esc(r.account_last4 || '') + '</td>' +
+        '<td class="zcell--num ' + (isIn ? 'zin' : 'zout') + '">' + (isIn ? '+' : '−') + esc(fmtMoney(Math.abs(Number(r.amount_cents) || 0))) + '</td></tr>';
+    }).join('');
+    return '<div class="ztable__wrap"><table class="ztable"><thead><tr>' +
+      '<th scope="col">时间</th><th scope="col">摘要</th><th scope="col">类别</th><th scope="col" class="zcell--acct">账户</th>' +
+      '<th scope="col" class="zcell--num">金额</th></tr></thead><tbody>' + body + '</tbody></table></div>' +
+      '<div class="zpager"><span class="zpager__info">共 ' + total + ' 笔 · 第 ' + (z.txPage + 1) + ' / ' + pages + ' 页</span>' +
+      '<span class="zpager__acts"><button class="btn-text" type="button" data-zpage="prev"' + (z.txPage <= 0 ? ' disabled' : '') + '>上一页</button>' +
+      '<button class="btn-text" type="button" data-zpage="next"' + (z.txPage >= pages - 1 ? ' disabled' : '') + '>下一页</button></span></div>';
+  }
+  function zoneRenderAnalytics(a) {
+    if (!a || !a.totals) return zoneEmptyHtml('没有可展示的数据');
+    var t = a.totals, r = a.range || {};
+    var series = (a.series || []).map(function (s) {
+      return { label: zoneBucketLabel(s.bucket), out_cents: s.out_cents, in_cents: s.in_cents, net_cents: s.net_cents };
+    });
+    var seriesTable = (a.series || []).map(function (s) {
+      return '<tr><td>' + esc(s.bucket) + '</td><td class="zcell--num">' + esc(fmtMoney(s.in_cents)) + '</td>' +
+        '<td class="zcell--num">' + esc(fmtMoney(s.out_cents)) + '</td><td class="zcell--num">' + esc(fmtMoney(s.net_cents)) + '</td>' +
+        '<td class="zcell--num">' + esc(String(s.count)) + '</td></tr>';
+    });
+    var kpis = [
+      { label: '区间支出', value: fmtMoney(t.out_cents), delta: t.out_delta_pct, goodWhenUp: false, note: '上一等长区间 ' + fmtMoney(t.prev_out_cents) },
+      { label: '区间收入', value: fmtMoney(t.in_cents), delta: t.in_delta_pct, goodWhenUp: true, note: '上一等长区间 ' + fmtMoney(t.prev_in_cents) },
+      { label: '净额', value: fmtMoney(t.net_cents), note: '收入 − 支出' },
+      { label: '日均支出', value: fmtMoney(t.avg_day_out_cents), note: t.txn_count + ' 笔 · 跨 ' + (r.span_days || 0) + ' 天' }
+    ];
+    var html = [];
+    html.push(zoneAnalyticsControls());
+    html.push('<div class="zkpis zkpis--four">' + kpis.map(zoneKpiCard).join('') + '</div>');
+    html.push(zoneSection('收支序列 · ' + (r.start || '') + ' 至 ' + (r.end || ''), '柱为支出与收入，折线为净额；纵轴自 0 起',
+      zoneFlowSvg(series, { label: '区间收支序列' }) + zoneLegendRow([['out', '支出'], ['in', '收入'], ['net', '净额']]) +
+      zoneTableDetails('查看数据表', ['区间', '收入', '支出', '净额', '笔数'], seriesTable), 'zcard--wide'));
+    html.push(zoneSection('类别排名', '点表头排序；预算使用率按区间覆盖月份折算', '<div id="zoneCats">' + zoneCatsHtml(a) + '</div>'));
+    html.push(zoneSection('商户 TOP ' + ((a.merchants || []).length), '按区间支出金额排序，横条长度表示相对份额',
+      zoneHbars(a.merchants || [])));
+    html.push(zoneSection('异常消费', '按金额与频次偏离度排序，仅提示，不自动拦截', zoneAnomaliesHtml(a)));
+    html.push(zoneSection('固定周期与扣费', '订阅与固定支出按下次扣费时间排序', zoneSubsHtml(a)));
+    html.push(zoneSection('储蓄建议', '基于本期支出结构给出的可选动作', zoneSavingsHtml(a)));
+    html.push(zoneSection('明细', '最新 100 笔，支持导出 CSV 自行核对', '<div id="zoneTx">' + zoneTxHtml(a) + '</div>', 'zcard--wide'));
+    return html.join('');
+  }
+
+  // ---------- 数据加载 ----------
+  function zoneEnsureSession() {
+    if (state.sessionId) return Promise.resolve(state.sessionId);
+    if (zone().sessionWait) return zone().sessionWait;
+    bootSession();
+    zone().sessionWait = new Promise(function (resolve, reject) {
+      var tries = 0;
+      var timer = setInterval(function () {
+        tries++;
+        if (state.sessionId) {
+          clearInterval(timer);
+          zone().sessionWait = null;
+          resolve(state.sessionId);
+        } else if (tries > 25) {
+          clearInterval(timer);
+          zone().sessionWait = null;
+          reject(new Error('会话尚未就绪，请稍后重试'));
+        }
+      }, 200);
+    });
+    return zone().sessionWait;
+  }
+  function zoneRangeForPreset(presetId) {
+    var p = ZONE_PRESETS.filter(function (x) { return x.id === presetId; })[0] || ZONE_PRESETS[3];
+    var to = new Date();
+    var from = new Date(to.getTime() - (p.days - 1) * 86400000);
+    return { from: zoneIsoDay(from), to: zoneIsoDay(to), days: p.days };
+  }
+  function zoneDefaultGranularity(days) {
+    if (days <= 31) return 'day';
+    if (days <= 120) return 'week';
+    return 'month';
+  }
+  function zoneFetchDashboard(force) {
+    var z = zone();
+    if (z.dash && !force && Date.now() - z.dashAt < 30000) {
+      zonePaint(zoneRenderDashboard(z.dash));
+      return Promise.resolve(z.dash);
+    }
+    z.dashBusy = true;
+    zoneStamp('读取中…');
+    return zoneEnsureSession().then(function (sid) {
+      return getJson('/api/dashboard?session_id=' + encodeURIComponent(sid) + '&window=30d');
+    }).then(function (d) {
+      z.dash = d;
+      z.dashAt = Date.now();
+      z.dashBusy = false;
+      zonePaint(zoneRenderDashboard(d));
+      zoneStamp('更新于 ' + fmtTime(new Date()) + ' · 只读');
+      return d;
+    }).catch(function (e) {
+      z.dashBusy = false;
+      zonePaint(zoneErrorHtml(e && e.message ? e.message : '仪表盘读取失败'));
+      zoneStamp('读取失败');
+      throw e;
+    });
+  }
+  function zoneFetchAnalytics(force) {
+    var z = zone();
+    if (z.ana && !force && Date.now() - z.anaAt < 30000) {
+      zonePaint(zoneRenderAnalytics(z.ana));
+      return Promise.resolve(z.ana);
+    }
+    z.anaBusy = true;
+    zoneStamp('读取中…');
+    var path = '/api/analytics?session_id=' + encodeURIComponent(state.sessionId || '') +
+      '&from=' + encodeURIComponent(z.from) + '&to=' + encodeURIComponent(z.to) +
+      '&granularity=' + encodeURIComponent(z.granularity);
+    return zoneEnsureSession().then(function (sid) {
+      return getJson('/api/analytics?session_id=' + encodeURIComponent(sid) +
+        '&from=' + encodeURIComponent(z.from) + '&to=' + encodeURIComponent(z.to) +
+        '&granularity=' + encodeURIComponent(z.granularity));
+    }).then(function (a) {
+      z.ana = a;
+      z.anaAt = Date.now();
+      z.anaBusy = false;
+      zonePaint(zoneRenderAnalytics(a));
+      zoneStamp('更新于 ' + fmtTime(new Date()) + ' · 只读');
+      return a;
+    }).catch(function (e) {
+      z.anaBusy = false;
+      zonePaint(zoneErrorHtml(e && e.message ? e.message : '分析数据读取失败'));
+      zoneStamp('读取失败');
+      throw e;
+    });
+  }
+  function zonePaint(html) {
+    var body = document.getElementById('zoneBody');
+    if (body) body.innerHTML = html;
+  }
+  function loadZone(force) {
+    var z = zone();
+    if (z.view === 'analytics') {
+      return zoneFetchAnalytics(!!force).catch(function () {});
+    }
+    return zoneFetchDashboard(!!force).catch(function () {});
+  }
+  function zoneStartPoll() {
+    var z = zone();
+    if (z.pollTimer) return;
+    z.pollTimer = setInterval(function () {
+      if (state.view !== 'zone') { zoneStopPoll(); return; }
+      if (typeof document.hidden === 'boolean' && document.hidden) return;
+      loadZone(true);
+    }, 60000);
+  }
+  function zoneStopPoll() {
+    var z = zone();
+    if (z.pollTimer) { clearInterval(z.pollTimer); z.pollTimer = null; }
+  }
+
+  // ---------- 视图 / 路由 ----------
+  function zoneSetHeader(view) {
+    var meta = ZONE_META[view] || ZONE_META.dashboard;
+    var h1 = document.getElementById('zoneH1');
+    var sub = document.getElementById('zoneSub');
+    if (h1) h1.textContent = meta.title;
+    if (sub) sub.textContent = meta.sub;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-zone]'), function (btn) {
+      var on = btn.getAttribute('data-zone') === view;
+      btn.classList.toggle('is-on', on);
+      btn.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+  }
+  function zoneEnter(view, params) {
+    var z = zone();
+    z.view = view || z.view || 'dashboard';
+    if (params) {
+      if (params.preset) z.preset = params.preset;
+      if (params.from) z.from = params.from;
+      if (params.to) z.to = params.to;
+      if (params.gran) z.granularity = params.gran;
+    }
+    if (!z.from || !z.to) {
+      var r = zoneRangeForPreset(z.preset || '180d');
+      z.from = r.from;
+      z.to = r.to;
+      z.granularity = z.granularity || zoneDefaultGranularity(r.days);
+    }
+    zoneSetHeader(z.view);
+    zoneSyncHash();
+    var body = document.getElementById('zoneBody');
+    if (body && !body.firstChild) body.innerHTML = zoneSkeleton();
+    loadZone(false);
+    zoneStartPoll();
+  }
+  function zoneSwitchTab(view) {
+    var z = zone();
+    if (z.view === view) return;
+    z.view = view;
+    zoneSetHeader(view);
+    zoneSyncHash();
+    zonePaint(zoneSkeleton());
+    loadZone(false);
+  }
+  function zoneBuildHash() {
+    var z = zone();
+    if (state.view !== 'zone') return '';
+    if (z.view === 'analytics') {
+      return '#/zone/analytics?preset=' + encodeURIComponent(z.preset || '') +
+        '&from=' + encodeURIComponent(z.from) + '&to=' + encodeURIComponent(z.to) +
+        '&gran=' + encodeURIComponent(z.granularity);
+    }
+    return '#/zone/dashboard';
+  }
+  function zoneSyncHash() {
+    var hash = zoneBuildHash();
+    if (!hash) return;
+    zoneSetHash(hash);
+  }
+  function zoneSetHash(hash) {
+    var z = zone();
+    try {
+      if (!window.location || typeof window.location.hash !== 'string') return;
+      if (window.location.hash === hash) return;
+      z.ignoreHash = true;
+      window.location.hash = hash;
+      setTimeout(function () { z.ignoreHash = false; }, 0);
+    } catch (e) { /* 无 hash 路由的环境（自测桩）忽略 */ }
+  }
+  function zoneParseHash(hash) {
+    var raw = String(hash || '').replace(/^#/, '');
+    if (!raw) return null;
+    if (raw.charAt(0) === '/') raw = raw.slice(1);
+    var qi = raw.indexOf('?');
+    var path = qi >= 0 ? raw.slice(0, qi) : raw;
+    var query = qi >= 0 ? raw.slice(qi + 1) : '';
+    var parts = path.split('/').filter(Boolean);
+    var params = {};
+    query.split('&').forEach(function (pair) {
+      if (!pair) return;
+      var kv = pair.split('=');
+      if (!kv[0]) return;
+      params[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
+    });
+    var view = parts[0] || 'home';
+    if (view === 'zone') return { view: 'zone', zone: parts[1] || 'dashboard', params: params };
+    return { view: view, params: params };
+  }
+  function zoneHandleHash() {
+    var z = zone();
+    if (z.ignoreHash) return;
+    var hash = '';
+    try { hash = (window.location && window.location.hash) || ''; } catch (e) { hash = ''; }
+    var route = zoneParseHash(hash);
+    if (!route) return;
+    if (route.view === 'zone') {
+      z.view = route.zone || 'dashboard';
+      showView('zone');
+      zoneEnter(z.view, route.params);
+    } else if (route.view !== state.view || route.view === 'home') {
+      showView(route.view);
+    }
+  }
+
+  // ---------- 主题 ----------
+  var THEME_LABEL = { system: '跟随系统', light: '浅色', dark: '深色' };
+  function themeStored() {
+    try { return (window.localStorage && window.localStorage.getItem('zs-theme')) || 'light'; } catch (e) { return 'light'; }
+  }
+  function themeResolve(mode) {
+    if (mode === 'dark' || mode === 'light') return mode;
+    var dark = false;
+    try { dark = !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches); } catch (e) {}
+    return dark ? 'dark' : 'light';
+  }
+  function themeApply(mode) {
+    var m = THEME_LABEL[mode] ? mode : 'light';
+    var resolved = themeResolve(m);
+    document.body.setAttribute('data-theme', resolved);
+    state.theme = m;
+    try { window.localStorage && window.localStorage.setItem('zs-theme', m); } catch (e) {}
+    var btn = document.getElementById('btnTheme');
+    if (btn) {
+      btn.setAttribute('title', '外观：' + THEME_LABEL[m] + '（点击切换）');
+      btn.setAttribute('aria-label', '切换外观，当前' + THEME_LABEL[m]);
+    }
+    try {
+      var meta = document.querySelector('meta[name="theme-color"]');
+      if (meta) meta.setAttribute('content', resolved === 'dark' ? '#0B1220' : '#0B5FD0');
+    } catch (e) {}
+    return resolved;
+  }
+  function themeToggle() {
+    var order = { system: 'light', light: 'dark', dark: 'system' };
+    var next = order[state.theme || 'light'] || 'light';
+    themeApply(next);
+    toast('外观：' + THEME_LABEL[next], { sub: next === 'system' ? '跟随系统深浅色自动切换' : '已保存，下次打开仍生效' });
+  }
+
+  // ---------- 命令面板 ----------
+  function paletteActions() {
+    return [
+      { id: 'zone-dashboard', label: '仪表盘', hint: '专区 · 净资产、本月收支、预算与待办', run: function () { showView('zone'); zoneSwitchTab('dashboard'); } },
+      { id: 'zone-analytics', label: '分析', hint: '专区 · 类别、商户、异常与订阅', run: function () { showView('zone'); zoneSwitchTab('analytics'); } },
+      { id: 'nav-home', label: '回到工作台', hint: '对话即操作', run: function () { showView('home'); } },
+      { id: 'theme', label: '切换外观', hint: '跟随系统 / 浅色 / 深色', run: themeToggle },
+      { id: 'audit', label: '打开审计链', hint: '哈希链校验与导出', run: function () { openAudit(); } },
+      { id: 'tasks', label: '换一批快捷指令', run: function () { nextTaskPage(); } },
+      { id: 'refresh', label: '刷新当前视图', run: function () { if (state.view === 'zone') loadZone(true); else bootSession(); } },
+      { id: 'reset', label: '重置演示数据', hint: '清空并按种子重建', run: function () { confirmReset(); } }
+    ];
+  }
+  function paletteFiltered() {
+    var q = (state.paletteQuery || '').trim().toLowerCase();
+    var all = state.paletteActions || [];
+    if (!q) return all;
+    return all.filter(function (a) {
+      return (a.label + ' ' + (a.hint || '')).toLowerCase().indexOf(q) >= 0;
+    });
+  }
+  function paletteRender() {
+    var list = document.getElementById('paletteList');
+    if (!list) return;
+    var items = paletteFiltered();
+    if (!items.length) {
+      list.innerHTML = '<div class="palette__empty">没有匹配的命令</div>';
+      return;
+    }
+    state.paletteIndex = Math.max(0, Math.min(state.paletteIndex || 0, items.length - 1));
+    list.innerHTML = items.map(function (a, i) {
+      return '<button class="palette__item' + (i === state.paletteIndex ? ' is-on' : '') + '" type="button" role="option" aria-selected="' + (i === state.paletteIndex ? 'true' : 'false') + '" data-palette="' + i + '">' +
+        '<span class="palette__label">' + esc(a.label) + '</span>' +
+        (a.hint ? '<span class="palette__hint">' + esc(a.hint) + '</span>' : '') + '</button>';
+    }).join('');
+  }
+  function paletteOpen() {
+    var el = document.getElementById('palette');
+    var input = document.getElementById('paletteInput');
+    if (!el) return;
+    state.paletteActions = paletteActions();
+    state.paletteQuery = '';
+    state.paletteIndex = 0;
+    el.hidden = false;
+    if (input) { input.value = ''; try { input.focus(); } catch (e) {} }
+    paletteRender();
+  }
+  function paletteClose() {
+    var el = document.getElementById('palette');
+    if (el) el.hidden = true;
+  }
+  function paletteRun(index) {
+    var items = paletteFiltered();
+    var action = items[index];
+    paletteClose();
+    if (action && action.run) action.run();
+  }
+  function paletteMove(delta) {
+    var items = paletteFiltered();
+    if (!items.length) return;
+    state.paletteIndex = (state.paletteIndex + delta + items.length) % items.length;
+    paletteRender();
+  }
+
+  // ---------- 事件绑定 ----------
+  function bindZone() {
+    if (dom.btnZoneRefresh) dom.btnZoneRefresh.addEventListener('click', function () { loadZone(true); });
+    if (dom.btnTheme) dom.btnTheme.addEventListener('click', themeToggle);
+    Array.prototype.forEach.call(document.querySelectorAll('[data-zone]'), function (btn) {
+      btn.addEventListener('click', function () { zoneSwitchTab(btn.getAttribute('data-zone')); });
+    });
+    var body = document.getElementById('zoneBody');
+    if (body) body.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var preset = t.closest('[data-zpreset]');
+      if (preset) {
+        zone().preset = preset.getAttribute('data-zpreset');
+        var r = zoneRangeForPreset(zone().preset);
+        zone().from = r.from;
+        zone().to = r.to;
+        zone().granularity = zoneDefaultGranularity(r.days);
+        zone().txPage = 0;
+        loadZone(true);
+        return;
+      }
+      var gran = t.closest('[data-zgran]');
+      if (gran) { zone().granularity = gran.getAttribute('data-zgran'); zone().txPage = 0; loadZone(true); return; }
+      var sort = t.closest('[data-zsort]');
+      if (sort) {
+        var key = sort.getAttribute('data-zsort');
+        var z = zone();
+        if (z.sortKey === key) z.sortDir = -z.sortDir; else { z.sortKey = key; z.sortDir = -1; }
+        var cats = document.getElementById('zoneCats');
+        if (cats && z.ana) cats.innerHTML = zoneCatsHtml(z.ana);
+        return;
+      }
+      var page = t.closest('[data-zpage]');
+      if (page) {
+        var z2 = zone();
+        z2.txPage += page.getAttribute('data-zpage') === 'next' ? 1 : -1;
+        var box = document.getElementById('zoneTx');
+        if (box && z2.ana) box.innerHTML = zoneTxHtml(z2.ana);
+        return;
+      }
+      var todo = t.closest('[data-ztodo]');
+      if (todo) {
+        var kind = todo.getAttribute('data-ztodo');
+        var row = (((zone().dash || {}).todo || {}).rows || []).filter(function (r) { return r.kind === kind; })[0];
+        if (row) showModal(row.label, '<p>' + esc(row.detail || '') + '</p>', null);
+        return;
+      }
+      if (t.id === 'zoneCsv' || (t.closest && t.closest('#zoneCsv'))) { zoneExportCsv(); return; }
+      if (t.id === 'zoneRetry' || (t.closest && t.closest('#zoneRetry'))) { loadZone(true); return; }
+    });
+    // 日期输入
+    ['zoneFrom', 'zoneTo'].forEach(function (id) { /* 动态渲染后再绑定，见 zonePaint 后置钩子 */ });
+    var fromEl = document.getElementById('zoneFrom');
+    var toEl = document.getElementById('zoneTo');
+    if (fromEl) fromEl.addEventListener('change', function () {
+      zone().from = fromEl.value; zone().preset = '';
+      zone().granularity = zoneDefaultGranularity(Math.max(1, (new Date(zone().to) - new Date(zone().from)) / 86400000 + 1));
+      loadZone(true);
+    });
+    if (toEl) toEl.addEventListener('change', function () {
+      zone().to = toEl.value; zone().preset = '';
+      loadZone(true);
+    });
+    // 外观跟随系统
+    try {
+      if (window.matchMedia) {
+        var mq = window.matchMedia('(prefers-color-scheme: dark)');
+        if (mq && mq.addEventListener) mq.addEventListener('change', function () { if (state.theme === 'system') themeApply('system'); });
+      }
+    } catch (e) {}
+    // 命令面板
+    document.addEventListener('keydown', function (ev) {
+      var meta = ev.metaKey || ev.ctrlKey;
+      if (meta && (ev.key === 'k' || ev.key === 'K')) {
+        ev.preventDefault();
+        paletteOpen();
+        return;
+      }
+      var pal = document.getElementById('palette');
+      if (!pal || pal.hidden) return;
+      if (ev.key === 'Escape') { ev.preventDefault(); paletteClose(); }
+      else if (ev.key === 'ArrowDown') { ev.preventDefault(); paletteMove(1); }
+      else if (ev.key === 'ArrowUp') { ev.preventDefault(); paletteMove(-1); }
+      else if (ev.key === 'Enter') { ev.preventDefault(); paletteRun(state.paletteIndex || 0); }
+    });
+    var pal = document.getElementById('palette');
+    if (pal) {
+      pal.addEventListener('click', function (ev) {
+        if (ev.target === pal) { paletteClose(); return; }
+        var item = ev.target && ev.target.closest ? ev.target.closest('[data-palette]') : null;
+        if (item) paletteRun(Number(item.getAttribute('data-palette')) || 0);
+      });
+    }
+    var palInput = document.getElementById('paletteInput');
+    if (palInput) palInput.addEventListener('input', function () {
+      state.paletteQuery = palInput.value;
+      state.paletteIndex = 0;
+      paletteRender();
+    });
+    try {
+      window.addEventListener('hashchange', zoneHandleHash);
+    } catch (e) {}
+    themeApply(themeStored());
+  }
+
+  // ---------- 导出 ----------
+  function zoneCsvEscape(v) {
+    var s = String(v == null ? '' : v);
+    return '"' + s.replace(/"/g, '""') + '"';
+  }
+  function zoneExportCsv() {
+    var a = zone().ana;
+    if (!a || !a.transactions) { toast('还没有可导出的数据', { type: 'error' }); return; }
+    var lines = ['时间,摘要,类别,账户,金额,方向'];
+    a.transactions.forEach(function (r) {
+      lines.push([
+        zoneCsvEscape(r.ts), zoneCsvEscape(r.counterparty), zoneCsvEscape(r.category),
+        zoneCsvEscape(r.account_last4), zoneCsvEscape((Number(r.amount_cents) || 0) / 100),
+        zoneCsvEscape(r.direction === 'in' ? '收入' : '支出')
+      ].join(','));
+    });
+    var text = '\ufeff' + lines.join('\r\n');
+    var name = 'zerostep-明细-' + (a.range ? a.range.start + '_' + a.range.end : 'export') + '.csv';
+    try {
+      var blob = new Blob([text], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      toast('已导出 ' + a.transactions.length + ' 笔明细', { sub: name });
+    } catch (e) {
+      toast('当前环境不支持下载，已跳过', { type: 'error', sub: '请在浏览器中打开工作台' });
+    }
+  }
+
   function init() {
     cacheDom();
     bindEvents();
@@ -2895,7 +3842,12 @@
     autoGrow();
     traceIdle();
     renderSamples();
+    bindZone();
     showView('home');
+    state.hashReady = true;
+    try {
+      if (window.location && typeof window.location.hash === 'string') zoneHandleHash();
+    } catch (e) { /* 无 hash 环境 */ }
     loadTasks();
     loadLlmStatus();
     watchViewport();
@@ -2919,7 +3871,14 @@
     applyLocked: applyLocked, clearLocked: clearLocked, lockedNow: lockedNow,
     finishTurn: finishTurn, traceIdle: traceIdle, applyFullResult: applyFullResult, setBusy: setBusy, init: init,
     renderAnswerStart: renderAnswerStart, renderAnswerDelta: renderAnswerDelta, renderAnswerEnd: renderAnswerEnd,
-    renderInsightCard: renderInsightCard, cancelTurn: cancelTurn, setSendMode: setSendMode
+    renderInsightCard: renderInsightCard, cancelTurn: cancelTurn, setSendMode: setSendMode,
+    loadZone: loadZone, zoneEnter: zoneEnter, zoneSwitchTab: zoneSwitchTab, zoneHandleHash: zoneHandleHash,
+    zoneRenderDashboard: zoneRenderDashboard, zoneRenderAnalytics: zoneRenderAnalytics,
+    zoneFlowSvg: zoneFlowSvg, zoneSparkSvg: zoneSparkSvg, zoneParseHash: zoneParseHash,
+    zoneCatsHtml: zoneCatsHtml, zoneTxHtml: zoneTxHtml, zoneBudgetHtml: zoneBudgetHtml,
+    zoneTodoHtml: zoneTodoHtml, zoneConclusionHtml: zoneConclusionHtml,
+    themeApply: themeApply, themeToggle: themeToggle,
+    paletteOpen: paletteOpen, paletteClose: paletteClose, paletteActions: paletteActions
   };
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', init);
   else init();

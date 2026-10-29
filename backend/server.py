@@ -24,7 +24,7 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from app import audit, config, db, engine, llm, mcp_client, mock_core, plugins, push, second_factor, skills, totp  # noqa: E402
+from app import analytics, audit, config, db, engine, llm, mcp_client, mock_core, plugins, push, second_factor, skills, totp  # noqa: E402
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
@@ -301,6 +301,27 @@ class Handler(BaseHTTPRequestHandler):
                 snap = engine.session_snapshot(CONN, sid)
                 limit = _clamp_int(self._query(), "limit", 20, LIMIT_MIN, LIMIT_MAX)
                 return self._send(200, {"transactions": mock_core.list_transactions(CONN, snap["user"]["user_id"], limit=limit)})
+            # ---------- v0.7.0 新增：专区（仪表盘 / 分析），全部只读 ----------
+            if path == "/api/dashboard":
+                q = self._query()
+                sid = (q.get("session_id") or [""])[0]
+                snap = engine.session_snapshot(CONN, sid)
+                window = (q.get("window") or ["30d"])[0]
+                try:
+                    return self._send(200, analytics.dashboard(CONN, snap["user"]["user_id"], window))
+                except analytics.RangeError as exc:
+                    return self._error(400, "BAD_RANGE", str(exc))
+            if path == "/api/analytics":
+                q = self._query()
+                sid = (q.get("session_id") or [""])[0]
+                snap = engine.session_snapshot(CONN, sid)
+                try:
+                    return self._send(200, analytics.analytics(
+                        CONN, snap["user"]["user_id"],
+                        (q.get("from") or [""])[0], (q.get("to") or [""])[0],
+                        (q.get("granularity") or ["month"])[0]))
+                except analytics.RangeError as exc:
+                    return self._error(400, "BAD_RANGE", str(exc))
             if path == "/api/audit":
                 q = self._query()
                 sid = (q.get("session_id") or [None])[0]

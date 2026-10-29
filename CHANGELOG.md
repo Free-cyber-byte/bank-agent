@@ -4,6 +4,39 @@
 
 v0.2.0 为 2026-10-27 启动的能力批次，代码合并与验收由 Lead 统一复核；尚未通过验收的接口与命令在对应位置单独注明。
 
+## [0.7.0] - 2026-10-29（进行中，未打 tag）
+
+v0.7.0 是「数据专区」批次：在对话工作台之外新增一个**只读**的数据专区（仪表盘 / 分析），并把前端的图表、路由、主题、命令面板、骨架屏与无障碍一并补齐。设计参考来自 fintech dashboard 研究与 qiaomu-design 方法论：KPI 必须带口径与比较基线、类别差异用条柱而不是饼图、时间趋势用折线、占比用 100% 堆叠、长度编码从 0 起、颜色只做编码、每张图都给表格等价与键盘可达的替代路径。
+
+### Added
+
+- 只读聚合层 `backend/app/analytics.py`：`dashboard(conn, user_id, window)` 与 `analytics(conn, user_id, start, end, granularity)`，全部复用 mock_core 既有口径（`list_accounts` / `bill_summary` / `budget_analysis` / `scan_anomalies` / `list_subscriptions` / `list_scheduled_transfers` / `account_total`），不写 transactions、不写 events、不写 audit；非法 window 回落 30d，非法日期 / 非法粒度 / 跨度超过 400 天抛 `RangeError` → HTTP 400 `BAD_RANGE`。
+- 两个只读接口：`GET /api/dashboard?session_id=&window=30d`、`GET /api/analytics?session_id=&from=&to=&granularity=day|week|month`。
+- 一级导航「专区」（顶栏第 2 项、移动端 tabbar 第 2 项、更多菜单同项），专区内两页：
+  - 仪表盘：结论条（本月支出 / 收入 / 净流入 / 预算最紧的一项 / 信用卡待还 / 待办数）、6 个 KPI（净资产、可用资金、本月支出、本月收入、本月流入、信用卡待还，各带环比与 14 天 sparkline）、近 6 个月收支（双色柱 + 净流入虚线，纵轴从 0 起）、预算执行 6 条、支出构成 100% 堆叠、待办与风险（待审批 / 7 天内自动扣费 / 异常消费 + 审计链徽章）、最近流水 8 行。
+  - 分析：区间预设 7 / 30 / 90 / 180 天与自定义起止、粒度 日 / 周 / 月、区间 KPI 四张、收支对比、类别排名（金额 / 占比 / 环比 / 预算使用，可排序）、商户 TOP10、异常消费、固定周期与扣费倒计时、储蓄建议、明细分页（每页 20 笔）与 CSV 导出。
+- 手写 SVG 图表模块（bar / line / stacked / donut / sparkline）：按容器宽度出图（390 下文字不缩水）、dpr 适配、hover tooltip、`tabindex` 与 `aria-label`、`<title>` 文本、每图「查看数据表」等价视图、无 canvas 环境降级为表格。
+- hash 路由（`#/zone/dashboard`、`#/zone/analytics?preset=…&from=…&to=…&gran=…`，刷新与前进后退可恢复）、外观切换（跟随系统 / 浅 / 深，写 localStorage）、命令面板 Ctrl/Cmd+K（8 条动作，支持过滤与方向键）、骨架屏 + 失败重试、数据新鲜度（更新于 hh:mm · 只读，可见时 60 秒轮询 + 手动刷新）。
+- `scripts/dashboard_e2e.py`：33 条断言（schema、KPI 口径、桶数、参数校验 400、未知会话 404、调用前后审计链不变、不产生资金流水）。
+- 前端自检新增 59 条（247 → 306），覆盖专区渲染、图表、排序、分页、导出、主题、命令面板与空态。
+
+### Changed
+
+- 环比在基准期样本过小时不再输出百分比（`MIN_BASELINE_CENTS = 10000`，基准不足 ¥100 视为无基线），前端显示「—」，避免「↑32764%」这类无意义数字。
+- 最近流水与分析明细的时间列由 `HH:MM` 改为 `MM-DD HH:MM`；390 宽隐藏账户列以保住金额列，同时 `.zcard` 补 `min-width:0` 消除横向溢出。
+- 移动端 `.seg{display:none}` 收窄为 `.topbar__mid .seg{display:none}`，避免把专区的区间 / 粒度筛选器一起隐藏。
+- `frontend/sw.js` VERSION 与仓库根 `VERSION` 同步升到 0.7.0（CACHE_NAME 前缀随之变化，旧外壳自动清理）。
+
+### Fixed
+
+- 净资产口径说明改为「含理财 …，已扣信用卡待还」，与 `available + holdings − credit_due` 的算法一致（此前文案写「不含信用卡待还」，与实际相减矛盾）。
+- 深色主题下专区卡片、图表与表格的文字对比度（正文 ≥5.3:1）。
+
+### 验证
+
+- `python scripts/run_tasks.py` 59/59（任务集未变）、`scripts/smoke_repay.py` 9/9、`scripts/e2e_stream.py` 33/33、`node frontend/_selftest.js` PASS=306 FAIL=0、`python scripts/dashboard_e2e.py` 33/33。
+- 截图：1440 浅色 / 1440 深色 / 390 三档，仪表盘与分析页各一组，`scrollWidth == clientWidth`（无横向滚动）。
+
 ## [0.6.2] - 2026-10-29（进行中，未打 tag）
 
 v0.6.2 是「信用卡还款」修复批次：起因是真实截图里「把储蓄卡的钱取出 9000 元转移到信用卡」被拦截为「没有识别到合法收款人」。根因不是话术，而是三处实现缺陷：还款没有独立意图（规则把「信用卡」先判成 card_query，用户只能靠跨场景分账那一句话术绕过去）；`mock_core.repay_credit` 只把信用卡余额调回 0、**不扣任何出账账户**（凭空造钱）；出账账户不可选，余额不足 / 无待还欠款都不在策略层拦截。本批次把还款做成和转账并列的一等意图，并补齐双向记账。
