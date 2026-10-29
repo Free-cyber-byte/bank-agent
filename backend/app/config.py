@@ -75,7 +75,7 @@ UNDO_WINDOW_SECONDS = 60
 TOTP_WINDOW = 1
 NEW_PAYEE_REQUIRES_HIGH = True
 
-SEED_VERSION = "2026.10.29"
+SEED_VERSION = "2026.11.01"
 DEFAULT_USER_ID = "u001"
 
 # ---------------- 外部只读服务（MCP 子集，JSON-RPC over HTTP） ----------------

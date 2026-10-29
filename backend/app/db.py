@@ -116,7 +116,7 @@ CREATE INDEX IF NOT EXISTS idx_txn_account ON transactions(account_id);
 
 # v0.4.0 数据层种子版本：payees.phone / card_txns / scheduled_transfers 需要重建演示库。
 # config.SEED_VERSION 由 Lead 同步维护；这里取两者中较新的值，旧库启动时会自动重建（演示语义）。
-SEED_VERSION = "2026.10.29"
+SEED_VERSION = "2026.11.01"
 
 
 def seed_version() -> str:
@@ -384,6 +384,46 @@ def seed(conn: sqlite3.Connection) -> None:
     outlier_ts = (today - timedelta(days=6)).replace(hour=15, minute=20).isoformat(timespec="seconds")
     _txn(conn, "DEMO_ANOMALY_004", "acc_001", "u001", outlier_ts, "out", 680000, "购物",
          "数码专卖店", "数码购机", 1286050)
+
+    # ---- v0.8.0：给另两个演示账户补业务数据（切换身份后业务页不空） ----
+    # u001 的口径完全不变；这里只新增 u002 / u003 的流水、预算、订阅与持仓。
+    people = {
+        "u002": {"acc": "acc_101", "income": 300000, "cats": ["餐饮", "教育", "交通", "购物"],
+                 "merchants": ["学校食堂", "书店", "地铁乘车码", "便利店"]},
+        "u003": {"acc": "acc_201", "income": 1800000, "cats": ["餐饮", "差旅", "办公", "购物"],
+                 "merchants": ["商务餐厅", "高铁票务", "办公用品店", "超市"]},
+    }
+    for uid, conf in people.items():
+        for m in range(5, -1, -1):
+            y, mo = today.year, today.month - m
+            while mo <= 0:
+                mo += 12
+                y -= 1
+            base = datetime(y, mo, 1)
+            def pday(d):
+                return (base.replace(day=min(d, 28)) + timedelta(hours=rnd.randint(8, 21),
+                        minutes=rnd.randint(0, 59))).isoformat(timespec="seconds")
+            tid += 1
+            _txn(conn, "T%05d" % tid, conf["acc"], uid, pday(10), "in", conf["income"], "工资", "月度入账", "月度入账", 0)
+            for i, cat in enumerate(conf["cats"]):
+                for k in range(3):
+                    tid += 1
+                    _txn(conn, "T%05d" % tid, conf["acc"], uid, pday(rnd.randint(2, 27)), "out",
+                         rnd.randint(1200, 26000) if m else rnd.randint(1200, 26000), cat,
+                         conf["merchants"][i], "", 0)
+        conn.execute("INSERT OR REPLACE INTO budgets VALUES (?,?,?)", (uid, "餐饮", 200000))
+        conn.execute("INSERT OR REPLACE INTO budgets VALUES (?,?,?)", (uid, "购物", 150000))
+        conn.execute("INSERT OR REPLACE INTO budgets VALUES (?,?,?)", (uid, "交通", 60000))
+    extra_subs = [
+        ("sub_101", "u002", "慕课会员", 3000, "monthly", (today + timedelta(days=4)).date().isoformat(), "active", ts0),
+        ("sub_201", "u003", "企业云盘", 6800, "monthly", (today + timedelta(days=9)).date().isoformat(), "active", ts0),
+    ]
+    conn.executemany("INSERT OR REPLACE INTO subscriptions VALUES (?,?,?,?,?,?,?,?)", extra_subs)
+    extra_holdings = [
+        ("h_101", "u002", "W004", 500000, "holding", ts0),
+        ("h_201", "u003", "W002", 5000000, "holding", ts0),
+    ]
+    conn.executemany("INSERT OR REPLACE INTO wealth_holdings VALUES (?,?,?,?,?,?)", extra_holdings)
 
     conn.execute("INSERT OR REPLACE INTO meta VALUES ('seed_version', ?)", (seed_version(),))
     conn.commit()

@@ -4,7 +4,7 @@
 
 ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的可运行参考实现：用户用一句自然语言说出需求，Agent 走完「理解 → 规划 → 策略校验 → 执行 → 回读 → 回复」六阶段流水线，把查询、转账、理财、卡片、订阅、跨场景分账真正做完。它同时是一份可被审计、可被评测的工程样本：资金动作全部由确定性工具执行，模型只负责产出意图与槽位，任何高风险动作都必须经过用户确认或强验证因子（TOTP 动态码 / 短信码 / 人脸令牌），连续可疑操作还会临时锁定会话；整条事件链用 SHA-256 哈希链固化。
 
-本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.7.1：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56；v0.6.0 把 MCP 客户端升级为通用网关（MCP_SERVERS 多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE），并提供银行开放平台演示服务，MCP 仍严格只读；v0.6.1 按全量安全审查收口边界（CORS/Origin/Host 三收紧、演示二次因子接口仅本机、TOTP 改每用户随机密钥、审批 CAS 与会话绑定、转账改单事务、MCP 注册表由替换改为合并、写闸按分词判写、status 脱敏）；v0.6.2 修信用卡还款（新增 `credit_repay` 独立意图与双向记账的 `repay_credit`：默认从工资卡扣款、可指定储蓄卡、金额按欠款截断、无金额/无欠款/余额不足给出拦截文案；评测任务 56 → 59 条）；v0.7.0 在对话工作台之外新增只读「数据专区」——仪表盘（6 KPI + 近 6 月收支 + 预算执行 + 支出构成 + 待办与风险 + 最近流水）与分析页（区间对比、类别排名、商户 TOP10、异常、订阅倒计时、储蓄建议、明细分页与 CSV 导出），并把手写 SVG 图表、hash 路由、外观切换、命令面板 Ctrl+K、骨架屏与无障碍一起补齐；专区只读、不写审计链，评测任务仍为 59 条；v0.7.1 把账户从对话里的一段回答搬成独立一页——账户、额度、卡片状态与流水在一屏看完，付款与改额度仍回到对话走审批。
+本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.8.0：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56；v0.6.0 把 MCP 客户端升级为通用网关（MCP_SERVERS 多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE），并提供银行开放平台演示服务，MCP 仍严格只读；v0.6.1 按全量安全审查收口边界（CORS/Origin/Host 三收紧、演示二次因子接口仅本机、TOTP 改每用户随机密钥、审批 CAS 与会话绑定、转账改单事务、MCP 注册表由替换改为合并、写闸按分词判写、status 脱敏）；v0.6.2 修信用卡还款（新增 `credit_repay` 独立意图与双向记账的 `repay_credit`：默认从工资卡扣款、可指定储蓄卡、金额按欠款截断、无金额/无欠款/余额不足给出拦截文案；评测任务 56 → 59 条）；v0.7.0 在对话工作台之外新增只读「数据专区」——仪表盘（6 KPI + 近 6 月收支 + 预算执行 + 支出构成 + 待办与风险 + 最近流水）与分析页（区间对比、类别排名、商户 TOP10、异常、订阅倒计时、储蓄建议、明细分页与 CSV 导出），并把手写 SVG 图表、hash 路由、外观切换、命令面板 Ctrl+K、骨架屏与无障碍一起补齐；专区只读、不写审计链，评测任务仍为 59 条；v0.7.1 把账户从对话里的一段回答搬成独立一页——账户、额度、卡片状态与流水在一屏看完，付款与改额度仍回到对话走审批；v0.8.0 新增一级导航「业务」（账单/订阅/转账/理财/卡片/消息/安全 七个业务域，只读，动作仍回对话审批），工作台右栏补上 Agent 计划、主动提醒、风控状态与一键攻击演练，并支持三个演示账户切换。
 
 ---
 
@@ -30,8 +30,31 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 17. **边界加固（v0.6.1）**：按全量审查收口——CORS 从 `*` 改为 Origin 白名单、Host 校验防 DNS rebinding、请求体 512 KiB 上限、limit 参数 clamp；演示二次因子接口只接受本机连接；TOTP 每用户随机密钥 + `compare_digest` + 失败锁定；审批改为原子 CAS 并绑定会话与参数摘要；转账改为单事务条件更新，禁负余额；MCP 注册表合并内置 fx/risk、写闸按分词判写、`/api/mcp/status` 脱敏。审查报告保存在本地 `.review/`（三份，未随仓库提交）。
 18. **数据专区、只读聚合（v0.7.0）**：新增一级导航「专区」，落地即仪表盘，另含分析页；两个只读接口 `GET /api/dashboard`、`GET /api/analytics` 全部复用对话同一套账本口径，不写资金流水、不写审计链（调用前后 `checked` 不变）。图表是手写 SVG（柱 / 线 / 100% 堆叠 / 环形 / sparkline），按容器宽度出图、键盘可达、每图给表格等价；主题可跟随系统、路由写进 hash、命令面板 Ctrl+K，390 宽无横向滚动。前端自检 247 → 306，新增 `scripts/dashboard_e2e.py` 33/33。
 19. **账户页、只读账本（v0.7.1）**：新增一级导航「账户」，一屏看完 4 张 KPI（账户余额 / 信用卡待还 / 额度使用率 / 理财持仓）、三张账户卡（类型徽章、掩码、余额、单笔与日限额、额度占比）、信用卡专区（额度使用率、还款日每月 25 日倒计时、本期消费与入账）、流水（按账户筛选、每页 20 条、CSV 导出）与「要动手？」预填入口；`GET /api/accounts` 顺带补齐卡片字段、`GET /api/transactions` 支持 `account_id` 过滤。页面只读，不写账也不写审计链，任何动钱动作仍走「对话 → 计划 → 审批 → 审计链」。前端自检 306 → 338，`scripts/dashboard_e2e.py` 33 → 39 条断言。
+20. **业务页与右栏三卡（v0.8.0）**：新增一级导航「业务」，账单、订阅、转账、理财、卡片、消息、安全七个域各有独立页面并从真实数据渲染（`GET /api/biz` 只读聚合）；工作台右栏常驻 Agent 计划、主动提醒（P1/P2）与风控状态（绿黄红计数 + 今日转账阈值 + 审计链校验），并提供 Prompt 注入 / 信息套取 两个一键演练按钮；`POST /api/demo/identity` 可在张伟 / 李娜 / 王强三个演示账户间切换。前端自检 338 → 363，`dashboard_e2e.py` 39 → 48 条断言。
 
 ---
+
+## v0.8.0 新能力（业务页 · 七个业务域 · 右栏三卡）
+
+把「业务」从对话里的一问一答搬成独立界面，同时在对话右栏把 Agent 正在做什么、有什么需要你处理、风险档位在哪，常驻显示出来。
+
+| 能力 | 说明 |
+| --- | --- |
+| 业务页（`#/biz/<tab>`） | 账单、订阅、转账、理财、卡片、消息、安全七个子页，`GET /api/biz` 一次取全，只读渲染 |
+| 账单 | 6 个月支出/收入/净结余/储蓄率、月度收支图与数据表、支出构成（含还款与转账）、预算执行、商户 TOP8 |
+| 订阅 / 转账 / 理财 / 卡片 | 订阅按下次扣费倒计时排序；转账含收款人、今日额度与最近转账；理财含持仓与在售产品；卡片含状态、限额与近 30 天消费 |
+| 消息 | 按 P1 / P2 排序的主动提醒（异常消费、待审批、信用卡待还、预算超支、临近扣费），每条可一键预填到对话 |
+| 安全 | 审计链校验结果、绿黄红三档风控计数、今日额度、二因子因数状态、最近 8 条审计事件、两个攻击演练入口 |
+| 右栏三卡 | Agent 计划（执行步骤逐步点亮）、主动提醒（P1 优先）、风控状态（计数 + 阈值 + 链校验）与安全演示按钮 |
+| 演示账户 | `POST /api/demo/identity` 切张伟 / 李娜 / 王强，切换后重建会话，业务页与右栏同步换账本 |
+
+![业务页：账单](docs/screenshots/08-biz-bills.png)
+
+![工作台右栏三卡](docs/screenshots/09-home-rail.png)
+
+边界与 v0.7.x 一致：业务页与右栏只读——不写账、不写 `transactions`、不写审计链；所有动作按钮只把意图预填回工作台输入框，资金操作仍走「对话 → 计划 → 策略 → 审批 → 审计链」。三个演示账户的种子各自独立（`SEED_VERSION` 2026.11.01），切换不会互相污染。
+
+实测（本机，2026-10-29）：`GET /api/biz` 七个域齐全、`messages` 11 条（P1 6 条）、`security.chain.valid=true`；`node frontend/_selftest.js` PASS=363 FAIL=0；`scripts/dashboard_e2e.py` 48/48（新增 `biz-1…biz-9`）；`scripts/run_tasks.py` 59/59 双模式；`scripts/smoke_repay.py` 9/9；`scripts/skill_check.py` 6/6；`scripts/plugin_e2e.py` 17/17。
 
 ## v0.7.1 新能力（账户页）
 
@@ -337,6 +360,10 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 
 ---
 
+*业务页（v0.8.0，1440 宽）：七个业务域各一页，全部只读；每块右上角标「只读」与刷新时间，动钱动作只预填意图*
+
+![业务页：订阅](docs/screenshots/08-biz-bills.png)
+
 ## 架构一览
 
     浏览器（frontend/ 原生 JS 单页应用）
@@ -385,7 +412,7 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
     curl.exe -s http://127.0.0.1:8000/api/health
     curl.exe -s http://127.0.0.1:8000/api/plugins
 
-/api/health 返回 version=0.7.1；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（59 条任务按每批 6 条分 10 批）。
+/api/health 返回 version=0.8.0；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（59 条任务按每批 6 条分 10 批）。
 
 不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，59 条评测全部通过（规则模式）。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / 模型」之间切换（「模型」即调用大模型解析，悬停可看到当前厂商与模型名）。
 
@@ -517,7 +544,7 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
     curl.exe -s http://127.0.0.1:8401/health
     curl.exe -s http://127.0.0.1:8000/api/channel/status
 
-后端口径（逐版本累积）：v0.7.0 新增 `scripts/dashboard_e2e.py`（v0.7.1 增至 39/39），回归 run_tasks 59/59（规则 / LLM 双模式）、smoke_repay 9/9、e2e_stream 33/33、skill_check 6/6、plugin_e2e 17/17、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、smoke18 审计链 valid、verify_audit valid、前端自检 PASS=306 FAIL=0（2026-10-29）；v0.6.1 全量回归 15 项脚本 + 前端自检全部 exit 0（2026-10-28）——mcp_gateway_e2e 19/19、security_factor_e2e 55/55、capability_e2e 63/63、run_tasks 56/56、e2e_stream 33/33、smoke18 18 轮审计链 valid、plugin_e2e 17/17、push_e2e 13/13、channel_wecom_e2e 13/13、skill_check 6/6、smoke_normalize 10/10、mcp_e2e 7/7、selftest 5/5、channel_e2e 9/9、wecom 自检 9/9、前端 PASS=247 FAIL=0；curl 边界自测：恶意 Origin 的 POST/OPTIONS 403、`Host: evil.com` 403、600 KiB body 413、`limit=abc` 400、`limit=-1` 不再全表、无 Origin 的 /api/health 无 ACAO、允许 Origin 回显 + Vary: Origin；v0.6.0 实跑 scripts/mcp_gateway_e2e.py 17/17，回归 run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、前端 247/0（2026-10-28）；v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件、v0.6.1 CORS/Host/body/limit/API_TOKEN 边界与演示接口本机限制，字段见 docs/api.md §0 / §2 / §4 / §7。
+后端口径（逐版本累积）：v0.7.0 新增 `scripts/dashboard_e2e.py`（v0.7.1 增至 39/39、v0.8.0 增至 48/48），回归 run_tasks 59/59（规则 / LLM 双模式）、smoke_repay 9/9、e2e_stream 33/33、skill_check 6/6、plugin_e2e 17/17、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、smoke18 审计链 valid、verify_audit valid、前端自检 PASS=306 FAIL=0（2026-10-29）；v0.6.1 全量回归 15 项脚本 + 前端自检全部 exit 0（2026-10-28）——mcp_gateway_e2e 19/19、security_factor_e2e 55/55、capability_e2e 63/63、run_tasks 56/56、e2e_stream 33/33、smoke18 18 轮审计链 valid、plugin_e2e 17/17、push_e2e 13/13、channel_wecom_e2e 13/13、skill_check 6/6、smoke_normalize 10/10、mcp_e2e 7/7、selftest 5/5、channel_e2e 9/9、wecom 自检 9/9、前端 PASS=247 FAIL=0；curl 边界自测：恶意 Origin 的 POST/OPTIONS 403、`Host: evil.com` 403、600 KiB body 413、`limit=abc` 400、`limit=-1` 不再全表、无 Origin 的 /api/health 无 ACAO、允许 Origin 回显 + Vary: Origin；v0.6.0 实跑 scripts/mcp_gateway_e2e.py 17/17，回归 run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、前端 247/0（2026-10-28）；v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件、v0.6.1 CORS/Host/body/limit/API_TOKEN 边界与演示接口本机限制，字段见 docs/api.md §0 / §2 / §4 / §7。
 
 ---
 
@@ -678,7 +705,7 @@ v0.5.0 增量自检（2026-10-28 实测）：
 
     python scripts/run_tasks.py       # 59/59 通过（含 t47–t56、t57–t59）
     python scripts/e2e_stream.py      # 33/33 项 SSE 事件序、取消与端口清理断言
-    node frontend/_selftest.js        # PASS=338 FAIL=0（v0.4.1 为 206，v0.5.0 增至 238，v0.5.1 增至 247，v0.7.0 专区 +59，v0.7.1 账户 +32）
+    node frontend/_selftest.js        # PASS=363 FAIL=0（v0.4.1 为 206，v0.5.0 增至 238，v0.5.1 增至 247，v0.7.0 专区 +59，v0.7.1 账户 +32）
 
 v0.5.0 新增 10 条 insight 任务覆盖消费统计、可省金额、订阅识别与流式/取消；scripts/e2e_stream.py 用 33 项断言在真实服务上验证事件序（answer_start 到 done 的完整序列、每块 12 字符、末块可短）、stream_text=false 降级、取消两种返回、审计 answer_cancelled 与取消不撤销工具。前端自检从 206 增至 238、v0.5.1 再到 247：逐字追加、生成中「发送 → 停止」、取消后按钮恢复与「已停止输出」提示、洞察卡字段渲染。
 
@@ -864,7 +891,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化、插件注册表与渠道接入 |
 | [docs/security.md](docs/security.md) | 三级权限矩阵、阈值理由、TOTP 与哈希链实现、注入四层防御、攻击测试、已知限制 |
-| [docs/evaluation.md](docs/evaluation.md) | 59 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、流式 e2e 33/33、专区与账户页自检 39/39、v0.4.0–v0.7.1 增量自检、新增任务方法 |
+| [docs/evaluation.md](docs/evaluation.md) | 59 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、流式 e2e 33/33、专区、账户页与业务页自检 48/48、v0.4.0–v0.8.0 增量自检、新增任务方法 |
 | [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.10：v0.6.1 CORS/Host/body/limit/API_TOKEN 边界、审批会话绑定与 CAS、401/403/409/413 错误码；v1.9：v0.6.0 MCP 通用接入字段 label/transport/auth/session/read_only 与动态 mcp-<name> 插件、v0.5.1 会话 wealth 与 accounts.kind 口径、v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
 | [docs/design-system.md](docs/design-system.md) | 前端设计规范（v0.3.2，延续 v4 视觉）：Win11 Fluent、7 档字号、264/1fr/296 三栏、审批卡规则行、技能页/外部服务页/设置页、插件页与开关/徽章/手风琴/换一批、移动端与 PWA（tabbar、推送卡、安装态） |
 | [docs/mcp.md](docs/mcp.md) | MCP 只读服务与通用接入：协议、接口、两个内置工具、降级行为、启动与演示；v0.6.0 注册表、鉴权、streamable-http/SSE 四道闸与银行开放平台演示 |

@@ -456,6 +456,46 @@ def main(argv=None):
         st, body = _get(port, "/api/dashboard?session_id=s_not_exist&window=30d")
         _check("ana-16", "未知会话 → 404", st == 404, "http=%s code=%s" % (st, _err_code(body)))
 
+        # ---------- v0.8.0：业务页只读接口 ----------
+        st, biz = _get(port, "/api/biz?session_id=%s" % sid)
+        biz_keys = ("bills", "subscriptions", "transfers", "wealth", "cards", "messages", "security", "user")
+        _check("biz-1", "/api/biz 返回七个业务域", st == 200 and all(k in biz for k in biz_keys),
+               "http=%s keys=%s" % (st, [k for k in biz_keys if k not in biz]))
+        bills = biz.get("bills") or {}
+        trend = bills.get("trend") or []
+        _check("biz-2", "账单趋势含收入侧且净额等于收入减支出",
+               bool(trend) and all(int(r.get("in_cents") or 0) > 0 for r in trend)
+               and all(int(r.get("net_cents") or 0) == int(r.get("in_cents") or 0) - int(r.get("out_cents") or 0) for r in trend),
+               "months=%d" % len(trend))
+        _check("biz-3", "账单六大类支出与总额一致",
+               abs(sum(int(r.get("cents") or 0) for r in (bills.get("by_category") or [])) - int(bills.get("total_out_cents") or 0)) <= 1,
+               "sum=%s total=%s" % (sum(int(r.get("cents") or 0) for r in (bills.get("by_category") or [])),
+                                    bills.get("total_out_cents")))
+        msg = biz.get("messages") or {}
+        _check("biz-4", "主动提醒带 P1 与去重后的条目", bool(msg.get("items")) and int(msg.get("p1_count") or 0) >= 1,
+               "items=%d p1=%s" % (len(msg.get("items") or []), msg.get("p1_count")))
+        sec = biz.get("security") or {}
+        _check("biz-5", "风控三档计数与哈希链可用",
+               len((sec.get("risk") or {}).get("levels") or []) == 3 and (sec.get("chain") or {}).get("valid") is True,
+               "levels=%s chain=%s" % (len((sec.get("risk") or {}).get("levels") or []), (sec.get("chain") or {}).get("valid")))
+        _check("biz-6", "订阅条目带名称与扣费倒计时",
+               all((it.get("name") and it.get("days_left") is not None) for it in ((biz.get("subscriptions") or {}).get("items") or [])),
+               "items=%d" % len(((biz.get("subscriptions") or {}).get("items") or [])))
+
+        # ---------- v0.8.0：演示账户切换 ----------
+        st, who = _post(port, "/api/demo/identity", {"user_id": "u002"})
+        _check("biz-7", "/api/demo/identity 切到 u002 并重建会话",
+               st == 200 and (who.get("user") or {}).get("name") == "李娜" and who.get("session_id"),
+               "http=%s user=%s" % (st, (who.get("user") or {}).get("name")))
+        st2, biz2 = _get(port, "/api/biz?session_id=%s" % who.get("session_id"))
+        _check("biz-8", "切到另一个演示账户后业务页仍有真实数据",
+               st2 == 200 and int((biz2.get("bills") or {}).get("total_out_cents") or 0) > 0
+               and bool((biz2.get("bills") or {}).get("budgets")),
+               "out=%s budgets=%s" % ((biz2.get("bills") or {}).get("total_out_cents"),
+                                      len((biz2.get("bills") or {}).get("budgets") or [])))
+        st3, bad = _post(port, "/api/demo/identity", {"user_id": "u999"})
+        _check("biz-9", "不存在的演示账户 → 400", st3 == 400, "http=%s code=%s" % (st3, _err_code(bad)))
+
         # ---------- 只读性 ----------
         entries1, chain1 = _audit(port)
         txns_after = len(_get(port, "/api/transactions?limit=200")[1].get("transactions") or [])

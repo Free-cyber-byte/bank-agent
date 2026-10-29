@@ -903,3 +903,48 @@ frontend/_selftest.js:600-625 新增 9 条「资金流向与余额刷新」断�
 ### 16.5 只读性证明
 
 `scripts/dashboard_e2e.py` 的 `acc-*` 组连续调用 `/api/accounts`、`/api/transactions?account_id=` 与 `/api/audit`：审计链 `checked` 与 events 行数在调用前后不变；`ana-17/ana-18` 继续覆盖「聚合接口不写链」。前端自检里账户页的所有交互分支都在 fetch 桩上断言「没有发出写请求」。
+
+## 17. 业务页与右栏三卡（v0.8.0）
+
+### 17.1 位置
+
+```
+浏览器
+ ├── #/biz/<tab>      业务页：账单 / 订阅 / 转账 / 理财 / 卡片 / 消息 / 安全
+ ├── 工作台右栏         Agent 计划 / 主动提醒 / 风控状态（+ 安全演示）
+ └── GET /api/biz  ──► backend/app/biz.py ──► mock_core（同一套口径）
+                        ├── bills()         ← bill_summary + 逐月收入
+                        ├── subscriptions() ← list_subscriptions
+                        ├── transfers()     ← list_payees / list_scheduled_transfers / today_transfer_total
+                        ├── wealth()        ← list_wealth
+                        ├── cards()         ← list_cards + 近 30 天卡消费
+                        ├── messages()      ← scan_anomalies + pending approvals + 预算 + 订阅到期 + 信用卡待还
+                        └── security()      ← audit.verify + 今日审计风险分布 + 转账阈值
+```
+
+`biz.py` 与 `analytics.py` 同级：只读、无副作用、不碰 `engine` 的执行链路，因此业务页拿到的数字和对话里回答的数字天然同源（都走 `mock_core`）。
+
+### 17.2 `GET /api/biz` 的聚合口径
+
+| 域 | 数据来源 | 关键处理 |
+| --- | --- | --- |
+| `bills` | `mock_core.bill_summary(6)` + `_monthly_income()` | `bill_summary.monthly_trend` 只有支出，聚合成 `in_cents` 后重算 `net_cents`；预算把 `over_budget`/`within_budget` 合并成统一行（`state` = over / warn / ok） |
+| `subscriptions` | `mock_core.list_subscriptions` | 输出 `name`（取自 `merchant` 列）+ `days_left` 倒计时，按扣费时间排序 |
+| `transfers` | `list_payees` / `list_scheduled_transfers` / `today_transfer_total` | 今日额度 = `today_transfer_total` vs `config.DAILY_LIMIT_CENTS` |
+| `cards` | `mock_core.list_cards` + 逐卡 30 天消费 | 卡状态、单笔/日限额与近 30 天消费笔数 |
+| `messages` | `scan_anomalies(30)` / `approvals`(pending) / `budget_analysis` / 订阅到期 / 信用卡待还 | 统一成 `{priority: p1|p2, title, desc, amount_display, action}`，P1 在前 |
+| `security` | `audit.verify` / `audit` 今日风险分布 / `today_transfer_total` | 三档计数（绿/黄/红）、今日额度、链校验结果与最近 8 条审计事件 |
+
+### 17.3 `POST /api/demo/identity`
+
+演示账户切换走 `engine.create_session(conn, user_id)`——和正常开会话同一条路径，因此新会话同样写 `sessions`、同样受审批与审计约束。演示账户的种子各自独立（`db.py` 的 v0.8.0 段为 `u002`/`u003` 补了 6 个月流水、预算、订阅与持仓，`SEED_VERSION` → `2026.11.01`），切账号不会互相污染。
+
+### 17.4 前端约束
+
+- 业务页与右栏都只读：不写 `transactions`、不写 `audit`；所有动作按钮（去还款、取消订阅、冻结卡、调额、打开消息中心、两个攻击演练）都只做**预填**——写入 `#input` 并回到工作台，剩下的仍然走对话 → 计划 → 策略 → 审批 → 审计链。
+- `#/biz/<tab>` 是深链：进入业务页时若地址栏没写 tab，不改写 hash，避免覆盖用户想去的那一页。
+- 右栏三卡与业务页共用同一份 `/api/biz` 响应（15 秒缓存）；Agent 计划卡则由 `renderPlan`/`setStepState` 驱动，逐步点亮。
+
+### 17.5 只读性证明
+
+`scripts/dashboard_e2e.py` 的 `biz-*` 组在隔离实例里断言：`/api/biz` 七个域齐全、`trend.net = in - out`、分类合计等于总额、`messages.p1_count >= 1`、`security.chain.valid`、订阅条目带名称与倒计时、`/api/demo/identity` 切 u002 后账单仍有真数据、`u999` → 400；并且 `# ---------- 只读性 ----------` 组继续断言调用前后审计链 `checked` 不变、`transactions` 条数不变。

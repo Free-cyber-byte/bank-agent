@@ -3,7 +3,7 @@
  */
 'use strict';
 
-var VERSION = '0.7.1';
+var VERSION = '0.8.0';
 var CACHE_NAME = 'zerostep-shell-v' + VERSION;
 
 var SHELL = [

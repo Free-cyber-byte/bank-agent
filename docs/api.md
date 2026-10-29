@@ -387,7 +387,7 @@ Key 无效（HTTP 401）：
 - GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "chain": { "valid": true, "checked": 21, "broken_at": null, "reason": null } }
   entry 字段：seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash, hash
 - GET /api/events?session_id=...&after=0 → { "events": [ { "seq": 1, "type": "message", "payload": {...} } ] }  // 会话回放
-- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.7.1", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.7.0；改 VERSION 后需重启进程生效
+- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.8.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.11.01" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.8.0；改 VERSION 后需重启进程生效
 - GET /api/tasks[?limit=N&offset=M] → 任务列表，前端快捷按钮；user_input 即 turns[0]。
   无参数时与旧版完全一致，只返回 tasks（全部 59 条）：
 
@@ -994,6 +994,43 @@ v0.4.1 的红色动作（challenge.type=totp，如挂失 / 解挂、大额转账
 - 非法或他人账户：400 `BAD_ACCOUNT`，不为空数组——避免把「查不到」和「查错了」混为一谈。
 
 两个接口都不产生写操作；`scripts/dashboard_e2e.py` 的 `acc-1` … `acc-6` 与 `ana-17/ana-18` 在连续取数前后校验审计链条数与 `checked` 不变。
+
+### v0.8.0 业务页与演示账户接口
+
+#### GET /api/biz?session_id=…
+
+按会话里的用户返回七个业务域（只读，不写 `transactions`、不写审计链）。
+
+```json
+{
+  "as_of": "2026-10-29T14:19:02+08:00",
+  "user": { "user_id": "u001", "name": "张伟" },
+  "bills": { "total_out_cents": 11116768, "total_in_cents": 15000001, "net_cents": 3883233,
+             "trend": [{ "month": "2026-10", "in_cents": 2500001, "out_cents": 2443271, "net_cents": 56730 }],
+             "by_category": [{ "category": "购物", "cents": 3162704, "ratio": 0.2845 }], "budgets": [] },
+  "subscriptions": { "items": [{ "name": "iCloud 200G", "amount_cents": 600, "days_left": 2 }] },
+  "transfers": { "today_total_cents": 0, "daily_limit_cents": 100000, "payees": [], "scheduled": [] },
+  "wealth": { "holding_total_cents": 3000000, "holdings": [] },
+  "cards": { "items": [] },
+  "messages": { "items": [{ "priority": "p1", "title": "发现 3 笔异常消费", "desc": "…" }], "p1_count": 6 },
+  "security": { "chain": { "valid": true, "checked": 22 },
+                "risk": { "levels": [{ "level": "low", "label": "绿", "count": 12 }] },
+                "transfer": { "today_total_cents": 0, "daily_limit_cents": 100000 } }
+}
+```
+
+约束：
+- 未知会话 → 404 `SESSION_NOT_FOUND`；用户不存在 → 400 `BAD_USER`。
+- 只读：调用前后 `GET /api/audit` 的 `checked` 不变，`transactions` 条数不变（`dashboard_e2e.py` 的 `biz-*` 组守着这两条）。
+- `bills.trend` 的 `in_cents` 由聚合层补（`mock_core.bill_summary` 只给支出），因此 `net_cents = in_cents - out_cents` 恒成立。
+
+#### POST /api/demo/identity
+
+```json
+{ "user_id": "u002" }
+```
+
+返回与 `POST /api/session` 同构的快照（`session_id` / `user` / `accounts` / `cards` / `pending_approval` 等），会话归属切到该用户；`user_id` 不存在 → 400 `BAD_USER`；`DEMO_MODE` 关闭 → 403 `DEMO_DISABLED`。演示账户：`u001` 张伟、`u002` 李娜、`u003` 王强（三者种子各自独立，`SEED_VERSION` 2026.11.01）。
 
 ## 5. 审计哈希链
 

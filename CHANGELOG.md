@@ -4,6 +4,28 @@
 
 v0.2.0 为 2026-10-27 启动的能力批次，代码合并与验收由 Lead 统一复核；尚未通过验收的接口与命令在对应位置单独注明。
 
+## [0.8.0] - 2026-10-29（进行中，未打 tag）
+
+### Added
+- 一级导航「业务」（顶栏 8 项、移动端 tabbar 7 项，`#/biz/<tab>`）：七个业务域一屏看懂——账单、订阅、转账、理财、卡片、消息、安全；全部只读，动作按钮只把意图预填回工作台。
+- `backend/app/biz.py` 只读聚合层 + `GET /api/biz?session_id=`：七个业务域的展开口径（趋势补收入侧、预算合并 over/within、P1/P2 提醒、风控三档计数、审计链校验）。
+- `POST /api/demo/identity`：演示账户切换（张伟 / 李娜 / 王强），切换后重建会话、业务页与右栏随即切到该账户的数据。
+- 工作台右栏三卡：Agent 计划（随执行步骤逐步点亮）、主动提醒（P1 / P2）、风控状态（绿黄红三档计数、今日转账与黄色阈值、审计哈希链校验）+ 安全演示两按钮（Prompt 注入 / 信息套取，点一下把话术填进输入框）。
+- 种子数据补齐 u002 / u003（6 个月流水、预算、订阅、持仓），`SEED_VERSION` → `2026.11.01`；u001 口径未动。
+
+### Changed
+- 顶部导航顺序 → 工作台 / 业务 / 账户 / 专区 / 技能 / 插件 / 外部服务 / 设置。
+- 账单趋势的收入侧由聚合层补齐，`net_cents = in_cents - out_cents`（`mock_core.bill_summary` 只给支出）。
+- 窄屏标签页改为横向滚动，图表坐标轴在 390 下不再被裁切。
+
+### Fixed
+- 订阅条目的名称字段（聚合层输出 `name`，取自 `merchant` 列）。
+- `#/biz/<tab>` 深链：进入业务页时若未显式指定 tab，不再把地址栏改写回账单而覆盖目标 tab。
+- 业务页在 390 宽度下的 KPI 裁切与分类行错位（`.zone__panes` 整行 + `.brow` 四列栅格）。
+
+### 验证
+- `node frontend/_selftest.js` PASS=363 FAIL=0；`scripts/dashboard_e2e.py` 48/48（新增 biz-1…biz-9）；`scripts/run_tasks.py` 59/59（规则模式与 LLM 模式各一遍）；`scripts/smoke_repay.py` 9/9；`scripts/skill_check.py` 6/6；`scripts/plugin_e2e.py` 17/17；`scripts/verify_audit.py` valid。
+
 ## [0.7.1] - 2026-10-29（进行中，未打 tag）
 
 ### Added

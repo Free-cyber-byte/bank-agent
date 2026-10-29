@@ -24,7 +24,7 @@ BASE = Path(__file__).resolve().parent
 if str(BASE) not in sys.path:
     sys.path.insert(0, str(BASE))
 
-from app import analytics, audit, config, db, engine, llm, mcp_client, mock_core, plugins, push, second_factor, skills, totp  # noqa: E402
+from app import analytics, audit, biz, config, db, engine, llm, mcp_client, mock_core, plugins, push, second_factor, skills, totp  # noqa: E402
 
 mimetypes.add_type("application/javascript", ".js")
 mimetypes.add_type("text/css", ".css")
@@ -347,6 +347,14 @@ class Handler(BaseHTTPRequestHandler):
                     return self._send(200, analytics.dashboard(CONN, snap["user"]["user_id"], window))
                 except analytics.RangeError as exc:
                     return self._error(400, "BAD_RANGE", str(exc))
+            if path == "/api/biz":
+                q = self._query()
+                sid = (q.get("session_id") or [""])[0]
+                try:
+                    snap = biz.overview(CONN, engine.session_snapshot(CONN, sid)["user"]["user_id"], sid)
+                except biz.BizError as exc:
+                    return self._error(400, "BAD_USER", str(exc))
+                return self._send(200, snap)
             if path == "/api/analytics":
                 q = self._query()
                 sid = (q.get("session_id") or [""])[0]
@@ -498,6 +506,18 @@ class Handler(BaseHTTPRequestHandler):
             self.close_connection = True
             return
         try:
+            if path == "/api/demo/identity":
+                if not config.DEMO_MODE:
+                    return self._error(403, "DEMO_MODE_DISABLED", "演示模式未开启")
+                body = self._body()
+                target = str(body.get("user_id") or "").strip()
+                if not target:
+                    return self._error(400, "BAD_USER", "缺少 user_id")
+                row = CONN.execute("SELECT user_id FROM users WHERE user_id=?", (target,)).fetchone()
+                if not row:
+                    return self._error(400, "BAD_USER", "没有这个用户：%s" % target)
+                created = engine.create_session(CONN, target)
+                return self._send(200, engine.session_snapshot(CONN, created["session_id"]))
             if path == "/api/session":
                 created = engine.create_session(CONN)
                 snap = engine.session_snapshot(CONN, created["session_id"])

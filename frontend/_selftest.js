@@ -338,6 +338,74 @@ parseFragment(html, doc).forEach(function (n) { n.parentNode = body; body.childN
 
 // ===================== fetch 桩 =====================
 const FIX = {
+  biz: {
+    as_of: '2026-10-29T14:20:00+08:00',
+    user: { user_id: 'u001', name: '张伟' },
+    bills: {
+      months: 6,
+      total_out_cents: 11116768, total_out_display: '¥111,167.68',
+      total_in_cents: 15000001, total_in_display: '¥150,000.01',
+      net_cents: 3883233, txn_count: 351, savings_rate: 0.0227,
+      by_category: [
+        { category: '购物', cents: 3162704, display: '¥31,627.04', ratio: 0.2845 },
+        { category: '居住', cents: 2871600, display: '¥28,716.00', ratio: 0.2583 },
+        { category: '还款', cents: 1800000, display: '¥18,000.00', ratio: 0.1619 }
+      ],
+      top_merchants: [
+        { merchant: '房东王姐', cents: 2700000, display: '¥27,000.00', count: 6 },
+        { merchant: '信用卡中心', cents: 1800000, display: '¥18,000.00', count: 6 }
+      ],
+      budgets: [
+        { category: '购物', limit_cents: 200000, limit_display: '¥2,000.00', used_cents: 1150671, used_display: '¥11,506.71', pct: 575, state: 'over' },
+        { category: '餐饮', limit_cents: 300000, limit_display: '¥3,000.00', used_cents: 212321, used_display: '¥2,123.21', pct: 71, state: 'ok' }
+      ],
+      trend: [
+        { month: '2026-05', in_cents: 2500000, in_display: '¥25,000.00', out_cents: 1717465, out_display: '¥17,174.65', net_cents: 782535 },
+        { month: '2026-06', in_cents: 2500000, in_display: '¥25,000.00', out_cents: 1720174, out_display: '¥17,201.74', net_cents: 779826 }
+      ]
+    },
+    subscriptions: {
+      active_count: 5, monthly_total_cents: 25500, monthly_total_display: '¥255.00', yearly_total_cents: 306000,
+      items: [
+        { sub_id: 'sub_003', name: 'iCloud 200G', merchant: 'iCloud 200G', cycle: 'monthly', amount_cents: 600, amount_display: '¥6.00', next_charge: '2026-10-31', days_left: 2, status: 'active' },
+        { sub_id: 'sub_001', name: '爱奇艺 VIP', merchant: '爱奇艺 VIP', cycle: 'monthly', amount_cents: 2500, amount_display: '¥25.00', next_charge: '2026-11-04', days_left: 6, status: 'active' }
+      ],
+      due_soon: [
+        { sub_id: 'sub_003', name: 'iCloud 200G', merchant: 'iCloud 200G', amount_cents: 600, amount_display: '¥6.00', next_charge: '2026-10-31', days_left: 2 }
+      ]
+    },
+    transfers: {
+      today_total_cents: 0, today_total_display: '¥0.00', daily_limit_cents: 100000, daily_limit_display: '¥1,000.00', left_cents: 100000,
+      payees: [{ payee_id: 'p1', name: '妈妈', bank: '招商银行', account_masked: '6214 **** 6621', phone: '13800001111' }],
+      scheduled: [], scheduled_pending: 0,
+      recent: [{ txn_id: 'T1', ts: '2026-10-20T21:03:00+08:00', direction: 'out', amount_cents: 300000, amount_display: '¥3,000.00', category: '还款', counterparty: '信用卡中心' }]
+    },
+    wealth: {
+      holding_total_cents: 3000000, holding_total_display: '¥30,000.00', daily_income_cents: 329,
+      holdings: [{ name: '稳利宝 90 天', amount_cents: 2000000, amount_display: '¥20,000.00', risk_level: 'R2', annual_rate: 3.1 }],
+      products: [{ product_id: 'W002', name: '增利宝 180 天', risk_level: 'R3', annual_rate: 4.2, min_cents: 500000, min_display: '¥5,000.00' }]
+    },
+    cards: {
+      total: 2, active: 2, frozen: 0, month_spend_cents: 2443271, month_spend_display: '¥24,432.71',
+      items: [{ card_id: 'card_001', kind: 'debit', number_masked: '**** 8821', status: 'active', account_name: '工资卡', single_limit_display: '¥20,000.00', daily_limit_display: '¥20,000.00', spend_30d_display: '¥22,574.79', spend_30d_count: 58 }]
+    },
+    messages: {
+      p1_count: 2, p2_count: 1, pending_approvals: 1, anomaly_count: 3, subscriptions_due: 2,
+      items: [
+        { id: 'm1', priority: 'P1', kind: 'anomaly', title: '发现 3 笔异常消费', desc: '夜间便利店 · 02 点深夜大额支出 ¥860.00', amount_display: '¥860.00', action: '看异常', target: '看看最近有没有异常消费' },
+        { id: 'm2', priority: 'P2', kind: 'budget', title: '购物 预算已用 575%', desc: '已用 ¥11,506.71 / 预算 ¥2,000.00', amount_display: '¥11,506.71', action: '看预算', target: '看看我的预算执行情况' }
+      ]
+    },
+    security: {
+      chain: { valid: true, checked: 22 },
+      risk: { levels: [{ level: 'low', label: '绿', text: '只读', count: 12 }, { level: 'medium', label: '黄', text: '确认', count: 8 }, { level: 'high', label: '红', text: '强验证', count: 1 }], today_total: 22 },
+      transfer: { today_total_cents: 0, today_total_display: '¥0.00', daily_limit_cents: 100000, daily_limit_display: '¥1,000.00', left_cents: 100000, left_display: '¥1,000.00', pct: 0 },
+      factors: [{ key: 'totp', label: 'TOTP 动态码', enabled: true, ttl: 30 }],
+      lock: { locked: false, reason: '', until: '', events: 0 },
+      recent: [{ seq: 22, ts: '2026-10-29T13:32:35+08:00', event: 'approval_required', tool: 'policy_gate', risk_level: 'medium' }]
+    }
+  },
+
   demoSms: { ok: true, user_id: 'u001', code: '654321', seconds_left: 120, ttl: 120 },
   demoFace: { ok: true, user_id: 'u001', token: 'fc_abc123def456', seconds_left: 60, ttl: 60 },
   session: {
@@ -749,6 +817,13 @@ function makeFetch() {
       return json(FIX.analytics);
     }
 
+    if (u.indexOf('/api/biz') === 0) {
+      if (zoneFail) return Promise.reject(new Error('biz 502'));
+      return json(FIX.biz);
+    }
+    if (u.indexOf('/api/demo/identity') === 0) {
+      return json({ session_id: 's_identity_002', user: { user_id: 'u002', name: '李娜' }, accounts: ACC_FIX.accounts.slice(0, 2), cards: [], subscriptions: [], payees: [] });
+    }
     if (u.indexOf('/api/accounts') === 0) {
       if (zoneFail) return Promise.reject(new Error('accounts 502'));
       return json(ACC_FIX.accounts);
@@ -1208,9 +1283,9 @@ function one(sel) { return doc.querySelector(sel); }
   sandbox.navigator.serviceWorker = undefined;
 
   console.log('== v0.3.2 手机收口 ==');
-  ok('底部 tab 六个入口', getEls('#tabbar .tabbar__btn').length === 6, String(getEls('#tabbar .tabbar__btn').length));
+  ok('底部 tab 七个入口', getEls('#tabbar .tabbar__btn').length === 7, String(getEls('#tabbar .tabbar__btn').length));
   const tabNavs = getEls('#tabbar .tabbar__btn').map(function (b) { return b.getAttribute('data-nav'); }).join(',');
-  ok('tab 顺序 = 工作台/账户/专区/技能/插件/设置', tabNavs === 'home,accounts,zone,skills,plugins,settings', tabNavs);
+  ok('tab 顺序 = 工作台/业务/账户/专区/技能/插件/设置', tabNavs === 'home,biz,accounts,zone,skills,plugins,settings', tabNavs);
   sandbox.innerWidth = 390;
   one('#tabbar .tabbar__btn[data-nav="plugins"]').click();
   await sleep(60);
@@ -1506,8 +1581,8 @@ function one(sel) { return doc.querySelector(sel); }
   console.log('== v0.7.0 专区：入口与路由 ==');
   ZS.state.sessionId = ZS.state.sessionId || 'sess_test_001';
   const navBtnsAll = getEls('.topnav__btn');
-  ok('顶栏第三项是「专区」', navBtnsAll[2] && navBtnsAll[2].getAttribute('data-nav') === 'zone', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
-  ok('顶栏第二项是「账户」', navBtnsAll[1] && navBtnsAll[1].getAttribute('data-nav') === 'accounts', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
+  ok('顶栏第四项是「专区」', navBtnsAll[3] && navBtnsAll[3].getAttribute('data-nav') === 'zone', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
+  ok('顶栏第三项是「账户」', navBtnsAll[2] && navBtnsAll[2].getAttribute('data-nav') === 'accounts', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
   ok('更多菜单也带专区入口', !!one('#moreMenu [data-nav="zone"]'));
   ZS.state.zone.dash = null;
   ZS.state.zone.dashAt = 0;
@@ -1627,7 +1702,7 @@ function one(sel) { return doc.querySelector(sel); }
 
   console.log('== v0.7.1 账户页 ==');
   const navNames = getEls('#topNav .topnav__btn').map(function (b) { return b.getAttribute('data-nav'); }).join(',');
-  ok('顶栏七个入口且含账户', navNames === 'home,accounts,zone,skills,plugins,services,settings', navNames);
+  ok('顶栏八个入口且含账户', navNames === 'home,biz,accounts,zone,skills,plugins,services,settings', navNames);
   ok('更多菜单含账户入口', !!one('#moreMenu [data-nav="accounts"]'));
   ZS.showView('accounts');
   await sleep(120);
@@ -1690,12 +1765,75 @@ function one(sel) { return doc.querySelector(sel); }
   ZS.showView('home');
   await sleep(20);
 
+  // ===== v0.8.0 业务页 + 右栏三卡 =====
+  {
+    const v8nav = getEls('.topnav [data-nav]');
+    ok('顶栏第二项是「业务」', v8nav[1] && v8nav[1].getAttribute('data-nav') === 'biz',
+       v8nav.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
+    ZS.showView('biz');
+    await sleep(30);
+    ZS.wsRefresh(true);
+    ZS.bizEnter('bills');
+    await sleep(60);
+    ok('业务页成为当前视图', doc.body.getAttribute('data-view') === 'biz', doc.body.getAttribute('data-view'));
+    ok('业务页落到账单', (doc.getElementById('bizH1').textContent || '').indexOf('账单') === 0,
+       doc.getElementById('bizH1').textContent);
+    ok('业务页 7 个 tab', getEls('#scr-biz [data-biz-tab]').length === 7, String(getEls('#scr-biz [data-biz-tab]').length));
+    ok('账单 4 张 KPI', getEls('#bizBody .zkpi').length === 4, String(getEls('#bizBody .zkpi').length));
+    ok('账单含月度收支', (doc.getElementById('bizBody').textContent || '').indexOf('月度收支') >= 0, '');
+    ok('账单含预算执行', (doc.getElementById('bizBody').textContent || '').indexOf('预算执行') >= 0, '');
+
+    const v8subs = doc.querySelector('#scr-biz [data-biz-tab="subs"]');
+    if (v8subs) v8subs.click();
+    ok('切到订阅 tab', (doc.getElementById('bizH1').textContent || '').indexOf('订阅') === 0,
+       doc.getElementById('bizH1').textContent);
+    ok('订阅列表含 iCloud', (doc.getElementById('bizBody').textContent || '').indexOf('iCloud') >= 0, '');
+    ok('订阅 tab 处于选中', !!(v8subs && v8subs.classList.contains('is-on')), '');
+
+    const v8msg = doc.querySelector('#scr-biz [data-biz-tab="messages"]');
+    if (v8msg) v8msg.click();
+    ok('消息含 P1 条目', (doc.getElementById('bizBody').textContent || '').indexOf('P1') >= 0, '');
+
+    const v8sec = doc.querySelector('#scr-biz [data-biz-tab="security"]');
+    if (v8sec) v8sec.click();
+    ok('安全页显示审计链', (doc.getElementById('bizBody').textContent || '').indexOf('审计链') >= 0, '');
+    ok('安全页显示威胁演练', (doc.getElementById('bizBody').textContent || '').indexOf('威胁演练') >= 0, '');
+
+    const v8parsed = ZS.zoneParseHash('#/biz/subs');
+    ok('hash #/biz/subs 解析', v8parsed && v8parsed.view === 'biz' && v8parsed.tab === 'subs', JSON.stringify(v8parsed));
+
+    ok('右栏计划卡存在', !!doc.getElementById('wsPlan'), '');
+    ZS.showView('home');
+    ZS.wsRefresh(true);
+    await sleep(40);
+    const v8msgs = doc.getElementById('wsMsg');
+    ok('右栏提醒含 P1', v8msgs && (v8msgs.textContent || '').indexOf('P1') >= 0,
+       v8msgs ? v8msgs.textContent.slice(0, 40) : '');
+    const v8risk = getEls('#wsRisk .wrisk__cell b');
+    ok('右栏风控三档', v8risk.length === 3 && v8risk[0].textContent === '12' && v8risk[2].textContent === '1',
+       v8risk.map(function (c) { return c.textContent; }).join('/'));
+    ok('右栏今日转账', (doc.getElementById('wsMeter').textContent || '').indexOf('¥0.00') >= 0, '');
+    ok('右栏审计链通过', (doc.getElementById('wsChain').textContent || '').indexOf('校验通过') >= 0, '');
+    ok('安全演示两个按钮', getEls('[data-ws-text]').length === 2, String(getEls('[data-ws-text]').length));
+
+    const v8demo = doc.querySelector('[data-ws-text]');
+    if (v8demo) v8demo.click();
+    ok('点演示把话术填进输入框', (doc.getElementById('input').value || '').indexOf('忽略') >= 0,
+       doc.getElementById('input').value.slice(0, 24));
+    ok('演示账户三个', getEls('#moreMenu [data-identity]').length === 3,
+       String(getEls('#moreMenu [data-identity]').length));
+    ok('顶栏价值语在位', ((doc.querySelector('.brand__tag') || {}).textContent || '') === '开口即办 · 笔笔有据', (doc.querySelector('.brand__tag') || {}).textContent);
+    ok('顶栏服务状态在位', !!(doc.getElementById('serviceChip') && doc.getElementById('serviceChipText')), doc.getElementById('serviceChipText') ? doc.getElementById('serviceChipText').textContent : '');
+    ok('顶栏显示会话号', !!((doc.getElementById('sessionChip') || {}).textContent || '').trim() && (doc.getElementById('sessionChip') || {}).textContent !== 's_—', (doc.getElementById('sessionChip') || {}).textContent);
+  }
+
   if (process.env.ZS_DUMP_CLASSES) {
     const seen = {};
     walk(doc.body, function (el) {
       const cls = el.getAttribute ? el.getAttribute('class') : null;
       if (cls) cls.split(/\s+/).forEach(function (c) { if (c) seen[c] = 1; });
     });
+
     require('fs').writeFileSync(process.env.ZS_DUMP_CLASSES, Object.keys(seen).sort().join('\n'));
   }
   console.log('== 汇总 ==');

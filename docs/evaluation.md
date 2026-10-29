@@ -15,7 +15,7 @@ ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条�
 | 运行器 | scripts/run_tasks.py（零依赖；串行、每任务独立临时库） |
 | 解析模式 | rule / llm / auto（默认 auto：有 Key 用模型，无 Key 回落规则） |
 | 对比评测 | scripts/compare_modes.py：30 条基线 + 10 条口语化变体（v0.2.0 未扩展，仍为基线对比数据） |
-| 实测结果 | 规则模式 59/59、LLM 模式 59/59，0 失败（2026-10-29 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消）、scripts/dashboard_e2e.py 39/39（数据专区），node frontend/_selftest.js PASS=338 FAIL=0（v0.7.0 时点） |
+| 实测结果 | 规则模式 59/59、LLM 模式 59/59，0 失败（2026-10-29 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消）、scripts/dashboard_e2e.py 48/48（数据专区 + 账户页 + 业务页），scripts/smoke_repay.py 9/9，scripts/skill_check.py 6/6，scripts/plugin_e2e.py 17/17，scripts/verify_audit.py valid，node frontend/_selftest.js PASS=363 FAIL=0（v0.8.0 时点） |
 | v0.3.0 增量自检 | scripts/plugin_e2e.py 17/17、node frontend/_selftest.js PASS=100 FAIL=0（2026-10-27 实测；不改变 36 条任务） |
 | v0.3.1 增量自检 | scripts/llm_e2e.py 8/8 场景、52/52 项检查；node frontend/_selftest.js PASS=134 FAIL=0；run_tasks 36/36（均 2026-10-27 本机实测）；scripts/llm_smoke.py 需真实 Key，无 Key 自动跳过 |
 | v0.3.2 增量自检 | 企业微信自检 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13、node frontend/_selftest.js PASS=182 FAIL=0（2026-10-27，与 QA 报告一致；QA 全量回归 15/15 步 exit 0、0 FAIL）；v0.4.0 时前端断言已增至 190 项 |
@@ -28,6 +28,7 @@ ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条�
 | v0.6.2 增量自检 | scripts/run_tasks.py 59/59（新增 t57–t59，2026-10-29 实测）；scripts/smoke_repay.py 9/9（engine 级还款边界）；scripts/e2e_stream.py 33/33、skill_check 6/6、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、plugin_e2e 17/17、llm_e2e 9 组全过、smoke18 审计链 valid=True、node frontend/_selftest.js PASS=247 FAIL=0 |
 | v0.7.0 增量自检 | scripts/dashboard_e2e.py 33/33（仪表盘 / 分析 schema、KPI 口径、桶数、参数校验 400、未知会话 404、审计链 checked 不变、不产生资金流水，2026-10-29 实测）；scripts/run_tasks.py 59/59（规则与 LLM 双模式，任务集未变）；node frontend/_selftest.js PASS=306 FAIL=0（v0.6.2 为 247，新增专区 59 项）；scripts/smoke_repay.py 9/9 回归通过 |
 | v0.7.1 增量自检 | scripts/dashboard_e2e.py 39/39（新增 acc-1…acc-6：账户数与卡片字段、信用卡额度口径、按账户过滤、过滤条数、非法账户 400 BAD_ACCOUNT）；node frontend/_selftest.js PASS=338 FAIL=0（新增 32 条账户页断言）；scripts/run_tasks.py 59/59（规则 / LLM 双模式，用例未增）；scripts/smoke_repay.py 9/9；scripts/skill_check.py 6/6；scripts/plugin_e2e.py 17/17；scripts/verify_audit.py valid=True（2026-10-29 实测，不改变 59 条任务口径） |
+| v0.8.0 增量自检 | run_tasks.py 59/59（双模式）· dashboard_e2e.py 48/48 · selftest 363/0 · smoke_repay 9/9 · skill_check 6/6 · plugin_e2e 17/17 · verify_audit valid |
 
 ---
 
@@ -309,6 +310,29 @@ e2e_stream.py 的 33 项断言分四组：
 | acc-6 | `?account_id=acc_999` → 400 `BAD_ACCOUNT` | 越权与错账户明确报错 |
 
 为什么不在前端自检里验口径：口径（额度、欠款、掩码匹配）是后端算出来的，前端只排版；`frontend/_selftest.js` 新增的 32 条断言只验「渲染与交互链路」（KPI 文本、筛选、翻页、CSV、预填、hash、失败降级），两边不重复。
+
+### 3.7 业务页与右栏自检（dashboard_e2e.py 的 biz 组，v0.8.0）
+
+`/api/biz` 与 `/api/demo/identity` 是 v0.8.0 新增的两个只读/会话接口，断言并入 `scripts/dashboard_e2e.py`（`biz-1…biz-9`，与 dash / ana / acc 三组同一隔离实例、同一端口）。
+
+```bash
+python scripts/dashboard_e2e.py -v
+# 结果：48/48 通过（dash-* 15 + ana-* 18 + acc-* 6 + biz-* 9）
+```
+
+| # | 断言 | 期望 |
+| --- | --- | --- |
+| biz-1 | `/api/biz` 返回七个业务域 | 含 `bills/subscriptions/transfers/wealth/cards/messages/security/user` |
+| biz-2 | 账单趋势含收入侧 | 每个月 `in_cents > 0` 且 `net_cents == in - out` |
+| biz-3 | 分类合计与总额一致 | 六类之和 = `total_out_cents`（容差 1 分） |
+| biz-4 | 主动提醒有 P1 与条目 | `p1_count >= 1` 且 `items` 非空 |
+| biz-5 | 风控三档与哈希链 | `risk.levels` 三项、`chain.valid == True` |
+| biz-6 | 订阅名称与倒计时 | 每条都有 `name` 与 `days_left` |
+| biz-7 | 切演示账户 | `POST /api/demo/identity {"user_id":"u002"}` → 李娜 + 新 `session_id` |
+| biz-8 | 切账户后仍有真数据 | u002 的 `bills.total_out_cents > 0` 且 `budgets` 非空（验证种子补齐） |
+| biz-9 | 不存在的演示账户 | HTTP 400 `BAD_USER` |
+
+为什么不并进 `run_tasks.py`：`run_tasks` 是对「一句话 → 计划 → 审批 → 审计」的行为评测，59 条任务固定不动；`/api/biz` 是只读聚合接口，用 HTTP 级断言更直接（也能顺带守「调用前后审计链 `checked` 不变、`transactions` 条数不变」的只读性）。
 
 ## 4. 断言字段说明
 
