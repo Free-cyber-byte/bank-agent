@@ -4540,7 +4540,7 @@
         sub: it.desc,
         pill: it.priority,
         pillClass: it.priority === 'P1' ? 'bpill--p1' : 'bpill--p2',
-        meta: [it.kind === 'approval' ? '等你在工作台确认' : '点右侧按钮把意图预填进对话'],
+        meta: it.kind === 'approval' ? ['等你在工作台确认'] : [],
         amount: it.amount_display,
         actions: [{ label: it.action || '去看看', text: it.target || it.title }]
       });

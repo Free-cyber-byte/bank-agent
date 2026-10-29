@@ -1702,7 +1702,8 @@ function one(sel) { return doc.querySelector(sel); }
 
   console.log('== v0.7.1 账户页 ==');
   const navNames = getEls('#topNav .topnav__btn').map(function (b) { return b.getAttribute('data-nav'); }).join(',');
-  ok('顶栏八个入口且含账户', navNames === 'home,biz,accounts,zone,skills,plugins,services,settings', navNames);
+  ok('顶栏四个主入口', navNames === 'home,biz,accounts,zone', navNames);
+    ok('左栏「更多」四个入口', getEls('.railnav [data-nav]').map(function (b) { return b.getAttribute('data-nav'); }).join(',') === 'skills,plugins,services,settings', getEls('.railnav [data-nav]').map(function (b) { return b.getAttribute('data-nav'); }).join(','));
   ok('更多菜单含账户入口', !!one('#moreMenu [data-nav="accounts"]'));
   ZS.showView('accounts');
   await sleep(120);
