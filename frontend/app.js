@@ -67,7 +67,7 @@
     '看一下今年的年度账单',
     '3 天后给妈妈转 800 元'
   ];
-  var PAGE_TITLES = { home: '工作台', chat: '工作台', zone: '专区', skills: '技能', plugins: '插件', services: '外部服务', settings: '设置' };
+  var PAGE_TITLES = { home: '工作台', chat: '工作台', accounts: '账户', zone: '专区', skills: '技能', plugins: '插件', services: '外部服务', settings: '设置' };
   var PUSH_KIND = {
     subscription: { label: '订阅扣费', hint: '会员即将自动续费' },
     large_txn: { label: '大额支出', hint: '单笔支出超过阈值' },
@@ -95,7 +95,7 @@
     lockUntil: 0, lockTimer: null, lockActive: false,
     lastAction: null,
     streaming: false, streamCancelRequested: false, streamTurnId: null,
-    hashReady: false, theme: 'light',
+    hashReady: false, theme: 'light', acc: null,
     zone: {
       view: 'dashboard', dash: null, dashAt: 0, dashBusy: false,
       ana: null, anaAt: 0, anaBusy: false,
@@ -194,6 +194,7 @@
       'pendingPill', 'pendingPillTime', 'toasts',
       'pageTitle', 'tabbar', 'menuModeWrap',
       'btnTheme', 'btnZoneRefresh', 'zoneBody', 'zoneStamp', 'zoneH1', 'zoneSub',
+      'accBody', 'accStamp', 'accH1', 'accSub', 'btnAccRefresh',
       'palette', 'paletteInput', 'paletteList',
       'pushCard', 'pushTag', 'pushKinds', 'btnPushPreview', 'pushStatus',
       'pushResult', 'pushTitle', 'pushText', 'pushMeta', 'pushNote'
@@ -382,7 +383,7 @@
     var chatEl = document.getElementById('view-chat');
     if (homeEl) homeEl.classList.toggle('is-on', name === 'home');
     if (chatEl) chatEl.classList.toggle('is-on', name === 'chat');
-    var screens = { zone: 'scr-zone', skills: 'scr-skills', plugins: 'scr-plugins', services: 'scr-services', settings: 'scr-settings' };
+    var screens = { accounts: 'scr-accounts', zone: 'scr-zone', skills: 'scr-skills', plugins: 'scr-plugins', services: 'scr-services', settings: 'scr-settings' };
     Object.keys(screens).forEach(function (key) {
       var el = document.getElementById(screens[key]);
       if (el) el.classList.toggle('is-on', name === key);
@@ -394,6 +395,7 @@
     if (dom.pageTitle) dom.pageTitle.textContent = PAGE_TITLES[name] || '工作台';
     closeMenu();
     if (name === 'zone') zoneEnter();
+    else if (name === 'accounts') { zoneStopPoll(); accEnter(); }
     else if (name === 'skills') loadSkills();
     else if (name === 'plugins') loadPlugins();
     else if (name === 'services') loadServices();
@@ -3595,6 +3597,328 @@
     }
   }
 
+  // ===================== 账户页（v0.7.1） =====================
+  // 只读：账户 / 卡片 / 额度 / 流水都在这里看；任何资金动作仍回到对话里走审批与审计链。
+  var ACC_KIND_LABEL = { checking: '活期', savings: '储蓄', credit: '信用卡' };
+  var ACC_TX_PER = 20;
+
+  function acc() {
+    if (!state.acc) {
+      state.acc = { data: null, at: 0, busy: false, pending: null, err: '', tx: {}, txAccount: 'all', txPage: 0 };
+    }
+    return state.acc;
+  }
+  function accClock() {
+    var d = new Date();
+    var hh = String(d.getHours());
+    var mm = String(d.getMinutes());
+    return (hh.length < 2 ? '0' + hh : hh) + ':' + (mm.length < 2 ? '0' + mm : mm);
+  }
+  function accStamp(text) {
+    var el = document.getElementById('accStamp');
+    if (el) el.textContent = text || '';
+  }
+  function accPaint(html) {
+    var body = document.getElementById('accBody');
+    if (body) body.innerHTML = html;
+  }
+  function accKindLabel(kind) { return ACC_KIND_LABEL[kind] || '账户'; }
+  function accPct(part, total) {
+    var p = Number(part) || 0;
+    var t = Number(total) || 0;
+    if (t <= 0) return 0;
+    return Math.max(0, Math.min(100, Math.round(p / t * 1000) / 10));
+  }
+  function accYuan(cents) { return Number(cents || 0) / 100; }
+  // 还款日：每月 25 日（与 backend/app/push.py 的还款提醒口径一致）
+  function accDueInfo() {
+    var now = new Date();
+    var today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    var due = new Date(now.getFullYear(), now.getMonth(), 25);
+    if (due.getTime() <= today.getTime()) due = new Date(now.getFullYear(), now.getMonth() + 1, 25);
+    var mm = String(due.getMonth() + 1);
+    var dd = String(due.getDate());
+    return {
+      text: due.getFullYear() + '-' + (mm.length < 2 ? '0' + mm : mm) + '-' + (dd.length < 2 ? '0' + dd : dd),
+      days: Math.round((due.getTime() - today.getTime()) / 86400000)
+    };
+  }
+  function accSplit(d) {
+    var accs = (d && d.accounts) || [];
+    var credit = null;
+    var available = 0;
+    accs.forEach(function (a) {
+      if ((a.kind || a.type) === 'credit') { if (!credit) credit = a; return; }
+      available += int0(a.balance_cents);
+    });
+    var debt = credit ? Math.max(0, -int0(credit.balance_cents)) : 0;
+    var limit = credit ? int0(credit.credit_limit_cents) : 0;
+    var kpis = (d && d.dash && d.dash.kpis) || {};
+    return {
+      accounts: accs, credit: credit, available: available, debt: debt, limit: limit,
+      usedPct: accPct(debt, limit), holdings: int0(kpis.holdings_cents)
+    };
+  }
+  function int0(v) { var n = Number(v); return isFinite(n) ? Math.round(n) : 0; }
+
+  function accStateBadge(status) {
+    if (!status) return '';
+    var map = { active: ['正常', 'ok'], frozen: ['已冻结', 'warn'], lost: ['挂失', 'err'], closed: ['已销卡', 'muted'] };
+    var hit = map[status] || [status, 'muted'];
+    return '<span class="abadge abadge--state abadge--' + hit[1] + '">' + esc(hit[0]) + '</span>';
+  }
+
+  // ---------- 数据 ----------
+  function accFetchTx(accountId) {
+    var a = acc();
+    return zoneEnsureSession().then(function () {
+      var url = '/api/transactions?session_id=' + encodeURIComponent(state.sessionId) + '&limit=200';
+      if (accountId && accountId !== 'all') url += '&account_id=' + encodeURIComponent(accountId);
+      return getJson(url).then(function (res) {
+        a.tx[accountId || 'all'] = (res && res.transactions) || [];
+        return a.tx[accountId || 'all'];
+      });
+    });
+  }
+  function accFetch(force) {
+    var a = acc();
+    if (!force && a.data && Date.now() - a.at < 30000) return Promise.resolve(a.data);
+    if (a.busy && a.pending) return a.pending;
+    a.busy = true;
+    accStamp('读取中…');
+    accPaint(zoneSkeleton());
+    a.pending = zoneEnsureSession().then(function () {
+      var sid = encodeURIComponent(state.sessionId);
+      return Promise.all([
+        getJson('/api/accounts?session_id=' + sid),
+        getJson('/api/dashboard?session_id=' + sid + '&window=30d'),
+        accFetchTx(a.txAccount)
+      ]).then(function (res) {
+        a.busy = false;
+        a.pending = null;
+        a.data = {
+          accounts: (res[0] && res[0].accounts) || [],
+          cards: (res[0] && res[0].cards) || [],
+          total: int0(res[0] && res[0].total_cents),
+          dash: res[1] || {},
+          txns: res[2] || []
+        };
+        a.at = Date.now();
+        a.err = '';
+        accRender();
+        return a.data;
+      });
+    }).catch(function (err) {
+      a.busy = false;
+      a.pending = null;
+      a.err = (err && err.message) || '读取失败';
+      accStamp('读取失败');
+      accPaint(zoneErrorHtml(a.err));
+      throw err;
+    });
+    return a.pending;
+  }
+
+  // ---------- 渲染 ----------
+  function accKpisHtml(d) {
+    var s = accSplit(d);
+    var cards = [
+      { label: '账户余额', value: fmtMoney(s.available), note: '活期 + 储蓄，可直接动用' },
+      { label: '信用卡待还', value: fmtMoney(s.debt), note: s.limit ? '额度 ' + fmtMoney(s.limit) : '未配置额度' },
+      { label: '额度使用率', value: s.usedPct + '%', note: s.limit ? '已用 ' + fmtMoney(s.debt) + ' / ' + fmtMoney(s.limit) : '—' },
+      { label: '理财持仓', value: fmtMoney(s.holdings), note: '不含在可用余额里' }
+    ];
+    return '<div class="zkpis">' + cards.map(zoneKpiCard).join('') + '</div>';
+  }
+
+  function accCardsHtml(d) {
+    var s = accSplit(d);
+    if (!s.accounts.length) return zoneSection('账户', '当前没有账户', zoneEmptyHtml('没有读到账户，刷新或稍后再试'));
+    var html = s.accounts.map(function (a) {
+      var kind = a.kind || a.type || '';
+      var bal = int0(a.balance_cents);
+      var isCredit = kind === 'credit';
+      var limit = int0(a.credit_limit_cents);
+      var usedPct = isCredit ? accPct(Math.max(0, -bal), limit) : accPct(bal, s.total || s.available + s.debt);
+      var pctText = isCredit
+        ? '已用 ' + usedPct + '% 额度'
+        : '占账户余额 ' + usedPct + '%';
+      var foot = '<button class="btn-text" type="button" data-acc-filter="' + esc(a.account_id) + '">看这张卡的流水</button>';
+      if (isCredit) {
+        foot = '<button class="btn-text" type="button" data-acc-text="' + esc('还信用卡 ' + fmtMoneyPlain(Math.max(0, -bal)) + ' 元') + '">去还款</button>' + foot;
+      }
+      return '<article class="acard acard--' + esc(kind) + '">' +
+        '<div class="acard__head"><span class="abadge abadge--' + esc(kind) + '">' + esc(accKindLabel(kind)) + '</span>' +
+        '<span class="acard__name">' + esc(a.name || '账户') + '</span>' + accStateBadge(a.card_status) + '</div>' +
+        '<div class="acard__bal">' + esc(isCredit && bal < 0 ? '-' + fmtMoney(-bal) : fmtMoney(bal)) + '</div>' +
+        '<div class="acard__meta">' + esc(a.number_masked || '') +
+        (isCredit && limit ? ' · 额度 ' + esc(fmtMoney(limit)) : '') +
+        (a.single_limit_cents ? ' · 单笔限额 ' + esc(fmtMoney(a.single_limit_cents)) : '') + '</div>' +
+        '<div class="abar" aria-hidden="true"><i class="abar__fill abar__fill--' + esc(kind) + '" style="width:' + usedPct + '%"></i></div>' +
+        '<div class="acard__foot"><span class="acard__pct">' + esc(pctText) + '</span>' + foot + '</div>' +
+        '</article>';
+    }).join('');
+    return zoneSection('账户', s.accounts.length + ' 个账户 · 只读', '<div class="acgrid">' + html + '</div>', 'zcard--wide');
+  }
+
+  function accMonthFlows(d, accountId) {
+    var rows = (d && d.txns) || [];
+    var now = new Date();
+    var prefix = now.getFullYear() + '-' + (String(now.getMonth() + 1).length < 2 ? '0' : '') + String(now.getMonth() + 1);
+    var out = 0;
+    var back = 0;
+    rows.forEach(function (t) {
+      if (String(t.ts || '').slice(0, 7) !== prefix) return;
+      if (accountId && t.account_id && t.account_id !== accountId) return;
+      if (t.direction === 'out') out += int0(t.amount_cents);
+      else back += int0(t.amount_cents);
+    });
+    return { out: out, back: back, month: prefix };
+  }
+
+  function accCreditHtml(d) {
+    var s = accSplit(d);
+    if (!s.credit) return '';
+    var due = accDueInfo();
+    var bal = int0(s.credit.balance_cents);
+    var debt = Math.max(0, -bal);
+    var flows = accMonthFlows(d, s.credit.account_id);
+    var body = '<div class="abar abar--lg" aria-hidden="true"><i class="abar__fill abar__fill--credit" style="width:' + s.usedPct + '%"></i></div>' +
+      '<div class="acc__row"><span>额度使用率</span><span>' + s.usedPct + '%（已用 ' + esc(fmtMoney(debt)) + ' / ' + esc(fmtMoney(s.limit)) + '）</span></div>' +
+      '<div class="acc__row"><span>还款日</span><span>' + esc(due.text) + ' · ' + (due.days <= 0 ? '今天' : due.days + ' 天后') + '</span></div>' +
+      '<div class="acc__row"><span>本期消费（' + esc(flows.month) + '）</span><span>' + esc(fmtMoney(flows.out)) + '</span></div>' +
+      '<div class="acc__row"><span>本期入账</span><span>' + esc(fmtMoney(flows.back)) + '</span></div>' +
+      '<div class="acc__acts">' +
+      '<button class="btn-secondary" type="button" data-acc-text="' + esc('还信用卡 ' + fmtMoneyPlain(debt) + ' 元') + '">还信用卡 ' + esc(fmtMoney(debt)) + '</button>' +
+      '<button class="btn-text" type="button" data-acc-filter="' + esc(s.credit.account_id) + '">看信用卡流水</button>' +
+      '</div>';
+    return zoneSection('信用卡', '额度、还款日与本期账单', body);
+  }
+
+  function accTxRows(d, accountId) {
+    var rows = (d && d.txns) || [];
+    if (!accountId || accountId === 'all') return rows;
+    return rows.filter(function (t) { return !t.account_id || t.account_id === accountId; });
+  }
+
+  function accTxHtml(d) {
+    var a = acc();
+    var s = accSplit(d);
+    var accounts = s.accounts;
+    var seg = '<div class="aseg" role="group" aria-label="按账户筛选">' +
+      '<button class="aseg__btn' + (a.txAccount === 'all' ? ' is-on' : '') + '" type="button" data-acc-filter="all">全部</button>' +
+      accounts.map(function (x) {
+        return '<button class="aseg__btn' + (a.txAccount === x.account_id ? ' is-on' : '') + '" type="button" data-acc-filter="' +
+          esc(x.account_id) + '">' + esc(x.name || accKindLabel(x.kind || x.type)) + '</button>';
+      }).join('') + '</div>';
+    var rows = accTxRows(d, a.txAccount);
+    var pages = Math.max(1, Math.ceil(rows.length / ACC_TX_PER));
+    var page = Math.min(Math.max(0, a.txPage), pages - 1);
+    var slice = rows.slice(page * ACC_TX_PER, page * ACC_TX_PER + ACC_TX_PER);
+    var head = '<tr><th scope="col">时间</th><th scope="col">摘要</th><th scope="col">类别</th>' +
+      (a.txAccount === 'all' ? '<th scope="col" class="zcell--acct">账户</th>' : '') + '<th scope="col" class="zcell--num">金额</th></tr>';
+    var body = slice.length ? slice.map(function (t) {
+      var accName = '';
+      accounts.forEach(function (x) { if (x.account_id === t.account_id) accName = x.name || ''; });
+      var money = t.amount_display || fmtMoney(int0(t.amount_cents));
+      return '<tr><td class="zcell--mono">' + esc(zoneDateTime(t.ts)) + '</td>' +
+        '<td>' + esc(t.counterparty || '—') + '</td>' +
+        '<td class="zcell--muted">' + esc(t.category || '其他') + '</td>' +
+        (a.txAccount === 'all' ? '<td class="zcell--muted zcell--acct">' + esc(accName || '—') + '</td>' : '') +
+        '<td class="zcell--num ' + (t.direction === 'in' ? 'zin' : 'zout') + '">' + esc((t.direction === 'in' ? '+' : '-') + money.replace(/^[-+]?/, '')) + '</td></tr>';
+    }).join('') : '<tr><td colspan="5">' + esc('这个筛选下没有流水') + '</td></tr>';
+    var foot = '<div class="zpager">' +
+      '<button class="btn-text" type="button" data-acc-page="' + (page - 1) + '"' + (page <= 0 ? ' disabled' : '') + '>上一页</button>' +
+      '<span class="zpager__info">共 ' + rows.length + ' 笔 · 第 ' + (page + 1) + '/' + pages + ' 页</span>' +
+      '<button class="btn-text" type="button" data-acc-page="' + (page + 1) + '"' + (page >= pages - 1 ? ' disabled' : '') + '>下一页</button>' +
+      '<button class="btn-secondary" type="button" id="accCsv">导出 CSV</button></div>';
+    return zoneSection('流水', '按账户筛选 · 最近 200 笔', seg +
+      '<div class="ztable__wrap"><table class="ztable">' + '<caption class="ztable__cap">账户流水明细</caption>' +
+      '<thead>' + head + '</thead><tbody>' + body + '</tbody></table></div>' + foot, 'zcard--wide');
+  }
+
+  function accLinksHtml() {
+    var items = [
+      ['还信用卡 8,432 元', '卡片动作走审批与审计'],
+      ['冻结信用卡', '挂失/停用，随时可解冻'],
+      ['把信用卡单笔限额调到 5000 元', '调额同样需要确认'],
+      ['下周一想给房东转 4500 元', '预约转账，到点自动执行']
+    ];
+    var body = '<div class="alinks">' + items.map(function (it) {
+      return '<button class="alink" type="button" data-acc-text="' + esc(it[0]) + '">' +
+        '<span class="alink__t">' + esc(it[0]) + '</span><span class="alink__d">' + esc(it[1]) + '</span></button>';
+    }).join('') + '</div>';
+    return zoneSection('要动手？', '只预填意图，执行仍走对话审批', body);
+  }
+
+  function accRender() {
+    var a = acc();
+    var d = a.data;
+    if (!d) return;
+    accPaint(accKpisHtml(d) + accCardsHtml(d) + accCreditHtml(d) + accLinksHtml() + accTxHtml(d));
+    accStamp('更新于 ' + accClock() + ' · 只读');
+  }
+
+  // ---------- 交互 ----------
+  function accPrefill(text) {
+    showView('home');
+    var el = document.getElementById('input');
+    if (el) {
+      el.value = text;
+      try { el.focus(); } catch (e) {}
+      try { autoGrow(); } catch (e) {}
+    }
+    toast('已把这句话填进输入框，确认后发送', { type: 'ok' });
+  }
+  function accSetFilter(accountId) {
+    var a = acc();
+    a.txAccount = accountId || 'all';
+    a.txPage = 0;
+    accStamp('读取中…');
+    accFetchTx(a.txAccount).then(function () {
+      if (a.data) a.data.txns = a.tx[a.txAccount] || [];
+      accRender();
+    }).catch(function (err) { toast((err && err.message) || '流水读取失败', { type: 'err' }); });
+  }
+  function accSetPage(page) {
+    var a = acc();
+    a.txPage = Math.max(0, Number(page) || 0);
+    accRender();
+  }
+  function accExportCsv() {
+    var a = acc();
+    if (!a.data) return;
+    var rows = accTxRows(a.data, a.txAccount);
+    if (!rows.length) { toast('没有可导出的流水', { type: 'warn' }); return; }
+    var lines = ['时间,摘要,类别,账户,方向,金额'];
+    rows.forEach(function (t) {
+      var accName = '';
+      (a.data.accounts || []).forEach(function (x) { if (x.account_id === t.account_id) accName = x.name || ''; });
+      lines.push([zoneDateTime(t.ts), t.counterparty || '', t.category || '',
+        accName, t.direction === 'in' ? '收入' : '支出',
+        (accYuan(t.amount_cents)).toFixed(2)].map(zoneCsvEscape).join(','));
+    });
+    var blob = null;
+    try {
+      blob = new Blob(['\ufeff' + lines.join('\r\n') + '\r\n'], { type: 'text/csv;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      link.href = url;
+      link.download = 'zerostep-账户流水-' + a.txAccount + '.csv';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function () { try { URL.revokeObjectURL(url); } catch (e) {} }, 1500);
+      toast('已导出 ' + rows.length + ' 笔流水', { type: 'ok' });
+    } catch (e) {
+      toast('当前环境不支持下载，已复制到剪贴板', { type: 'warn' });
+    }
+  }
+  function accEnter() {
+    accStamp('读取中…');
+    accFetch(false).catch(function () {});
+  }
+
   // ---------- 主题 ----------
   var THEME_LABEL = { system: '跟随系统', light: '浅色', dark: '深色' };
   function themeStored() {
@@ -3695,6 +4019,24 @@
   }
 
   // ---------- 事件绑定 ----------
+  function bindAccounts() {
+    var btn = document.getElementById('btnAccRefresh');
+    if (btn) btn.addEventListener('click', function () { accFetch(true).catch(function () {}); });
+    var body = document.getElementById('accBody');
+    if (!body) return;
+    body.addEventListener('click', function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var pre = t.closest('[data-acc-text]');
+      if (pre) { accPrefill(pre.getAttribute('data-acc-text')); return; }
+      var filter = t.closest('[data-acc-filter]');
+      if (filter) { accSetFilter(filter.getAttribute('data-acc-filter')); return; }
+      var page = t.closest('[data-acc-page]');
+      if (page) { accSetPage(page.getAttribute('data-acc-page')); return; }
+      if (t.closest('#accCsv')) { accExportCsv(); return; }
+    });
+  }
+
   function bindZone() {
     if (dom.btnZoneRefresh) dom.btnZoneRefresh.addEventListener('click', function () { loadZone(true); });
     if (dom.btnTheme) dom.btnTheme.addEventListener('click', themeToggle);
@@ -3843,6 +4185,7 @@
     traceIdle();
     renderSamples();
     bindZone();
+    bindAccounts();
     showView('home');
     state.hashReady = true;
     try {
@@ -3874,6 +4217,10 @@
     renderInsightCard: renderInsightCard, cancelTurn: cancelTurn, setSendMode: setSendMode,
     loadZone: loadZone, zoneEnter: zoneEnter, zoneSwitchTab: zoneSwitchTab, zoneHandleHash: zoneHandleHash,
     zoneRenderDashboard: zoneRenderDashboard, zoneRenderAnalytics: zoneRenderAnalytics,
+    accEnter: accEnter, accRender: accRender, accFetch: accFetch, accSetFilter: accSetFilter,
+    accSetPage: accSetPage, accExportCsv: accExportCsv, accPrefill: accPrefill, accKpisHtml: accKpisHtml,
+    accCardsHtml: accCardsHtml, accCreditHtml: accCreditHtml, accTxHtml: accTxHtml, accDueInfo: accDueInfo,
+    accSplit: accSplit, accMonthFlows: accMonthFlows, accStateBadge: accStateBadge,
     zoneFlowSvg: zoneFlowSvg, zoneSparkSvg: zoneSparkSvg, zoneParseHash: zoneParseHash,
     zoneCatsHtml: zoneCatsHtml, zoneTxHtml: zoneTxHtml, zoneBudgetHtml: zoneBudgetHtml,
     zoneTodoHtml: zoneTodoHtml, zoneConclusionHtml: zoneConclusionHtml,

@@ -15,7 +15,7 @@ ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条�
 | 运行器 | scripts/run_tasks.py（零依赖；串行、每任务独立临时库） |
 | 解析模式 | rule / llm / auto（默认 auto：有 Key 用模型，无 Key 回落规则） |
 | 对比评测 | scripts/compare_modes.py：30 条基线 + 10 条口语化变体（v0.2.0 未扩展，仍为基线对比数据） |
-| 实测结果 | 规则模式 59/59、LLM 模式 59/59，0 失败（2026-10-29 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消）、scripts/dashboard_e2e.py 33/33（数据专区），node frontend/_selftest.js PASS=306 FAIL=0（v0.7.0 时点） |
+| 实测结果 | 规则模式 59/59、LLM 模式 59/59，0 失败（2026-10-29 全量复跑，本机 Python 3.14.6）；30 条基线双模式各 30/30（2026-10-27 11:18）；scripts/e2e_stream.py 33/33（流式与取消）、scripts/dashboard_e2e.py 39/39（数据专区），node frontend/_selftest.js PASS=338 FAIL=0（v0.7.0 时点） |
 | v0.3.0 增量自检 | scripts/plugin_e2e.py 17/17、node frontend/_selftest.js PASS=100 FAIL=0（2026-10-27 实测；不改变 36 条任务） |
 | v0.3.1 增量自检 | scripts/llm_e2e.py 8/8 场景、52/52 项检查；node frontend/_selftest.js PASS=134 FAIL=0；run_tasks 36/36（均 2026-10-27 本机实测）；scripts/llm_smoke.py 需真实 Key，无 Key 自动跳过 |
 | v0.3.2 增量自检 | 企业微信自检 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13、node frontend/_selftest.js PASS=182 FAIL=0（2026-10-27，与 QA 报告一致；QA 全量回归 15/15 步 exit 0、0 FAIL）；v0.4.0 时前端断言已增至 190 项 |
@@ -27,6 +27,7 @@ ZeroStep 用「59 条任务 + 声明式断言」验证整条流水线：每条�
 | v0.6.1 增量自检 | scripts/mcp_gateway_e2e.py 19/19（新增 gw-18 空白名单写拒绝、gw-19 MCP_SERVERS 合并后 fx/risk 仍可用）；scripts/security_factor_e2e.py 55/55（新增 sec-idor-1 跨会话审批 403、sec-idor-2 二次决策 409，2026-10-28 实测）；任务集未变（仍 56/56），其余回归见 README「后端口径」 |
 | v0.6.2 增量自检 | scripts/run_tasks.py 59/59（新增 t57–t59，2026-10-29 实测）；scripts/smoke_repay.py 9/9（engine 级还款边界）；scripts/e2e_stream.py 33/33、skill_check 6/6、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、plugin_e2e 17/17、llm_e2e 9 组全过、smoke18 审计链 valid=True、node frontend/_selftest.js PASS=247 FAIL=0 |
 | v0.7.0 增量自检 | scripts/dashboard_e2e.py 33/33（仪表盘 / 分析 schema、KPI 口径、桶数、参数校验 400、未知会话 404、审计链 checked 不变、不产生资金流水，2026-10-29 实测）；scripts/run_tasks.py 59/59（规则与 LLM 双模式，任务集未变）；node frontend/_selftest.js PASS=306 FAIL=0（v0.6.2 为 247，新增专区 59 项）；scripts/smoke_repay.py 9/9 回归通过 |
+| v0.7.1 增量自检 | scripts/dashboard_e2e.py 39/39（新增 acc-1…acc-6：账户数与卡片字段、信用卡额度口径、按账户过滤、过滤条数、非法账户 400 BAD_ACCOUNT）；node frontend/_selftest.js PASS=338 FAIL=0（新增 32 条账户页断言）；scripts/run_tasks.py 59/59（规则 / LLM 双模式，用例未增）；scripts/smoke_repay.py 9/9；scripts/skill_check.py 6/6；scripts/plugin_e2e.py 17/17；scripts/verify_audit.py valid=True（2026-10-29 实测，不改变 59 条任务口径） |
 
 ---
 
@@ -276,14 +277,14 @@ e2e_stream.py 的 33 项断言分四组：
 
     cd D:/DeepSeek/buildagent/bank-agent
     $env:PYTHONIOENCODING = "utf-8"
-    python scripts/dashboard_e2e.py            # 33/33 通过则退出码 0
+    python scripts/dashboard_e2e.py            # 39/39 通过则退出码 0
     python scripts/dashboard_e2e.py -v         # 打印每条断言明细
     python scripts/dashboard_e2e.py --json     # 机器可读报告
 
 实测（2026-10-29 本机，Python 3.14.6）：
 
     python scripts/dashboard_e2e.py
-    结果：33/33 通过
+    结果：39/39 通过（`dash-*` 15 条 + `ana-*` 18 条 + `acc-*` 6 条）
 
 断言分两组：
 
@@ -293,6 +294,21 @@ e2e_stream.py 的 33 项断言分四组：
 | ana-1…18（18 条） | 顶层字段、桶数 = series 长度、序列合计 = totals、类别合计与占比、商户 TOP10 降序、明细 ≤100 且倒序、日均 = 支出 ÷ 跨度、订阅倒计时为整数、储蓄建议 ≤3 条、day/week 桶数 30/5、桶键格式、单日区间、`start > end` / `granularity=hour` / 跨度 > 400 天均 400 `BAD_RANGE`、未知会话 404、调用前后审计链 checked 不变、调用前后流水条数不变 |
 
 **为什么不并进 run_tasks**：`run_tasks.py` 的语义是「一句自然语言 → 意图 / 计划 / 审批 / 执行」的对话闭环，专区是纯查询面，没有意图与审批，塞进去会稀释任务集的口径。两者的公共前提相同：不写库、可重复、失败可定位。
+
+### 3.6 账户页自检（dashboard_e2e.py 的 acc 组，v0.7.1）
+
+账户页没有新增端点，所以不自建脚本，直接在 `dashboard_e2e.py` 里加六条断言，随专区一起跑：
+
+| 断言 | 检查点 | 说明 |
+| --- | --- | --- |
+| acc-1 | `/api/accounts` 返回 3 个账户 | 与种子账户数一致 |
+| acc-2 | 工资卡带 card 字段且 `card_status == "active"` | `_accounts_with_cards` 的掩码匹配生效 |
+| acc-3 | 信用卡 `credit_limit_cents == 3000000`、`balance_cents == -843200` | 额度与欠款口径不变 |
+| acc-4 | `?account_id=acc_003` 只返回该账户流水且回显 `account_id` | 过滤生效 |
+| acc-5 | 过滤条数 > 0 且 < 全部流水条数 | 防止「过滤被忽略但恰好为空」的假通过 |
+| acc-6 | `?account_id=acc_999` → 400 `BAD_ACCOUNT` | 越权与错账户明确报错 |
+
+为什么不在前端自检里验口径：口径（额度、欠款、掩码匹配）是后端算出来的，前端只排版；`frontend/_selftest.js` 新增的 32 条断言只验「渲染与交互链路」（KPI 文本、筛选、翻页、CSV、预填、hash、失败降级），两边不重复。
 
 ## 4. 断言字段说明
 

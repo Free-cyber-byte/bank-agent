@@ -4,7 +4,7 @@
 
 ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的可运行参考实现：用户用一句自然语言说出需求，Agent 走完「理解 → 规划 → 策略校验 → 执行 → 回读 → 回复」六阶段流水线，把查询、转账、理财、卡片、订阅、跨场景分账真正做完。它同时是一份可被审计、可被评测的工程样本：资金动作全部由确定性工具执行，模型只负责产出意图与槽位，任何高风险动作都必须经过用户确认或强验证因子（TOTP 动态码 / 短信码 / 人脸令牌），连续可疑操作还会临时锁定会话；整条事件链用 SHA-256 哈希链固化。
 
-本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.7.0：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56；v0.6.0 把 MCP 客户端升级为通用网关（MCP_SERVERS 多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE），并提供银行开放平台演示服务，MCP 仍严格只读；v0.6.1 按全量安全审查收口边界（CORS/Origin/Host 三收紧、演示二次因子接口仅本机、TOTP 改每用户随机密钥、审批 CAS 与会话绑定、转账改单事务、MCP 注册表由替换改为合并、写闸按分词判写、status 脱敏）；v0.6.2 修信用卡还款（新增 `credit_repay` 独立意图与双向记账的 `repay_credit`：默认从工资卡扣款、可指定储蓄卡、金额按欠款截断、无金额/无欠款/余额不足给出拦截文案；评测任务 56 → 59 条）；v0.7.0 在对话工作台之外新增只读「数据专区」——仪表盘（6 KPI + 近 6 月收支 + 预算执行 + 支出构成 + 待办与风险 + 最近流水）与分析页（区间对比、类别排名、商户 TOP10、异常、订阅倒计时、储蓄建议、明细分页与 CSV 导出），并把手写 SVG 图表、hash 路由、外观切换、命令面板 Ctrl+K、骨架屏与无障碍一起补齐；专区只读、不写审计链，评测任务仍为 59 条。
+本仓库为参赛作品（hackathon demo），后端零第三方依赖，仅使用 Python 标准库；当前 v0.7.1：v0.3.0 起把能力拆成 7 个内置插件（核心策略与审计锁定不可停用），v0.3.1 加固模型接入（默认关思考、8 秒超时、10 秒预算、重试与熔断、连接测试），v0.3.2 把渠道做成双向触达（企业微信回调、主动推送、手机端与 PWA），v0.4.0 扩充资金动作并支持预约转账（理财赎回、卡限额、刷卡、异常扫描、年度账单、手机号转账、预约转账），v0.4.1 加固安全边界（挂失/解挂升为红色强验证、TOTP/短信/人脸三因子、连续可疑操作临时锁定会话），v0.5.0 增加消费洞察与订阅识别，并把回答改成可中途停止的逐字流式输出，评测任务 36 → 56 条，规则模式实测 56/56 通过（v0.1.0 基线为 30 条）；v0.5.1 修复操作后账户总览不刷新与资金流向不动（统一 kind 字段口径、理财持仓计入资产构成、回合结束自动刷新快照），用例仍 56/56；v0.6.0 把 MCP 客户端升级为通用网关（MCP_SERVERS 多服务注册表、Bearer / Headers / OAuth2 鉴权、streamable-http 会话与 SSE），并提供银行开放平台演示服务，MCP 仍严格只读；v0.6.1 按全量安全审查收口边界（CORS/Origin/Host 三收紧、演示二次因子接口仅本机、TOTP 改每用户随机密钥、审批 CAS 与会话绑定、转账改单事务、MCP 注册表由替换改为合并、写闸按分词判写、status 脱敏）；v0.6.2 修信用卡还款（新增 `credit_repay` 独立意图与双向记账的 `repay_credit`：默认从工资卡扣款、可指定储蓄卡、金额按欠款截断、无金额/无欠款/余额不足给出拦截文案；评测任务 56 → 59 条）；v0.7.0 在对话工作台之外新增只读「数据专区」——仪表盘（6 KPI + 近 6 月收支 + 预算执行 + 支出构成 + 待办与风险 + 最近流水）与分析页（区间对比、类别排名、商户 TOP10、异常、订阅倒计时、储蓄建议、明细分页与 CSV 导出），并把手写 SVG 图表、hash 路由、外观切换、命令面板 Ctrl+K、骨架屏与无障碍一起补齐；专区只读、不写审计链，评测任务仍为 59 条；v0.7.1 把账户从对话里的一段回答搬成独立一页——账户、额度、卡片状态与流水在一屏看完，付款与改额度仍回到对话走审批。
 
 ---
 
@@ -29,6 +29,30 @@ ZeroStep（零步银行）是一个面向「手机银行 AI 助手」场景的�
 16. **通用 MCP 接入、银行可插拔（v0.6.0）**：MCP_SERVERS 多服务注册表 + Bearer / Headers / OAuth2 鉴权 + streamable-http 会话与 SSE，附带银行开放平台演示服务（8310）验证全链路；只读四道闸把写操作挡在客户端，全局写开关也放不进显式 write_tools——能接更多外部服务，能动钱的边界不变。
 17. **边界加固（v0.6.1）**：按全量审查收口——CORS 从 `*` 改为 Origin 白名单、Host 校验防 DNS rebinding、请求体 512 KiB 上限、limit 参数 clamp；演示二次因子接口只接受本机连接；TOTP 每用户随机密钥 + `compare_digest` + 失败锁定；审批改为原子 CAS 并绑定会话与参数摘要；转账改为单事务条件更新，禁负余额；MCP 注册表合并内置 fx/risk、写闸按分词判写、`/api/mcp/status` 脱敏。审查报告保存在本地 `.review/`（三份，未随仓库提交）。
 18. **数据专区、只读聚合（v0.7.0）**：新增一级导航「专区」，落地即仪表盘，另含分析页；两个只读接口 `GET /api/dashboard`、`GET /api/analytics` 全部复用对话同一套账本口径，不写资金流水、不写审计链（调用前后 `checked` 不变）。图表是手写 SVG（柱 / 线 / 100% 堆叠 / 环形 / sparkline），按容器宽度出图、键盘可达、每图给表格等价；主题可跟随系统、路由写进 hash、命令面板 Ctrl+K，390 宽无横向滚动。前端自检 247 → 306，新增 `scripts/dashboard_e2e.py` 33/33。
+19. **账户页、只读账本（v0.7.1）**：新增一级导航「账户」，一屏看完 4 张 KPI（账户余额 / 信用卡待还 / 额度使用率 / 理财持仓）、三张账户卡（类型徽章、掩码、余额、单笔与日限额、额度占比）、信用卡专区（额度使用率、还款日每月 25 日倒计时、本期消费与入账）、流水（按账户筛选、每页 20 条、CSV 导出）与「要动手？」预填入口；`GET /api/accounts` 顺带补齐卡片字段、`GET /api/transactions` 支持 `account_id` 过滤。页面只读，不写账也不写审计链，任何动钱动作仍走「对话 → 计划 → 审批 → 审计链」。前端自检 306 → 338，`scripts/dashboard_e2e.py` 33 → 39 条断言。
+
+---
+
+## v0.7.1 新能力（账户页）
+
+v0.7.0 解决了「看不见全貌」，v0.7.1 解决「账本没有落处」：账户、额度、卡片状态、流水原本散在左栏卡片和问答里，看一眼余额要问一句、查一张卡的额度又要问一句。账户页把这几件事收进一张只读的账本，动钱的部分仍然交给对话。
+
+| 区块 | 内容 | 口径 |
+| --- | --- | --- |
+| 总览 | 账户余额 / 信用卡待还 / 额度使用率 / 理财持仓 4 张 KPI | 与仪表盘同源：`/api/accounts` + `/api/dashboard` |
+| 账户卡 | 工资卡 / 信用卡 / 储蓄卡：类型徽章、掩码后四位、余额、单笔与日限额、占账户余额比例、额度使用条 | `accounts` 项已含 `card_*` 与限额字段 |
+| 信用卡专区 | 额度使用率、还款日（每月 25 日）倒计时、本期消费与本期入账、去还款 | 还款日口径与 `push.py` 提醒一致 |
+| 流水 | 全部 / 单账户筛选，每页 20 条，上一页 / 下一页，导出 CSV（BOM + CRLF，Excel 直接打开不乱码） | `GET /api/transactions?account_id=` |
+| 要动手？ | 还信用卡 / 冻结卡 / 调单笔限额 / 预约转账 四个按钮，把这句话预填进工作台输入框 | 只预填，不执行 |
+
+四条边界：
+
+1. **只读**：页面不调用任何写接口，不产生 transactions / events / audit 记录；`dashboard_e2e.py` 的 `acc-*` 断言与审计链检查在连续取数前后都成立。
+2. **不重复定义口径**：余额、额度、账单全部来自后端同一套聚合，前端只负责排版，换账户或换月份不改前端逻辑。
+3. **窄屏不砍信息**：≤720px 流水表隐藏「账户」列把宽度让给金额，分页条换行，≤390px 时 KPI 保持两列。
+4. **动钱仍走审批**：任何按钮都只往输入框写一句话（例如「还信用卡 8,432 元」），后面仍然是意图 → 计划 → 策略 → 审批 → 审计链。
+
+实测（2026-10-29）：`node frontend/_selftest.js` → PASS=338 FAIL=0；`python scripts/dashboard_e2e.py` → 39/39；`python scripts/run_tasks.py` → 59/59（规则 / LLM 双模式）；1440 浅色 / 1440 深色 / 390 三档截图 `scrollWidth == clientWidth`。
 
 ---
 
@@ -43,9 +67,9 @@ v0.7.0 解决的是「对话能办事，但看不见全貌」：一句话能查�
 | 只读聚合层 | `backend/app/analytics.py`，复用 mock_core 口径，非法参数 400、未知会话 404，不写 events / audit / transactions | [docs/architecture.md](docs/architecture.md) §15 |
 | 图表与无障碍 | 手写 SVG，按容器宽度出图、dpr 适配、tooltip、`aria-label`、表格等价、reduced-motion 落终态 | [docs/design-system.md](docs/design-system.md) §七 |
 | 体验升级 | hash 路由、外观切换（系统 / 浅 / 深）、命令面板 Ctrl+K、骨架屏与重试、60 秒可见轮询、CSV 导出 | [docs/design-system.md](docs/design-system.md) §七 |
-| 自检 | `scripts/dashboard_e2e.py` 33/33、前端自检 306/306、run_tasks 59/59 | [docs/evaluation.md](docs/evaluation.md) §3.5 |
+| 自检 | `scripts/dashboard_e2e.py` 39/39、前端自检 338/338、run_tasks 59/59 | [docs/evaluation.md](docs/evaluation.md) §3.5 |
 
-实测（2026-10-29）：`python scripts/dashboard_e2e.py` → 33/33；`node frontend/_selftest.js` → PASS=306 FAIL=0；`python scripts/run_tasks.py` → 59/59；连续调用 `/api/dashboard`、`/api/analytics` 前后 `/api/audit` 的 `chain.checked` 恒为 22、`valid=true`。
+实测（2026-10-29）：`python scripts/dashboard_e2e.py` → 39/39；`node frontend/_selftest.js` → PASS=338 FAIL=0；`python scripts/run_tasks.py` → 59/59；连续调用 `/api/dashboard`、`/api/analytics` 前后 `/api/audit` 的 `chain.checked` 恒为 22、`valid=true`。
 
 ---
 
@@ -306,6 +330,9 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
 ![数据专区 · 分析](docs/screenshots/06-zone-analytics.png)
 *数据专区 · 分析（v0.7.0，1440 宽）：区间与粒度筛选 → 区间 KPI → 收支对比 → 类别排名 → 商户 TOP10 → 异常消费 → 订阅倒计时 → 储蓄建议 → 明细分页与 CSV 导出*
 
+![账户页](docs/screenshots/07-zone-accounts.png)
+*账户页（v0.7.1，1440 宽）：4 张 KPI → 三张账户卡（类型徽章 / 掩码 / 额度占比）→ 信用卡专区（额度使用率、还款日倒计时、本期消费）→ 要动手？预填入口 → 按账户筛选的流水分页与 CSV 导出*
+
 > 专区在 390 宽为单列布局、图表按容器宽度重绘、表格隐藏账户列保住金额列；三档截图均 `scrollWidth == clientWidth`（无横向滚动），深色主题同源换令牌。
 
 ---
@@ -358,7 +385,7 @@ v0.2.0 在 v0.1.0 的安全骨架上补四项能力，铁律不变：安全骨�
     curl.exe -s http://127.0.0.1:8000/api/health
     curl.exe -s http://127.0.0.1:8000/api/plugins
 
-/api/health 返回 version=0.7.0；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（59 条任务按每批 6 条分 10 批）。
+/api/health 返回 version=0.7.1；/api/plugins 返回 count=7、enabled_count=7（未停用时）。界面顶栏出现「插件」入口，首页快捷指令按钮显示「换一批 · 1/10」（59 条任务按每批 6 条分 10 批）。
 
 不需要任何 API Key 也能完整运行：默认的 auto 模式在没有 Key 时等价于规则解析，59 条评测全部通过（规则模式）。想体验模型解析，把 Key 写进仓库根目录的 .env 文件（推荐，已被 .gitignore 排除）即可，界面顶栏可在「规则 / 自动 / 模型」之间切换（「模型」即调用大模型解析，悬停可看到当前厂商与模型名）。
 
@@ -490,7 +517,7 @@ v0.3.2 的完整形态是四个进程（主服务、IM 渠道、企微回调、�
     curl.exe -s http://127.0.0.1:8401/health
     curl.exe -s http://127.0.0.1:8000/api/channel/status
 
-后端口径（逐版本累积）：v0.7.0 新增 `scripts/dashboard_e2e.py` 33/33，回归 run_tasks 59/59（规则 / LLM 双模式）、smoke_repay 9/9、e2e_stream 33/33、skill_check 6/6、plugin_e2e 17/17、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、smoke18 审计链 valid、verify_audit valid、前端自检 PASS=306 FAIL=0（2026-10-29）；v0.6.1 全量回归 15 项脚本 + 前端自检全部 exit 0（2026-10-28）——mcp_gateway_e2e 19/19、security_factor_e2e 55/55、capability_e2e 63/63、run_tasks 56/56、e2e_stream 33/33、smoke18 18 轮审计链 valid、plugin_e2e 17/17、push_e2e 13/13、channel_wecom_e2e 13/13、skill_check 6/6、smoke_normalize 10/10、mcp_e2e 7/7、selftest 5/5、channel_e2e 9/9、wecom 自检 9/9、前端 PASS=247 FAIL=0；curl 边界自测：恶意 Origin 的 POST/OPTIONS 403、`Host: evil.com` 403、600 KiB body 413、`limit=abc` 400、`limit=-1` 不再全表、无 Origin 的 /api/health 无 ACAO、允许 Origin 回显 + Vary: Origin；v0.6.0 实跑 scripts/mcp_gateway_e2e.py 17/17，回归 run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、前端 247/0（2026-10-28）；v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件、v0.6.1 CORS/Host/body/limit/API_TOKEN 边界与演示接口本机限制，字段见 docs/api.md §0 / §2 / §4 / §7。
+后端口径（逐版本累积）：v0.7.0 新增 `scripts/dashboard_e2e.py`（v0.7.1 增至 39/39），回归 run_tasks 59/59（规则 / LLM 双模式）、smoke_repay 9/9、e2e_stream 33/33、skill_check 6/6、plugin_e2e 17/17、push_e2e 13/13、channel_e2e 9/9、mcp_e2e 7/7、smoke18 审计链 valid、verify_audit valid、前端自检 PASS=306 FAIL=0（2026-10-29）；v0.6.1 全量回归 15 项脚本 + 前端自检全部 exit 0（2026-10-28）——mcp_gateway_e2e 19/19、security_factor_e2e 55/55、capability_e2e 63/63、run_tasks 56/56、e2e_stream 33/33、smoke18 18 轮审计链 valid、plugin_e2e 17/17、push_e2e 13/13、channel_wecom_e2e 13/13、skill_check 6/6、smoke_normalize 10/10、mcp_e2e 7/7、selftest 5/5、channel_e2e 9/9、wecom 自检 9/9、前端 PASS=247 FAIL=0；curl 边界自测：恶意 Origin 的 POST/OPTIONS 403、`Host: evil.com` 403、600 KiB body 413、`limit=abc` 400、`limit=-1` 不再全表、无 Origin 的 /api/health 无 ACAO、允许 Origin 回显 + Vary: Origin；v0.6.0 实跑 scripts/mcp_gateway_e2e.py 17/17，回归 run_tasks 56/56、e2e_stream 33/33、capability_e2e 63/63、security_factor_e2e 53/53、plugin_e2e 17/17、mcp_e2e 7/7、selftest 5/5、smoke18 审计链 valid、前端 247/0（2026-10-28）；v0.5.1 实跑 scripts/run_tasks.py 56/56、0 失败（2026-10-28，含 t47–t56）、scripts/e2e_stream.py 33/33、node frontend/_selftest.js PASS=247 FAIL=0（v0.5.0 为 238，v0.4.1 为 206）；v0.4.1 QA security_factor_e2e 53/53、v0.4.1 全量回归 17 步 exit 0、0 FAIL（audit/qa-report-v0.4.1.md，2026-10-28，建议冻结）；历史端点 selftest.py 5/5、scripts/mcp_e2e.py 7/7、scripts/skill_check.py 6/6、scripts/smoke_normalize.py 10/10、scripts/channel_e2e.py 9/9、scripts/plugin_e2e.py 17/17、backend/channels/wecom.py --selftest 9/9、scripts/channel_wecom_e2e.py 13/13、scripts/push_e2e.py 13/13。v0.3.1 QA 回归 13 项全绿；v0.3.2 QA 回归 15/15 步全绿，报告 audit/qa-report-v0.3.2.md 建议冻结；v0.4.0 全量回归（audit/qa-report-v0.4.0.md）17 项全绿、capability_e2e 63/63。server.py 已含 v0.2.0 只读路由、v0.3.0 插件路由、v0.3.2 POST /api/push、v0.4.0 GET /api/scheduled 与 POST /api/scheduler/tick、v0.4.1 GET /api/demo/sms 与 POST /api/demo/face、v0.5.0 POST /api/turn/cancel 与 answer_* 流式事件、v0.6.1 CORS/Host/body/limit/API_TOKEN 边界与演示接口本机限制，字段见 docs/api.md §0 / §2 / §4 / §7。
 
 ---
 
@@ -651,7 +678,7 @@ v0.5.0 增量自检（2026-10-28 实测）：
 
     python scripts/run_tasks.py       # 59/59 通过（含 t47–t56、t57–t59）
     python scripts/e2e_stream.py      # 33/33 项 SSE 事件序、取消与端口清理断言
-    node frontend/_selftest.js        # PASS=306 FAIL=0（v0.4.1 为 206，v0.5.0 增至 238，v0.5.1 增至 247，v0.7.0 专区新增 59 项）
+    node frontend/_selftest.js        # PASS=338 FAIL=0（v0.4.1 为 206，v0.5.0 增至 238，v0.5.1 增至 247，v0.7.0 专区 +59，v0.7.1 账户 +32）
 
 v0.5.0 新增 10 条 insight 任务覆盖消费统计、可省金额、订阅识别与流式/取消；scripts/e2e_stream.py 用 33 项断言在真实服务上验证事件序（answer_start 到 done 的完整序列、每块 12 字符、末块可短）、stream_text=false 降级、取消两种返回、审计 answer_cancelled 与取消不撤销工具。前端自检从 206 增至 238、v0.5.1 再到 247：逐字追加、生成中「发送 → 停止」、取消后按钮恢复与「已停止输出」提示、洞察卡字段渲染。
 
@@ -788,7 +815,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
     │   ├── styles.css             样式（设计令牌、三栏布局、手机端与 tabbar）
     │   ├── manifest.webmanifest   PWA 清单（standalone、4 图标、主题色）
     │   ├── sw.js                  Service Worker（外壳预缓存、/api/ 不缓存；VERSION 0.7.0，改静态资源须同步改）
-    │   └── _selftest.js           前端自检（306 项断言，含 PWA、手机端、推送、多因子、锁定态、逐字流式、资金流向刷新与数据专区）
+    │   └── _selftest.js           前端自检（338 项断言，含 PWA、手机端、推送、多因子、锁定态、逐字流式、资金流向刷新、数据专区与账户页）
     ├── tasks/t01.json … t59.json  59 条评测任务（声明式断言）
     ├── scripts/
     │   ├── run_tasks.py           评测执行器
@@ -837,7 +864,7 @@ v0.4.1 起会话锁生效，同一会话连续演示攻击会在第 3 次被拦�
 | --- | --- |
 | [docs/architecture.md](docs/architecture.md) | 分层架构、六阶段流水线、跨场景 DAG、审批中断与恢复、幂等键、事件与审计持久化、插件注册表与渠道接入 |
 | [docs/security.md](docs/security.md) | 三级权限矩阵、阈值理由、TOTP 与哈希链实现、注入四层防御、攻击测试、已知限制 |
-| [docs/evaluation.md](docs/evaluation.md) | 59 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、流式 e2e 33/33、专区自检 33/33、v0.4.0–v0.7.0 增量自检、新增任务方法 |
+| [docs/evaluation.md](docs/evaluation.md) | 59 条任务表、断言字段说明、规则 / LLM 双模式对比与评测方法、流式 e2e 33/33、专区与账户页自检 39/39、v0.4.0–v0.7.1 增量自检、新增任务方法 |
 | [docs/api.md](docs/api.md) | HTTP/SSE 接口契约（v1.10：v0.6.1 CORS/Host/body/limit/API_TOKEN 边界、审批会话绑定与 CAS、401/403/409/413 错误码；v1.9：v0.6.0 MCP 通用接入字段 label/transport/auth/session/read_only 与动态 mcp-<name> 插件、v0.5.1 会话 wealth 与 accounts.kind 口径、v0.3.0 插件与 tasks 分页、v0.3.1 LLM 状态与 /api/llm/test、v0.3.2 POST /api/push 与企微 8401 服务、v0.4.0 预约与调度、v0.4.1 多因子与会话锁定、v0.5.0 洞察工具/insight 意图/answer_* 事件与 POST /api/turn/cancel） |
 | [docs/design-system.md](docs/design-system.md) | 前端设计规范（v0.3.2，延续 v4 视觉）：Win11 Fluent、7 档字号、264/1fr/296 三栏、审批卡规则行、技能页/外部服务页/设置页、插件页与开关/徽章/手风琴/换一批、移动端与 PWA（tabbar、推送卡、安装态） |
 | [docs/mcp.md](docs/mcp.md) | MCP 只读服务与通用接入：协议、接口、两个内置工具、降级行为、启动与演示；v0.6.0 注册表、鉴权、streamable-http/SSE 四道闸与银行开放平台演示 |

@@ -587,6 +587,53 @@ function sseChunks(events) {
   const parts = events.map(function (e) { return 'event: ' + e.event + '\ndata: ' + JSON.stringify(e.data) + '\n\n'; });
   return parts;
 }
+
+// ---- v0.7.1 账户页 fixtures ----
+const ACC_MONTH = (function () {
+  const d = new Date();
+  const m = String(d.getMonth() + 1);
+  return d.getFullYear() + '-' + (m.length < 2 ? '0' + m : m);
+})();
+const ACC_FIX = {
+  accounts: {
+    accounts: [
+      { account_id: 'a1', kind: 'checking', name: '工资卡', number_masked: '**** 8821', balance_cents: 1284450,
+        credit_limit_cents: 0, currency: 'CNY', balance_display: '¥12,844.50',
+        card_id: 'c1', card_kind: 'debit', card_status: 'active', single_limit_cents: 2000000, daily_limit_cents: 2000000 },
+      { account_id: 'a2', kind: 'credit', name: '信用卡', number_masked: '**** 6712', balance_cents: -843200,
+        credit_limit_cents: 3000000, currency: 'CNY', balance_display: '¥-8,432.00',
+        card_id: 'c2', card_kind: 'credit', card_status: 'active', single_limit_cents: 3000000, daily_limit_cents: 3000000 },
+      { account_id: 'a3', kind: 'savings', name: '储蓄', number_masked: '**** 3390', balance_cents: 4500000,
+        credit_limit_cents: 0, currency: 'CNY', balance_display: '¥45,000.00',
+        card_id: '', card_kind: '', card_status: '', single_limit_cents: 0, daily_limit_cents: 0 }
+    ],
+    cards: [
+      { card_id: 'c1', kind: 'debit', number_masked: '**** 8821', status: 'active', single_limit_cents: 2000000, daily_limit_cents: 2000000 },
+      { card_id: 'c2', kind: 'credit', number_masked: '**** 6712', status: 'active', single_limit_cents: 3000000, daily_limit_cents: 3000000 }
+    ],
+    total_cents: 4941250
+  },
+  txns: (function () {
+    const rows = [];
+    const cats = ['餐饮', '购物', '交通', '娱乐'];
+    for (let i = 0; i < 26; i++) {
+      const credit = i % 3 === 0;
+      const day = String(28 - i).length < 2 ? '0' + (28 - i) : String(28 - i);
+      rows.push({
+        txn_id: 'tx_acc_' + i,
+        ts: ACC_MONTH + '-' + day + 'T10:' + (String(i).length < 2 ? '0' + i : i) + ':00',
+        direction: i % 7 === 0 ? 'in' : 'out',
+        amount_cents: (i % 7 === 0 ? 250000 : 10000 + i * 137),
+        amount_display: '¥' + ((i % 7 === 0 ? 250000 : 10000 + i * 137) / 100).toFixed(2),
+        category: cats[i % cats.length],
+        counterparty: (credit ? '优衣库' : '星巴克') + ' #' + i,
+        account_id: credit ? 'a2' : 'a1'
+      });
+    }
+    return rows;
+  })()
+};
+
 function makeFetch() {
   return function (url, init) {
     CALLS.push({ url: String(url), method: (init && init.method) || 'GET', body: init && init.body });
@@ -700,6 +747,26 @@ function makeFetch() {
     if (u.indexOf('/api/analytics') === 0) {
       if (zoneFail) return Promise.reject(new Error('analytics 502'));
       return json(FIX.analytics);
+    }
+
+    if (u.indexOf('/api/accounts') === 0) {
+      if (zoneFail) return Promise.reject(new Error('accounts 502'));
+      return json(ACC_FIX.accounts);
+    }
+    if (u.indexOf('/api/transactions') === 0) {
+      if (zoneFail) return Promise.reject(new Error('transactions 502'));
+      const qi = u.indexOf('?');
+      const q = {};
+      if (qi >= 0) {
+        u.slice(qi + 1).split('&').forEach(function (pair) {
+          const kv = pair.split('=');
+          if (kv[0]) q[decodeURIComponent(kv[0])] = decodeURIComponent(kv[1] || '');
+        });
+      }
+      const aid = q.account_id || '';
+      const rows = aid ? ACC_FIX.txns.filter(function (t) { return t.account_id === aid; }) : ACC_FIX.txns;
+      if (q.limit) return json({ transactions: rows.slice(0, Number(q.limit) || 20), account_id: aid || null });
+      return json({ transactions: rows, account_id: aid || null });
     }
     return json({ error: 'NOT_FOUND' }, 404);
   };
@@ -1141,9 +1208,9 @@ function one(sel) { return doc.querySelector(sel); }
   sandbox.navigator.serviceWorker = undefined;
 
   console.log('== v0.3.2 手机收口 ==');
-  ok('底部 tab 五个入口', getEls('#tabbar .tabbar__btn').length === 5, String(getEls('#tabbar .tabbar__btn').length));
+  ok('底部 tab 六个入口', getEls('#tabbar .tabbar__btn').length === 6, String(getEls('#tabbar .tabbar__btn').length));
   const tabNavs = getEls('#tabbar .tabbar__btn').map(function (b) { return b.getAttribute('data-nav'); }).join(',');
-  ok('tab 顺序 = 工作台/专区/技能/插件/设置', tabNavs === 'home,zone,skills,plugins,settings', tabNavs);
+  ok('tab 顺序 = 工作台/账户/专区/技能/插件/设置', tabNavs === 'home,accounts,zone,skills,plugins,settings', tabNavs);
   sandbox.innerWidth = 390;
   one('#tabbar .tabbar__btn[data-nav="plugins"]').click();
   await sleep(60);
@@ -1439,7 +1506,8 @@ function one(sel) { return doc.querySelector(sel); }
   console.log('== v0.7.0 专区：入口与路由 ==');
   ZS.state.sessionId = ZS.state.sessionId || 'sess_test_001';
   const navBtnsAll = getEls('.topnav__btn');
-  ok('顶栏第二项是「专区」', navBtnsAll[1] && navBtnsAll[1].getAttribute('data-nav') === 'zone', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
+  ok('顶栏第三项是「专区」', navBtnsAll[2] && navBtnsAll[2].getAttribute('data-nav') === 'zone', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
+  ok('顶栏第二项是「账户」', navBtnsAll[1] && navBtnsAll[1].getAttribute('data-nav') === 'accounts', navBtnsAll.map(function (b) { return b.getAttribute('data-nav'); }).join(','));
   ok('更多菜单也带专区入口', !!one('#moreMenu [data-nav="zone"]'));
   ZS.state.zone.dash = null;
   ZS.state.zone.dashAt = 0;
@@ -1553,6 +1621,72 @@ function one(sel) { return doc.querySelector(sel); }
   ok('接口失败 → 错误块带重试按钮', !!one('#zoneBody .zerror') && /重试/.test(one('#zoneBody').textContent));
   ok('失败时时间戳改为读取失败', /读取失败/.test(one('#zoneStamp').textContent), one('#zoneStamp').textContent);
   zoneFail = false;
+  ZS.showView('home');
+  await sleep(20);
+
+
+  console.log('== v0.7.1 账户页 ==');
+  const navNames = getEls('#topNav .topnav__btn').map(function (b) { return b.getAttribute('data-nav'); }).join(',');
+  ok('顶栏七个入口且含账户', navNames === 'home,accounts,zone,skills,plugins,services,settings', navNames);
+  ok('更多菜单含账户入口', !!one('#moreMenu [data-nav="accounts"]'));
+  ZS.showView('accounts');
+  await sleep(120);
+  ok('切到账户页', ZS.state.view === 'accounts' && one('#scr-accounts').classList.contains('is-on'), ZS.state.view);
+  ok('顶栏标题为账户', one('#pageTitle').textContent === '账户', one('#pageTitle').textContent);
+  ok('账户页标题', /账本|账户/.test(one('#accH1').textContent), one('#accH1').textContent);
+  const accKpis = getEls('#accBody .zkpi');
+  ok('四张账户 KPI', accKpis.length === 4, String(accKpis.length));
+  ok('KPI 账户余额 ¥57,844.50', /¥57,844\.50/.test(one('#accBody').textContent), one('#accBody').textContent.slice(0, 120));
+  ok('KPI 信用卡待还 ¥8,432.00', /¥8,432\.00/.test(one('#accBody').textContent));
+  ok('KPI 额度使用率 28.1%', /28\.1%/.test(one('#accBody').textContent));
+  const acards = getEls('#accBody .acard');
+  ok('三张账户卡', acards.length === 3, String(acards.length));
+  ok('账户卡带卡片状态徽章', getEls('#accBody .acard .abadge--ok').length >= 2, String(getEls('#accBody .acard .abadge--ok').length));
+  ok('信用卡卡显示额度占比', /已用 28\.1% 额度/.test(one('#accBody').textContent));
+  ok('账户卡有余额条', getEls('#accBody .abar').length >= 3, String(getEls('#accBody .abar').length));
+  ok('信用卡区有还款日 25 日信息', /还款日/.test(one('#accBody').textContent) && /25/.test(ZS.accDueInfo().text), ZS.accDueInfo().text);
+  ok('信用卡区有本期消费', /本期消费/.test(one('#accBody').textContent));
+  const txRows = getEls('#accBody .ztable tbody tr');
+  ok('流水默认每页 20 行', txRows.length === 20, String(txRows.length));
+  ok('流水分页信息与总数', /共 26 笔/.test(one('#accBody').textContent), one('#accBody .zpager') ? one('#accBody .zpager').textContent : 'no pager');
+  const txFilterCredit = one('#accBody [data-acc-filter="a2"]');
+  ok('流水区有信用卡筛选按钮', !!txFilterCredit);
+  txFilterCredit.click();
+  await sleep(120);
+  const creditRows = getEls('#accBody .ztable tbody tr');
+  ok('筛信用卡后只剩该账户行', creditRows.length > 0 && creditRows.length < 20, String(creditRows.length));
+  ok('筛信用卡后仍显示筛选态', one('#accBody .aseg__btn[data-acc-filter="a2"]').classList.contains('is-on'));
+  one('#accBody .aseg__btn[data-acc-filter="all"]').click();
+  await sleep(120);
+  ok('切回全部后有 26 笔', /共 26 笔/.test(one('#accBody').textContent), one('#accBody').textContent.slice(0, 60));
+  ZS.accSetPage(1);
+  await sleep(40);
+  ok('翻到第 2 页', /第 2\//.test(one('#accBody').textContent));
+  ok('第 2 页只剩 6 行', getEls('#accBody .ztable tbody tr').length === 6, String(getEls('#accBody .ztable tbody tr').length));
+  ZS.accSetPage(0);
+  await sleep(40);
+  ZS.accExportCsv();
+  await sleep(40);
+  ok('导出 CSV 有提示', /已导出/.test(one('#toasts').textContent), one('#toasts').textContent.slice(0, 80));
+  const prefillBtn = one('#accBody [data-acc-text]');
+  ok('账户页有预填对话按钮', !!prefillBtn);
+  prefillBtn.click();
+  await sleep(40);
+  ok('预填后回到工作台', ZS.state.view === 'home', ZS.state.view);
+  ok('预填内容进入输入框', /还信用卡/.test(one('#input').value), one('#input').value);
+  const accRoute = ZS.zoneParseHash('#/accounts');
+  ok('hash #/accounts 解析', accRoute && accRoute.view === 'accounts', JSON.stringify(accRoute));
+  const accRoute2 = ZS.zoneParseHash('#/zone/dashboard');
+  ok('hash 仍能解析专区', accRoute2 && accRoute2.view === 'zone' && accRoute2.zone === 'dashboard', JSON.stringify(accRoute2));
+  zoneFail = true;
+  ZS.state.acc.at = 0;
+  ZS.showView('accounts');
+  await sleep(150);
+  ok('账户接口失败 → 错误块带重试', !!one('#accBody .zerror') && /重试/.test(one('#accBody').textContent));
+  ok('失败时时间戳改为读取失败', /读取失败/.test(one('#accStamp').textContent), one('#accStamp').textContent);
+  zoneFail = false;
+  one('#input').value = '';
+  ZS.state.acc = null;
   ZS.showView('home');
   await sleep(20);
 

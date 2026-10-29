@@ -465,6 +465,39 @@ def main(argv=None):
         _check("ana-18", "聚合接口不产生资金流水：transactions 条数不变", txns_before == txns_after,
                "before=%d after=%d" % (txns_before, txns_after))
 
+        # ---------- v0.7.1：账户页只读接口 ----------
+        st, snap = _get(port, "/api/accounts?session_id=%s" % sid)
+        acc_rows = snap.get("accounts") or []
+        _check("acc-1", "/api/accounts 返回 3 个账户", st == 200 and len(acc_rows) == 3,
+               "http=%s n=%d" % (st, len(acc_rows)))
+        card_fields = ("card_id", "card_kind", "card_status", "single_limit_cents", "daily_limit_cents")
+        checking = [a for a in acc_rows if a.get("kind") == "checking"]
+        credit_rows = [a for a in acc_rows if a.get("kind") == "credit"]
+        _check("acc-2", "工资卡带卡片状态与限额字段",
+               bool(checking) and all(k in checking[0] for k in card_fields) and checking[0].get("card_status") == "active",
+               "keys=%s" % (sorted(set(checking[0].keys()) & set(card_fields)) if checking else []))
+        _check("acc-3", "信用卡额度 3000000 分且与账户余额一致",
+               bool(credit_rows) and int(credit_rows[0].get("credit_limit_cents") or 0) == 3000000
+               and int(credit_rows[0].get("balance_cents") or 0) == -843200,
+               "limit=%s balance=%s" % (credit_rows[0].get("credit_limit_cents") if credit_rows else None,
+                                        credit_rows[0].get("balance_cents") if credit_rows else None))
+        credit_id = credit_rows[0].get("account_id") if credit_rows else ""
+
+        st, only = _get(port, "/api/transactions?session_id=%s&account_id=%s&limit=50" % (sid, credit_id))
+        rows_only = only.get("transactions") or []
+        _check("acc-4", "按账户过滤流水：只返回该账户且回显 account_id",
+               st == 200 and only.get("account_id") == credit_id and rows_only
+               and all(r.get("account_id") == credit_id for r in rows_only),
+               "http=%s n=%d echo=%s" % (st, len(rows_only), only.get("account_id")))
+        all_rows = _get(port, "/api/transactions?session_id=%s&limit=200" % sid)[1].get("transactions") or []
+        _check("acc-5", "过滤后条数不超过 limit 且少于全部",
+               len(rows_only) <= 50 and 0 < len(rows_only) < len(all_rows),
+               "filtered=%d all=%d" % (len(rows_only), len(all_rows)))
+
+        st, body = _get(port, "/api/transactions?session_id=%s&account_id=acc_999" % sid)
+        _check("acc-6", "不存在的账户 → 400 BAD_ACCOUNT", st == 400 and _err_code(body) == "BAD_ACCOUNT",
+               "http=%s code=%s" % (st, _err_code(body)))
+
         fails = [c for c in CHECKS if not c["ok"]]
         print("-" * 88)
         print("结果：%d/%d 通过" % (len(CHECKS) - len(fails), len(CHECKS)))

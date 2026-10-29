@@ -152,6 +152,32 @@ def _clamp_int(query, name: str, default: int, lo=None, hi=None) -> int:
     return value
 
 
+def _accounts_with_cards(accounts, cards) -> list:
+    """账户与卡片按掩码关联，补出卡片状态与限额（只读；v0.7.1 账户页用）。
+
+    账户与卡片没有外键，唯一可靠的对应关系是掩码后四位（**** 8821 → card_001）。
+    """
+    by_tail = {}
+    for card in cards or []:
+        masked = str(card.get("number_masked") or "")
+        tail = masked.replace("*", "").strip()
+        if tail:
+            by_tail[tail] = card
+    out = []
+    for acc in accounts or []:
+        row = dict(acc)
+        masked = str(row.get("number_masked") or "")
+        tail = masked.replace("*", "").strip()
+        card = by_tail.get(tail)
+        row["card_id"] = card.get("card_id", "") if card else ""
+        row["card_kind"] = card.get("kind", "") if card else ""
+        row["card_status"] = card.get("status", "") if card else ""
+        row["single_limit_cents"] = int(card.get("single_limit_cents") or 0) if card else 0
+        row["daily_limit_cents"] = int(card.get("daily_limit_cents") or 0) if card else 0
+        out.append(row)
+    return out
+
+
 def _stream_delay_ms() -> int:
     """块间延迟（毫秒）：默认 18，环境变量 ZS_STREAM_DELAY_MS 覆盖（测试传 0 可秒回）。"""
     raw = os.environ.get("ZS_STREAM_DELAY_MS")
@@ -294,13 +320,23 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/accounts":
                 sid = (self._query().get("session_id") or [""])[0]
                 snap = engine.session_snapshot(CONN, sid)
-                return self._send(200, {"accounts": snap["accounts"], "cards": snap["cards"],
+                return self._send(200, {"accounts": _accounts_with_cards(snap["accounts"], snap["cards"]),
+                                        "cards": snap["cards"],
                                         "total_cents": mock_core.account_total(CONN, snap["user"]["user_id"])})
             if path == "/api/transactions":
-                sid = (self._query().get("session_id") or [""])[0]
+                q = self._query()
+                sid = (q.get("session_id") or [""])[0]
                 snap = engine.session_snapshot(CONN, sid)
-                limit = _clamp_int(self._query(), "limit", 20, LIMIT_MIN, LIMIT_MAX)
-                return self._send(200, {"transactions": mock_core.list_transactions(CONN, snap["user"]["user_id"], limit=limit)})
+                limit = _clamp_int(q, "limit", 20, LIMIT_MIN, LIMIT_MAX)
+                account_id = (q.get("account_id") or [""])[0]
+                user_id = snap["user"]["user_id"]
+                if account_id:
+                    owns = [a for a in snap["accounts"] if a.get("account_id") == account_id]
+                    if not owns:
+                        return self._error(400, "BAD_ACCOUNT", "没有这个账户，请检查 account_id")
+                return self._send(200, {"transactions": mock_core.list_transactions(
+                    CONN, user_id, account_id=account_id or None, limit=limit),
+                    "account_id": account_id or None})
             # ---------- v0.7.0 新增：专区（仪表盘 / 分析），全部只读 ----------
             if path == "/api/dashboard":
                 q = self._query()

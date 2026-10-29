@@ -848,3 +848,58 @@ frontend/_selftest.js:600-625 新增 9 条「资金流向与余额刷新」断�
 - 实测：v0.7.0 时 `chain.checked` 恒为 22，两个接口连续调用 20 次后 `transactions` 条数不变。
 
 **接口字段见** [api.md](api.md) §4（v0.7.0 只读聚合接口），图表与布局规范见 [design-system.md](design-system.md) §七，自检口径见 [evaluation.md](evaluation.md) §3.5。
+
+## 16. 账户页与账户快照增强（v0.7.1）
+
+### 16.1 位置
+
+账户页是**纯只读展示层**，不新增聚合模块：数据全部来自既有两个查询接口（`/api/accounts`、`/api/dashboard`）与一条带过滤的流水查询（`/api/transactions?account_id=`）。层级关系与数据专区相同：
+
+    frontend/app.js (acc* 渲染函数)
+        ├─ GET /api/accounts      → mock_core.list_accounts + list_cards + account_total
+        ├─ GET /api/dashboard     → app.analytics.dashboard（KPI / 预算 / 构成 / 待办）
+        └─ GET /api/transactions  → mock_core.list_transactions(account_id=...)
+    所有接口只读：不写 transactions / events / audit
+
+### 16.2 `_accounts_with_cards`
+
+`backend/server.py` 里新增一个纯函数把两张表在内存里拼起来，避免前端为「余额在哪一页、限额在哪一页」做两次请求：
+
+    def _accounts_with_cards(accounts, cards):
+        by_tail = {}
+        for c in cards or []:
+            tail = str(c.get("number_masked") or "").replace("*", "").strip()
+            if tail:
+                by_tail[tail] = c
+        out = []
+        for a in accounts or []:
+            row = dict(a)
+            tail = str(row.get("number_masked") or "").replace("*", "").strip()
+            card = by_tail.get(tail) or {}
+            row["card_id"] = card.get("card_id") or ""
+            row["card_kind"] = card.get("kind") or ""
+            row["card_status"] = card.get("status") or ""
+            row["single_limit_cents"] = int(card.get("single_limit_cents") or 0)
+            row["daily_limit_cents"] = int(card.get("daily_limit_cents") or 0)
+            out.append(row)
+        return out
+
+要点：匹配键是掩码后四位（`**** 8821` → `8821`），未绑卡时字段为空串 / 0，前端据此隐藏限额行；`accounts` 原有字段一个不改，旧客户端读到的结构仍向后兼容。
+
+### 16.3 流水过滤
+
+`GET /api/transactions` 增加 `account_id`：
+
+- 先取当前用户的账户集合；`account_id` 存在但不在集合里 → 400 `BAD_ACCOUNT`（区分「这个账户没有流水」与「这个账户不是你的」）。
+- 传 `account_id` 时下发到 `mock_core.list_transactions(..., account_id=...)`，`limit` 仍 clamp 在 1–200。
+- 响应回显 `account_id`，前端据此判断筛选态（`null` 表示「全部」）。
+
+### 16.4 前端只读约束
+
+- 账户页所有动作按钮都只写 `data-acc-text`，点击后调用 `accPrefill(text)`：切回工作台、把这句话填进输入框、提示「确认后发送」。不发起任何写请求。
+- 页面不渲染 `<form>`、不直接调 `/api/chat`，因此不会绕过「意图 → 计划 → 策略 → 审批 → 审计链」。
+- 缓存 30 秒（`state.acc.at`），「刷新」按钮强制 `accFetch(true)`；切页时不轮询，避免在只读页上制造后台请求。
+
+### 16.5 只读性证明
+
+`scripts/dashboard_e2e.py` 的 `acc-*` 组连续调用 `/api/accounts`、`/api/transactions?account_id=` 与 `/api/audit`：审计链 `checked` 与 events 行数在调用前后不变；`ana-17/ana-18` 继续覆盖「聚合接口不写链」。前端自检里账户页的所有交互分支都在 fetch 桩上断言「没有发出写请求」。

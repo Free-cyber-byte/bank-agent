@@ -380,11 +380,14 @@ Key 无效（HTTP 401）：
 
 ## 4. 查询
 
-- GET /api/accounts?session_id=... → { "accounts": [...] }
+- GET /api/accounts?session_id=... → { "accounts": [...] , "cards": [...], "total_cents": 5786050 }
+  accounts 项字段：account_id, kind(checking|savings|credit), name, number_masked, balance_cents, balance_display, currency, credit_limit_cents；v0.7.1 起每项再补卡片字段 card_id / card_kind / card_status / single_limit_cents / daily_limit_cents（按 number_masked 后四位匹配 cards，未绑卡时 card_id=""、限额为 0）。cards 为卡片表原始行（card_id, kind, number_masked, status, daily_limit_cents, single_limit_cents, created_at），total_cents 为非信用卡账户余额合计。
+- GET /api/transactions?session_id=...&limit=20&account_id=acc_001 → { "transactions": [ ... ], "account_id": "acc_001" }
+  limit 默认 20、范围 1-200；v0.7.1 起支持 account_id 过滤并在响应中回显，未传时为 null；account_id 不属于当前用户时返回 400 {"error": {"code": "BAD_ACCOUNT", "message": "没有这个账户，请检查 account_id"}}。
 - GET /api/audit?session_id=...&limit=100 → { "entries": [ ... ], "chain": { "valid": true, "checked": 21, "broken_at": null, "reason": null } }
   entry 字段：seq, ts, session_id, actor, event_type, tool, args_hash, result_hash, risk_level, approval_id, prev_hash, hash
 - GET /api/events?session_id=...&after=0 → { "events": [ { "seq": 1, "type": "message", "payload": {...} } ] }  // 会话回放
-- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.7.0", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.7.0；改 VERSION 后需重启进程生效
+- GET /api/health → { "status":"ok", "app":"ZeroStep 零步银行", "version":"0.7.1", "llm_mode":"rule", "demo_mode":true, "seed_version":"2026.10.29" }  // version 读仓库根 VERSION 文件（唯一来源），当前 0.7.0；改 VERSION 后需重启进程生效
 - GET /api/tasks[?limit=N&offset=M] → 任务列表，前端快捷按钮；user_input 即 turns[0]。
   无参数时与旧版完全一致，只返回 tasks（全部 59 条）：
 
@@ -954,6 +957,43 @@ v0.4.1 的红色动作（challenge.type=totp，如挂失 / 解挂、大额转账
 #### 只读性
 
 两个接口都不写库。`scripts/dashboard_e2e.py` 的 `ana-17` / `ana-18` 在连续调用前后各取一次 `/api/audit` 与 `/api/transactions`，断言审计链 `checked` 不变、`valid` 仍为 `true`、流水条数不变。
+
+### v0.7.1 账户快照与流水过滤
+
+账户页只消费两个既有接口，未新增端点；两者都是只读，不写 transactions / events / audit。
+
+`GET /api/accounts`（实测，2026-10-29）：
+
+    {
+      "accounts": [
+        { "account_id": "acc_001", "kind": "checking", "name": "工资卡", "number_masked": "**** 8821",
+          "balance_cents": 1286050, "balance_display": "¥12,860.50", "currency": "CNY", "credit_limit_cents": 0,
+          "card_id": "card_001", "card_kind": "debit", "card_status": "active",
+          "single_limit_cents": 2000000, "daily_limit_cents": 2000000 },
+        { "account_id": "acc_003", "kind": "credit", "name": "信用卡", "number_masked": "**** 6712",
+          "balance_cents": -843200, "balance_display": "-¥8,432.00", "credit_limit_cents": 3000000,
+          "card_id": "card_002", "card_kind": "credit", "card_status": "active",
+          "single_limit_cents": 3000000, "daily_limit_cents": 3000000 }
+      ],
+      "cards": [ { "card_id": "card_001", ... } ],
+      "total_cents": 5786050
+    }
+
+字段规则：
+
+| 字段 | 说明 |
+| --- | --- |
+| card_id / card_kind / card_status | 用 `number_masked` 后四位匹配 cards；未绑卡时三者均为空串，界面显示「无卡」 |
+| single_limit_cents / daily_limit_cents | 卡片限额（分）；未绑卡为 0，界面不显示限额行 |
+| total_cents | `mock_core.account_total`，只加非信用卡账户，等于「账户余额」KPI |
+
+`GET /api/transactions` 的 account_id 过滤：
+
+- 合法账户：只返回该账户流水，响应回显 `"account_id": "acc_003"`。
+- 不带 account_id：返回全部流水，`"account_id": null`，行为与 v0.7.0 一致。
+- 非法或他人账户：400 `BAD_ACCOUNT`，不为空数组——避免把「查不到」和「查错了」混为一谈。
+
+两个接口都不产生写操作；`scripts/dashboard_e2e.py` 的 `acc-1` … `acc-6` 与 `ana-17/ana-18` 在连续取数前后校验审计链条数与 `checked` 不变。
 
 ## 5. 审计哈希链
 
